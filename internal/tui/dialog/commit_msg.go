@@ -18,6 +18,7 @@ import (
 // CommitRequestMsg is sent when the user submits the commit message.
 type CommitRequestMsg struct {
 	Message string
+	Amend   bool
 }
 
 // CommitCancelMsg is sent when the user cancels the commit dialog.
@@ -31,6 +32,7 @@ type CommitCancelMsg struct{}
 type CommitMsg struct {
 	textarea    textarea.Model
 	stagedCount int
+	amend       bool
 	width       int
 	height      int
 }
@@ -53,6 +55,27 @@ func NewCommitMsg(stagedCount, width, height int) CommitMsg {
 	}
 }
 
+// NewCommitMsgAmend creates a commit dialog in amend mode, pre-filled with the
+// previous commit message.
+func NewCommitMsgAmend(stagedCount int, prevMessage string, width, height int) CommitMsg {
+	ta := textarea.New()
+	ta.Placeholder = "Enter commit message..."
+	ta.Focus()
+	ta.CharLimit = 0
+	ta.SetWidth(50)
+	ta.SetHeight(6)
+	ta.ShowLineNumbers = false
+	ta.SetValue(prevMessage)
+
+	return CommitMsg{
+		textarea:    ta,
+		stagedCount: stagedCount,
+		amend:       true,
+		width:       width,
+		height:      height,
+	}
+}
+
 func (c CommitMsg) Init() tea.Cmd {
 	return textarea.Blink
 }
@@ -69,8 +92,9 @@ func (c CommitMsg) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if message == "" {
 				return c, nil
 			}
+			amend := c.amend
 			return c, func() tea.Msg {
-				return CommitRequestMsg{Message: message}
+				return CommitRequestMsg{Message: message, Amend: amend}
 			}
 		}
 	}
@@ -88,18 +112,23 @@ func (c CommitMsg) View() string {
 		dialogWidth = c.width - 4
 	}
 
+	titleText := "Commit"
+	if c.amend {
+		titleText = "Amend Commit"
+	}
 	title := lipgloss.NewStyle().
 		Foreground(t.Blue).
 		Background(t.Surface0).
 		Bold(true).
-		Render("Commit")
+		Render(titleText)
 
 	info := lipgloss.NewStyle().
 		Foreground(t.Subtext0).
 		Background(t.Surface0).
 		Render(fmt.Sprintf("%d file(s) staged", c.stagedCount))
 
-	header := lipgloss.JoinHorizontal(lipgloss.Top, title, "  ", info)
+	headerSep := lipgloss.NewStyle().Background(t.Surface0).Render("  ")
+	header := lipgloss.JoinHorizontal(lipgloss.Top, title, headerSep, info)
 
 	ta := c.textarea.View()
 
@@ -109,7 +138,8 @@ func (c CommitMsg) View() string {
 		Padding(1, 0, 0, 0).
 		Render("ctrl+s: commit  esc: cancel")
 
-	content := lipgloss.JoinVertical(lipgloss.Left, header, "", ta, hints)
+	emptyLine := lipgloss.NewStyle().Background(t.Surface0).Render("")
+	content := lipgloss.JoinVertical(lipgloss.Left, header, emptyLine, ta, hints)
 
 	return lipgloss.NewStyle().
 		Width(dialogWidth).

@@ -95,9 +95,11 @@ func (c Confirm) View() string {
 
 	yesStyle := lipgloss.NewStyle().
 		Foreground(t.Text).
+		Background(t.Surface0).
 		Padding(0, 2).
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(t.Surface2)
+		BorderForeground(t.Surface2).
+		BorderBackground(t.Surface0)
 	noStyle := yesStyle
 
 	if c.focused {
@@ -105,21 +107,24 @@ func (c Confirm) View() string {
 			Foreground(t.Base).
 			Background(t.Green).
 			Bold(true).
-			BorderForeground(t.Green)
+			BorderForeground(t.Green).
+			BorderBackground(t.Surface0)
 	} else {
 		noStyle = noStyle.
 			Foreground(t.Base).
 			Background(t.Red).
 			Bold(true).
-			BorderForeground(t.Red)
+			BorderForeground(t.Red).
+			BorderBackground(t.Surface0)
 	}
 
+	btnSep := lipgloss.NewStyle().Background(t.Surface0).Render("  ")
 	buttons := lipgloss.JoinHorizontal(lipgloss.Top,
 		yesStyle.Render("Yes"),
-		"  ",
+		btnSep,
 		noStyle.Render("No"),
 	)
-	buttons = lipgloss.NewStyle().Padding(1, 0, 0, 0).Render(buttons)
+	buttons = lipgloss.NewStyle().Background(t.Surface0).Padding(1, 0, 0, 0).Render(buttons)
 
 	content := lipgloss.JoinVertical(lipgloss.Left, title, message, buttons)
 

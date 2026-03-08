@@ -83,10 +83,13 @@ func (sp Spinner) View() string {
 		return ""
 	}
 
+	t := theme.Active
 	labelStyle := lipgloss.NewStyle().
-		Foreground(theme.Active.Subtext0)
+		Foreground(t.Subtext0).
+		Background(t.Base)
 
-	return sp.spinner.View() + " " + labelStyle.Render(sp.label)
+	spacer := lipgloss.NewStyle().Background(t.Base).Render(" ")
+	return sp.spinner.View() + spacer + labelStyle.Render(sp.label)
 }
 
 // Tick returns the spinner's tick command for starting animation.

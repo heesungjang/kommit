@@ -82,18 +82,18 @@ func StatusBarStyle() lipgloss.Style {
 }
 
 // TabStyle returns the style for tab items.
-// No Background set — the parent tab bar container handles it so that
-// space separators between tabs also get filled.
 func TabStyle(active bool) lipgloss.Style {
 	t := theme.Active
 	if active {
 		return lipgloss.NewStyle().
 			Foreground(t.Blue).
+			Background(t.Mantle).
 			Bold(true).
 			Padding(0, 1)
 	}
 	return lipgloss.NewStyle().
 		Foreground(t.Overlay0).
+		Background(t.Mantle).
 		Padding(0, 1)
 }
 
@@ -117,6 +117,7 @@ func ErrorStyle() lipgloss.Style {
 	t := theme.Active
 	return lipgloss.NewStyle().
 		Foreground(t.Red).
+		Background(t.Base).
 		Bold(true)
 }
 
@@ -124,14 +125,16 @@ func ErrorStyle() lipgloss.Style {
 func SuccessStyle() lipgloss.Style {
 	t := theme.Active
 	return lipgloss.NewStyle().
-		Foreground(t.Green)
+		Foreground(t.Green).
+		Background(t.Base)
 }
 
 // WarningStyle returns the style for warning messages.
 func WarningStyle() lipgloss.Style {
 	t := theme.Active
 	return lipgloss.NewStyle().
-		Foreground(t.Yellow)
+		Foreground(t.Yellow).
+		Background(t.Base)
 }
 
 // FileStatusColor returns the color for a file based on its status code.

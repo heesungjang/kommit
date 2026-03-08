@@ -149,7 +149,8 @@ func (t Tabs) View() string {
 		tabParts = append(tabParts, tabStyle.Render(label))
 	}
 
-	tabLine := strings.Join(tabParts, " ")
+	sep := lipgloss.NewStyle().Background(th.Mantle).Render(" ")
+	tabLine := strings.Join(tabParts, sep)
 
 	barStyle := lipgloss.NewStyle().
 		Width(t.width).

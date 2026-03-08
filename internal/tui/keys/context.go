@@ -241,6 +241,21 @@ func FullHelp(ctx Context) [][]key.Binding {
 			Stash.Drop,
 		})
 
+	case ContextRemotes:
+		return append(base, []key.Binding{
+			Status.Push,
+			Status.Pull,
+			Status.Fetch,
+			Status.Refresh,
+		})
+
+	case ContextLog:
+		return append(base, []key.Binding{
+			Navigation.Select,
+			Navigation.PageUp,
+			Navigation.PageDown,
+		})
+
 	case ContextPR:
 		return append(base, []key.Binding{
 			PR.Create,

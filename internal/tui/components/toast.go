@@ -131,6 +131,7 @@ func (t Toast) View() string {
 		Padding(0, 2).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(fg).
+		BorderBackground(bg).
 		MaxWidth(t.width)
 
 	return toastStyle.Render(icon + " " + t.message)

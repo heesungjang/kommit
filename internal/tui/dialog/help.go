@@ -5,6 +5,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/nicholascross/opengit/internal/tui/keys"
 	"github.com/nicholascross/opengit/internal/tui/theme"
 )
 
@@ -19,16 +20,18 @@ type HelpCloseMsg struct{}
 // Help model
 // ---------------------------------------------------------------------------
 
-// Help displays all keybindings organised by context.
+// Help displays keybindings organised by context. The displayed bindings
+// change depending on the active page when the help dialog was opened.
 type Help struct {
+	ctx    keys.Context
 	scroll int
 	width  int
 	height int
 }
 
-// NewHelp creates a new help overlay.
-func NewHelp(width, height int) Help {
-	return Help{width: width, height: height}
+// NewHelp creates a new help overlay showing bindings relevant to ctx.
+func NewHelp(ctx keys.Context, width, height int) Help {
+	return Help{ctx: ctx, width: width, height: height}
 }
 
 func (h Help) Init() tea.Cmd { return nil }
@@ -47,16 +50,58 @@ func (h Help) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				h.scroll--
 			}
 			return h, nil
+		case key.Matches(msg, key.NewBinding(key.WithKeys("ctrl+d", "pgdown"))):
+			h.scroll += 10
+			return h, nil
+		case key.Matches(msg, key.NewBinding(key.WithKeys("ctrl+u", "pgup"))):
+			h.scroll -= 10
+			if h.scroll < 0 {
+				h.scroll = 0
+			}
+			return h, nil
 		}
 	}
 	return h, nil
 }
 
+// sectionNames labels each group returned by keys.FullHelp for display.
+var sectionNames = []string{
+	"Global",
+	"Tabs",
+	"Panels",
+	"Navigation",
+}
+
+// contextSectionName returns a human-readable label for the context-specific
+// binding group (the 5th group in FullHelp output).
+func contextSectionName(ctx keys.Context) string {
+	switch ctx {
+	case keys.ContextStatus:
+		return "Status"
+	case keys.ContextLog:
+		return "Log"
+	case keys.ContextBranches:
+		return "Branches"
+	case keys.ContextDiff:
+		return "Diff"
+	case keys.ContextStash:
+		return "Stash"
+	case keys.ContextRemotes:
+		return "Remotes"
+	case keys.ContextPR:
+		return "Pull Requests"
+	case keys.ContextCI:
+		return "CI/CD"
+	case keys.ContextWorkspace:
+		return "Workspace"
+	default:
+		return "Context"
+	}
+}
+
 func (h Help) View() string {
 	t := theme.Active
 
-	// Border adds 2 to the outer width/height beyond Width()/Height().
-	// Leave at least 2 cols/rows margin for centering within Place().
 	borderSize := 2
 	dialogWidth := 70
 	if dialogWidth+borderSize > h.width-2 {
@@ -72,6 +117,7 @@ func (h Help) View() string {
 
 	title := lipgloss.NewStyle().
 		Foreground(t.Blue).
+		Background(t.Surface0).
 		Bold(true).
 		Padding(0, 0, 1, 0).
 		Render("Keyboard Shortcuts")
@@ -80,86 +126,29 @@ func (h Help) View() string {
 	descStyle := lipgloss.NewStyle().Foreground(t.Text).Background(t.Surface0)
 	sectionStyle := lipgloss.NewStyle().Foreground(t.Yellow).Background(t.Surface0).Bold(true).Padding(1, 0, 0, 0)
 
-	sections := []struct {
-		name     string
-		bindings [][2]string
-	}{
-		{
-			name: "Global",
-			bindings: [][2]string{
-				{"q", "Quit"},
-				{"ctrl+c", "Force quit"},
-				{"?", "Toggle help"},
-				{"1-8", "Switch tab"},
-				{"tab", "Next panel"},
-				{"shift+tab", "Previous panel"},
-			},
-		},
-		{
-			name: "Navigation",
-			bindings: [][2]string{
-				{"j/down", "Move down"},
-				{"k/up", "Move up"},
-				{"h/left", "Move left"},
-				{"l/right", "Move right"},
-				{"ctrl+d/pgdn", "Page down"},
-				{"ctrl+u/pgup", "Page up"},
-				{"g/home", "Go to top"},
-				{"G/end", "Go to bottom"},
-				{"enter", "Select"},
-			},
-		},
-		{
-			name: "Status Page",
-			bindings: [][2]string{
-				{"space/s", "Stage/unstage file"},
-				{"a", "Stage all"},
-				{"c", "Commit"},
-				{"A", "Amend commit"},
-				{"d", "Discard changes"},
-				{"p", "Push"},
-				{"P", "Pull"},
-				{"f", "Fetch"},
-				{"r", "Refresh"},
-			},
-		},
-		{
-			name: "Branches Page",
-			bindings: [][2]string{
-				{"enter/o", "Checkout branch"},
-				{"n", "New branch"},
-				{"D", "Delete branch"},
-				{"m", "Merge into current"},
-				{"R", "Rename branch"},
-			},
-		},
-		{
-			name: "Stash Page",
-			bindings: [][2]string{
-				{"s", "Stash save"},
-				{"p", "Stash pop"},
-				{"a", "Stash apply"},
-				{"D", "Stash drop"},
-			},
-		},
-		{
-			name: "Remotes Page",
-			bindings: [][2]string{
-				{"p", "Push"},
-				{"P", "Pull"},
-				{"f", "Fetch remote"},
-				{"F", "Fetch all"},
-			},
-		},
-	}
+	groups := keys.FullHelp(h.ctx)
 
 	var allLines []string
-	for _, section := range sections {
-		allLines = append(allLines, sectionStyle.Render(section.name))
-		for _, b := range section.bindings {
+	for i, group := range groups {
+		// Determine section label.
+		var label string
+		if i < len(sectionNames) {
+			label = sectionNames[i]
+		} else {
+			label = contextSectionName(h.ctx)
+		}
+
+		// Convert bindings to entries, skip empty groups.
+		entries := keys.EntriesFromBindings(group)
+		if len(entries) == 0 {
+			continue
+		}
+
+		allLines = append(allLines, sectionStyle.Render(label))
+		for _, e := range entries {
 			line := lipgloss.JoinHorizontal(lipgloss.Top,
-				keyStyle.Render(b[0]),
-				descStyle.Render(b[1]),
+				keyStyle.Render(e.Key),
+				descStyle.Render(e.Description),
 			)
 			allLines = append(allLines, line)
 		}
@@ -188,6 +177,7 @@ func (h Help) View() string {
 
 	footer := lipgloss.NewStyle().
 		Foreground(t.Overlay0).
+		Background(t.Surface0).
 		Padding(1, 0, 0, 0).
 		Render("Press ? or esc to close")
 
@@ -196,7 +186,6 @@ func (h Help) View() string {
 	return lipgloss.NewStyle().
 		Width(dialogWidth).
 		Height(dialogHeight).
-		MaxHeight(dialogHeight).
 		Padding(1, 2).
 		Background(t.Surface0).
 		Border(lipgloss.RoundedBorder()).

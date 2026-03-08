@@ -81,6 +81,7 @@ func (sb StatusBar) View() string {
 	barStyle := styles.StatusBarStyle().Width(sb.width)
 
 	bg := t.Surface0
+	bgStyle := lipgloss.NewStyle().Background(bg)
 
 	// Left side: branch info
 	branchStr := lipgloss.NewStyle().
@@ -99,7 +100,8 @@ func (sb StatusBar) View() string {
 	}
 	abStr := ""
 	if len(abParts) > 0 {
-		abStr = " " + strings.Join(abParts, "/")
+		sep := bgStyle.Render("/")
+		abStr = bgStyle.Render(" ") + strings.Join(abParts, sep)
 	}
 
 	// Clean/dirty status
@@ -129,7 +131,8 @@ func (sb StatusBar) View() string {
 		padding = 1
 	}
 
-	content := leftContent + strings.Repeat(" ", padding) + helpHint
+	padStr := bgStyle.Render(strings.Repeat(" ", padding))
+	content := leftContent + padStr + helpHint
 
 	return barStyle.Render(content)
 }
