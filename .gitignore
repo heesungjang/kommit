@@ -1,0 +1,20 @@
+# Binary
+opengit
+dist/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Debug
+debug.log
+
+# Config (local)
+.opencode/

@@ -1,0 +1,298 @@
+package git
+
+import (
+	"fmt"
+	"strconv"
+	"strings"
+)
+
+// DiffFile represents a changed file in a diff.
+type DiffFile struct {
+	OldPath string
+	NewPath string
+	Status  string // added, deleted, modified, renamed
+	Hunks   []Hunk
+	Binary  bool
+}
+
+// DiffResult holds a complete diff output.
+type DiffResult struct {
+	Files []DiffFile
+}
+
+// DiffUnstaged returns the diff of unstaged changes.
+func (r *Repository) DiffUnstaged() (*DiffResult, error) {
+	out, err := r.run("diff", "--no-color")
+	if err != nil {
+		return nil, err
+	}
+	return parseDiff(out), nil
+}
+
+// DiffStaged returns the diff of staged changes.
+func (r *Repository) DiffStaged() (*DiffResult, error) {
+	out, err := r.run("diff", "--cached", "--no-color")
+	if err != nil {
+		return nil, err
+	}
+	return parseDiff(out), nil
+}
+
+// DiffFile returns the diff for a specific file (unstaged).
+func (r *Repository) DiffFileUnstaged(path string) (*DiffResult, error) {
+	out, err := r.run("diff", "--no-color", "--", path)
+	if err != nil {
+		return nil, err
+	}
+	return parseDiff(out), nil
+}
+
+// DiffFileStaged returns the diff for a specific file (staged).
+func (r *Repository) DiffFileStaged(path string) (*DiffResult, error) {
+	out, err := r.run("diff", "--cached", "--no-color", "--", path)
+	if err != nil {
+		return nil, err
+	}
+	return parseDiff(out), nil
+}
+
+// DiffCommit returns the diff for a specific commit.
+func (r *Repository) DiffCommit(hash string) (*DiffResult, error) {
+	out, err := r.run("diff", "--no-color", hash+"^!", "--")
+	if err != nil {
+		// Try for root commit
+		out, err = r.run("diff", "--no-color", "--root", hash, "--")
+		if err != nil {
+			return nil, err
+		}
+	}
+	return parseDiff(out), nil
+}
+
+// DiffBranch returns the diff between two branches/refs.
+func (r *Repository) DiffBranch(base, target string) (*DiffResult, error) {
+	out, err := r.run("diff", "--no-color", base+"..."+target, "--")
+	if err != nil {
+		return nil, err
+	}
+	return parseDiff(out), nil
+}
+
+func parseDiff(raw string) *DiffResult {
+	result := &DiffResult{}
+	if strings.TrimSpace(raw) == "" {
+		return result
+	}
+
+	sections := splitDiffSections(raw)
+	for _, section := range sections {
+		file := parseDiffSection(section)
+		if file != nil {
+			result.Files = append(result.Files, *file)
+		}
+	}
+	return result
+}
+
+func splitDiffSections(raw string) []string {
+	var sections []string
+	lines := strings.Split(raw, "\n")
+	var current []string
+
+	for _, line := range lines {
+		if strings.HasPrefix(line, "diff --git") {
+			if len(current) > 0 {
+				sections = append(sections, strings.Join(current, "\n"))
+			}
+			current = []string{line}
+		} else {
+			current = append(current, line)
+		}
+	}
+	if len(current) > 0 {
+		sections = append(sections, strings.Join(current, "\n"))
+	}
+	return sections
+}
+
+func parseDiffSection(section string) *DiffFile {
+	lines := strings.Split(section, "\n")
+	if len(lines) == 0 {
+		return nil
+	}
+
+	file := &DiffFile{}
+
+	i := 0
+	// Parse header
+	for i < len(lines) {
+		line := lines[i]
+		switch {
+		case strings.HasPrefix(line, "diff --git"):
+			// Extract paths from "diff --git a/path b/path"
+			parts := strings.SplitN(line, " ", 4)
+			if len(parts) >= 4 {
+				file.OldPath = strings.TrimPrefix(parts[2], "a/")
+				file.NewPath = strings.TrimPrefix(parts[3], "b/")
+			}
+		case strings.HasPrefix(line, "--- "):
+			path := strings.TrimPrefix(line, "--- ")
+			if path != "/dev/null" {
+				file.OldPath = strings.TrimPrefix(path, "a/")
+			}
+		case strings.HasPrefix(line, "+++ "):
+			path := strings.TrimPrefix(line, "+++ ")
+			if path != "/dev/null" {
+				file.NewPath = strings.TrimPrefix(path, "b/")
+			}
+		case strings.HasPrefix(line, "new file"):
+			file.Status = "added"
+		case strings.HasPrefix(line, "deleted file"):
+			file.Status = "deleted"
+		case strings.HasPrefix(line, "rename from"):
+			file.Status = "renamed"
+		case strings.HasPrefix(line, "Binary files"):
+			file.Binary = true
+		case strings.HasPrefix(line, "@@"):
+			// Start of hunks — break out of header parsing
+			goto parseHunks
+		}
+		i++
+	}
+
+parseHunks:
+	if file.Status == "" {
+		file.Status = "modified"
+	}
+
+	// Parse hunks
+	var currentHunk *Hunk
+	for ; i < len(lines); i++ {
+		line := lines[i]
+		if strings.HasPrefix(line, "@@") {
+			if currentHunk != nil {
+				file.Hunks = append(file.Hunks, *currentHunk)
+			}
+			currentHunk = parseHunkHeader(line)
+		} else if currentHunk != nil {
+			currentHunk.Lines = append(currentHunk.Lines, line)
+		}
+	}
+	if currentHunk != nil {
+		file.Hunks = append(file.Hunks, *currentHunk)
+	}
+
+	return file
+}
+
+func parseHunkHeader(line string) *Hunk {
+	hunk := &Hunk{Header: line}
+
+	// Parse @@ -start,count +start,count @@
+	// Find the range info between @@ markers
+	if idx := strings.Index(line, "@@"); idx >= 0 {
+		rest := line[idx+2:]
+		if idx2 := strings.Index(rest, "@@"); idx2 > 0 {
+			rangeInfo := strings.TrimSpace(rest[:idx2])
+			parts := strings.Fields(rangeInfo)
+			for _, part := range parts {
+				if strings.HasPrefix(part, "-") {
+					parseRange(part[1:], &hunk.StartOld, &hunk.CountOld)
+				} else if strings.HasPrefix(part, "+") {
+					parseRange(part[1:], &hunk.StartNew, &hunk.CountNew)
+				}
+			}
+		}
+	}
+
+	return hunk
+}
+
+func parseRange(s string, start, count *int) {
+	parts := strings.SplitN(s, ",", 2)
+	if len(parts) >= 1 {
+		n, err := strconv.Atoi(parts[0])
+		if err == nil {
+			*start = n
+		}
+	}
+	if len(parts) >= 2 {
+		n, err := strconv.Atoi(parts[1])
+		if err == nil {
+			*count = n
+		}
+	} else {
+		*count = 1
+	}
+}
+
+// DiffStatEntry represents a single file in diff stat output.
+type DiffStatEntry struct {
+	Path    string
+	Added   int
+	Removed int
+}
+
+// DiffStat returns file change statistics.
+func (r *Repository) DiffStat() ([]DiffStatEntry, error) {
+	out, err := r.run("diff", "--stat", "--numstat")
+	if err != nil {
+		return nil, err
+	}
+	return parseDiffStat(out), nil
+}
+
+func parseDiffStat(out string) []DiffStatEntry {
+	var entries []DiffStatEntry
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.Fields(line)
+		if len(parts) < 3 {
+			continue
+		}
+		added, _ := strconv.Atoi(parts[0])
+		removed, _ := strconv.Atoi(parts[1])
+		entries = append(entries, DiffStatEntry{
+			Path:    parts[2],
+			Added:   added,
+			Removed: removed,
+		})
+	}
+	return entries
+}
+
+// FileDiff returns the diff for a file, handling both staged and unstaged context.
+func (r *Repository) FileDiff(path string, staged bool) (string, error) {
+	var args []string
+	if staged {
+		args = []string{"diff", "--cached", "--no-color", "--", path}
+	} else {
+		args = []string{"diff", "--no-color", "--", path}
+	}
+	out, err := r.run(args...)
+	if err != nil {
+		return "", fmt.Errorf("getting diff for %s: %w", path, err)
+	}
+	return out, nil
+}
+
+// FileDiffUntracked returns the diff for an untracked file by comparing
+// /dev/null against the file contents. Regular `git diff` returns nothing
+// for untracked files since they have no tracked version.
+func (r *Repository) FileDiffUntracked(path string) (string, error) {
+	// git diff --no-index exits with status 1 when there are differences,
+	// which is the expected case for untracked files. We treat exit code 1
+	// as success here.
+	out, err := r.run("diff", "--no-index", "--no-color", "--", "/dev/null", path)
+	if err != nil {
+		// git diff --no-index exits 1 when files differ (expected).
+		// Only treat it as an error if there's no output at all.
+		if out != "" {
+			return out, nil
+		}
+		return "", fmt.Errorf("getting diff for untracked %s: %w", path, err)
+	}
+	return out, nil
+}

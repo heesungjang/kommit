@@ -1,0 +1,148 @@
+package git
+
+import (
+	"bytes"
+	"fmt"
+	"os/exec"
+	"path/filepath"
+	"strings"
+)
+
+// Repository represents a git repository and provides operations on it.
+type Repository struct {
+	path   string // Absolute path to the repository root
+	gitDir string // Path to .git directory
+}
+
+// Open opens a git repository at the given path.
+func Open(path string) (*Repository, error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("resolving path: %w", err)
+	}
+
+	repo := &Repository{path: absPath}
+
+	// Verify this is a git repository and find the root
+	root, err := repo.run("rev-parse", "--show-toplevel")
+	if err != nil {
+		return nil, fmt.Errorf("not a git repository: %s", absPath)
+	}
+	repo.path = strings.TrimSpace(root)
+
+	gitDir, err := repo.run("rev-parse", "--git-dir")
+	if err != nil {
+		return nil, fmt.Errorf("finding .git directory: %w", err)
+	}
+	repo.gitDir = strings.TrimSpace(gitDir)
+	if !filepath.IsAbs(repo.gitDir) {
+		repo.gitDir = filepath.Join(repo.path, repo.gitDir)
+	}
+
+	return repo, nil
+}
+
+// Path returns the repository root path.
+func (r *Repository) Path() string {
+	return r.path
+}
+
+// run executes a git command and returns stdout.
+func (r *Repository) run(args ...string) (string, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = r.path
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("git %s: %s: %w", strings.Join(args, " "), stderr.String(), err)
+	}
+
+	return stdout.String(), nil
+}
+
+// runWithStdin executes a git command with stdin input.
+func (r *Repository) runWithStdin(input string, args ...string) (string, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = r.path
+	cmd.Stdin = strings.NewReader(input)
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("git %s: %s: %w", strings.Join(args, " "), stderr.String(), err)
+	}
+
+	return stdout.String(), nil
+}
+
+// Head returns the current HEAD reference (branch name or commit hash).
+func (r *Repository) Head() (string, error) {
+	ref, err := r.run("symbolic-ref", "--short", "HEAD")
+	if err != nil {
+		// Detached HEAD — return commit hash
+		hash, err2 := r.run("rev-parse", "--short", "HEAD")
+		if err2 != nil {
+			return "", fmt.Errorf("getting HEAD: %w", err2)
+		}
+		return strings.TrimSpace(hash), nil
+	}
+	return strings.TrimSpace(ref), nil
+}
+
+// IsClean returns true if the working tree has no changes.
+func (r *Repository) IsClean() (bool, error) {
+	out, err := r.run("status", "--porcelain")
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(out) == "", nil
+}
+
+// RemoteURL returns the URL of the given remote.
+func (r *Repository) RemoteURL(name string) (string, error) {
+	out, err := r.run("remote", "get-url", name)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// Remotes returns the list of remote names.
+func (r *Repository) Remotes() ([]string, error) {
+	out, err := r.run("remote")
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(out) == "" {
+		return nil, nil
+	}
+	return strings.Split(strings.TrimSpace(out), "\n"), nil
+}
+
+// TrackingBranch returns the upstream tracking branch for the current branch.
+func (r *Repository) TrackingBranch() (string, error) {
+	out, err := r.run("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+	if err != nil {
+		return "", nil // No tracking branch is not an error
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// AheadBehind returns how many commits the current branch is ahead/behind its upstream.
+func (r *Repository) AheadBehind() (ahead, behind int, err error) {
+	out, err := r.run("rev-list", "--left-right", "--count", "HEAD...@{u}")
+	if err != nil {
+		return 0, 0, nil // No upstream is not an error
+	}
+	parts := strings.Fields(strings.TrimSpace(out))
+	if len(parts) == 2 {
+		fmt.Sscanf(parts[0], "%d", &ahead)
+		fmt.Sscanf(parts[1], "%d", &behind)
+	}
+	return ahead, behind, nil
+}
