@@ -80,6 +80,12 @@ func (t Theme) BranchRemote() lipgloss.Color { return t.Mauve }
 // Focused returns the color for focused elements.
 func (t Theme) Focused() lipgloss.Color { return t.Blue }
 
+// TagColor returns the color for tags.
+func (t Theme) TagColor() lipgloss.Color { return t.Yellow }
+
+// HeadColor returns the color for HEAD indicator.
+func (t Theme) HeadColor() lipgloss.Color { return t.Sky }
+
 // Dimmed returns the color for dimmed/inactive elements.
 func (t Theme) Dimmed() lipgloss.Color { return t.Surface2 }
 

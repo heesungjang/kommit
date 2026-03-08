@@ -342,6 +342,35 @@ func NewStashKeys() StashKeys {
 }
 
 // ---------------------------------------------------------------------------
+// Remote operations keybindings – always active globally
+// ---------------------------------------------------------------------------
+
+// RemoteOpsKeys defines keybindings for push/pull/fetch that work from any page.
+type RemoteOpsKeys struct {
+	Push  key.Binding
+	Pull  key.Binding
+	Fetch key.Binding
+}
+
+// NewRemoteOpsKeys returns populated remote operation keybindings.
+func NewRemoteOpsKeys() RemoteOpsKeys {
+	return RemoteOpsKeys{
+		Push: key.NewBinding(
+			key.WithKeys("p"),
+			key.WithHelp("p", "push"),
+		),
+		Pull: key.NewBinding(
+			key.WithKeys("P"),
+			key.WithHelp("P", "pull"),
+		),
+		Fetch: key.NewBinding(
+			key.WithKeys("f"),
+			key.WithHelp("f", "fetch"),
+		),
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Pull request page keybindings
 // ---------------------------------------------------------------------------
 

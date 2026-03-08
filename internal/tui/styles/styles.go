@@ -1,6 +1,8 @@
 package styles
 
 import (
+	"strings"
+
 	"github.com/charmbracelet/lipgloss"
 	"github.com/nicholascross/opengit/internal/tui/theme"
 )
@@ -170,5 +172,133 @@ func DiffLineStyle(lineType byte) lipgloss.Style {
 		return lipgloss.NewStyle().Foreground(t.DiffHunkHeader()).Background(t.Base).Bold(true)
 	default:
 		return lipgloss.NewStyle().Foreground(t.DiffContext()).Background(t.Base)
+	}
+}
+
+// RefType classifies a git decoration string.
+type RefType int
+
+const (
+	RefLocalBranch RefType = iota
+	RefRemoteBranch
+	RefTag
+	RefHead
+)
+
+// ParsedRef holds a classified ref name and its display text.
+type ParsedRef struct {
+	Type    RefType
+	Display string
+}
+
+// ParseRef classifies a raw git decoration string (e.g. "HEAD -> main",
+// "origin/main", "tag: v1.0") and returns a ParsedRef.
+func ParseRef(raw string) ParsedRef {
+	raw = strings.TrimSpace(raw)
+	switch {
+	case strings.HasPrefix(raw, "HEAD -> "):
+		branch := strings.TrimPrefix(raw, "HEAD -> ")
+		return ParsedRef{Type: RefLocalBranch, Display: branch}
+	case raw == "HEAD":
+		return ParsedRef{Type: RefHead, Display: "HEAD"}
+	case strings.HasPrefix(raw, "tag: "):
+		tag := strings.TrimPrefix(raw, "tag: ")
+		return ParsedRef{Type: RefTag, Display: tag}
+	case strings.Contains(raw, "/"):
+		// remote branch like origin/main
+		return ParsedRef{Type: RefRemoteBranch, Display: raw}
+	default:
+		return ParsedRef{Type: RefLocalBranch, Display: raw}
+	}
+}
+
+// RefBadgeColor returns the foreground color for a given ref type.
+func RefBadgeColor(rt RefType) lipgloss.Color {
+	t := theme.Active
+	switch rt {
+	case RefLocalBranch:
+		return t.BranchCurrent()
+	case RefRemoteBranch:
+		return t.BranchRemote()
+	case RefTag:
+		return t.TagColor()
+	case RefHead:
+		return t.HeadColor()
+	default:
+		return t.Text
+	}
+}
+
+// RenderRefBadge renders a single ref as colored bracketed text "[refname]".
+func RenderRefBadge(ref ParsedRef, bg lipgloss.Color) string {
+	fg := RefBadgeColor(ref.Type)
+	return lipgloss.NewStyle().
+		Foreground(fg).
+		Background(bg).
+		Render("[" + ref.Display + "]")
+}
+
+// RenderRefBadges parses and renders all refs as space-separated colored badges.
+// Returns empty string if refs is empty.
+func RenderRefBadges(refs []string, bg lipgloss.Color) string {
+	if len(refs) == 0 {
+		return ""
+	}
+	var parts []string
+	for _, r := range refs {
+		parsed := ParseRef(r)
+		parts = append(parts, RenderRefBadge(parsed, bg))
+	}
+	sp := lipgloss.NewStyle().Background(bg).Render(" ")
+	return strings.Join(parts, sp)
+}
+
+// GraphColors returns a palette of colors for graph branch tracks.
+// Colors cycle based on column index.
+func GraphColor(column int) lipgloss.Color {
+	t := theme.Active
+	palette := []lipgloss.Color{
+		t.Green,
+		t.Blue,
+		t.Mauve,
+		t.Peach,
+		t.Teal,
+		t.Pink,
+		t.Yellow,
+		t.Lavender,
+	}
+	return palette[column%len(palette)]
+}
+
+// FileListIcon returns a status icon character for a DiffFile status string.
+func FileListIcon(status string) string {
+	switch status {
+	case "added":
+		return "A"
+	case "deleted":
+		return "D"
+	case "modified":
+		return "M"
+	case "renamed":
+		return "R"
+	default:
+		return "?"
+	}
+}
+
+// FileListColor returns the color for a DiffFile status string.
+func FileListColor(status string) lipgloss.Color {
+	t := theme.Active
+	switch status {
+	case "added":
+		return t.StatusAdded()
+	case "deleted":
+		return t.StatusDeleted()
+	case "modified":
+		return t.StatusModified()
+	case "renamed":
+		return t.StatusRenamed()
+	default:
+		return t.Text
 	}
 }

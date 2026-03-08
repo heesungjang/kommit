@@ -133,6 +133,17 @@ func (r *Repository) TrackingBranch() (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
+// StatusFingerprint returns a lightweight fingerprint of the working tree state.
+// It runs `git status --porcelain=v2` and returns the raw output, which can be
+// compared against a previous value to detect changes without parsing.
+func (r *Repository) StatusFingerprint() string {
+	out, err := r.run("status", "--porcelain=v2", "--branch")
+	if err != nil {
+		return ""
+	}
+	return out
+}
+
 // AheadBehind returns how many commits the current branch is ahead/behind its upstream.
 func (r *Repository) AheadBehind() (ahead, behind int, err error) {
 	out, err := r.run("rev-list", "--left-right", "--count", "HEAD...@{u}")

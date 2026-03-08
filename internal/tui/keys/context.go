@@ -22,7 +22,7 @@ const (
 
 // ActiveContext tracks the currently active keybinding context.
 // It is updated whenever the user switches pages or opens a dialog.
-var ActiveContext = ContextStatus
+var ActiveContext = ContextLog
 
 // ---------------------------------------------------------------------------
 // Singleton key sets – initialised once, reused everywhere
@@ -36,6 +36,7 @@ var (
 	Diff       = NewDiffKeys()
 	Stash      = NewStashKeys()
 	PR         = NewPRKeys()
+	RemoteOps  = NewRemoteOpsKeys()
 )
 
 // ---------------------------------------------------------------------------
@@ -59,7 +60,7 @@ func ShortHelp(ctx Context) []key.Binding {
 			Status.Stage,
 			Status.Unstage,
 			Status.Commit,
-			Status.Push,
+			RemoteOps.Push,
 			Status.AICommit,
 		}, common...)
 
@@ -105,9 +106,9 @@ func ShortHelp(ctx Context) []key.Binding {
 		return append([]key.Binding{
 			Navigation.Up,
 			Navigation.Down,
-			Status.Fetch,
-			Status.Push,
-			Status.Pull,
+			RemoteOps.Fetch,
+			RemoteOps.Push,
+			RemoteOps.Pull,
 		}, common...)
 
 	case ContextPR:
@@ -195,7 +196,13 @@ func FullHelp(ctx Context) [][]key.Binding {
 		Navigation.Select,
 	}
 
-	base := [][]key.Binding{globalGroup, tabGroup, panelGroup, navGroup}
+	remoteGroup := []key.Binding{
+		RemoteOps.Push,
+		RemoteOps.Pull,
+		RemoteOps.Fetch,
+	}
+
+	base := [][]key.Binding{globalGroup, tabGroup, panelGroup, navGroup, remoteGroup}
 
 	switch ctx {
 	case ContextStatus:
@@ -206,9 +213,6 @@ func FullHelp(ctx Context) [][]key.Binding {
 			Status.StageHunk,
 			Status.Commit,
 			Status.CommitAmend,
-			Status.Push,
-			Status.Pull,
-			Status.Fetch,
 			Status.Discard,
 			Status.AICommit,
 			Status.Undo,
@@ -243,9 +247,6 @@ func FullHelp(ctx Context) [][]key.Binding {
 
 	case ContextRemotes:
 		return append(base, []key.Binding{
-			Status.Push,
-			Status.Pull,
-			Status.Fetch,
 			Status.Refresh,
 		})
 
