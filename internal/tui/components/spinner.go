@@ -7,6 +7,7 @@ import (
 	"github.com/nicholascross/opengit/internal/tui/theme"
 )
 
+//testing github.com/charmbracelet/bubbles/spinner
 // Spinner is a simple loading spinner wrapper around bubbles spinner.
 type Spinner struct {
 	spinner spinner.Model

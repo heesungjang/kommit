@@ -2,6 +2,7 @@ package pages
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
@@ -533,7 +534,7 @@ func (s Sidebar) View(focused bool) string {
 	}
 
 	// Viewport windowing
-	visibleCount := ph - 1 // reserve 1 line for hints
+	visibleCount := ph - 3 // reserve 1 line for title, 1 for title gap, 1 for hints
 	if visibleCount < 1 {
 		visibleCount = 1
 	}
@@ -630,14 +631,21 @@ func (s Sidebar) View(focused bool) string {
 
 	content := lipgloss.JoinVertical(lipgloss.Left, lines...)
 
+	// Title with panel shortcut indicator
+	titleStr := styles.PanelTitle("Sidebar", "1", focused, iw)
+
 	// Key hints at bottom
 	hints := styles.KeyHintStyle().Background(t.Base).Width(iw).Render(
 		"enter:act  n:new  D:del  R:ren",
 	)
 
-	return styles.PanelStyle(focused).Width(s.width).Height(ph).Render(
-		lipgloss.JoinVertical(lipgloss.Left, content, hints),
-	)
+	titleGap := lipgloss.NewStyle().Background(t.Base).Width(iw).Render("")
+	full := lipgloss.JoinVertical(lipgloss.Left, titleStr, titleGap, content, hints)
+	// Clip to panel height so sidebar stays the same outer height as other panels.
+	if cl := strings.Split(full, "\n"); len(cl) > ph {
+		full = strings.Join(cl[:ph], "\n")
+	}
+	return styles.PanelStyle(focused).Width(s.width).Height(ph).Render(full)
 }
 
 // Dimensions returns the current width/height.

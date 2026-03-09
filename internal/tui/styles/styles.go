@@ -49,6 +49,47 @@ func TitleStyle(focused bool) lipgloss.Style {
 		Padding(0, 1)
 }
 
+// PanelTitle renders a panel title with a right-aligned shortcut key indicator.
+// The shortcutKey is shown as e.g. "[1]" in the top-right area of the title.
+func PanelTitle(label string, shortcutKey string, focused bool, width int) string {
+	t := theme.Active
+	fg := t.Subtext0
+	if focused {
+		fg = t.Blue
+	}
+
+	keyTag := "[" + shortcutKey + "]"
+	keyStyle := lipgloss.NewStyle().Foreground(t.Overlay0).Background(t.Base)
+
+	titleStyle := lipgloss.NewStyle().
+		Foreground(fg).
+		Background(t.Base).
+		Bold(true)
+
+	// Compute available space: width minus key tag length minus 1 space gap
+	labelWidth := width - len(keyTag) - 1
+	if labelWidth < 4 {
+		// Not enough room for key tag; just render the title
+		return titleStyle.Width(width).Render(label)
+	}
+
+	// Truncate label so it never wraps to a second line (which would
+	// leave a transparent gap next to the key tag).
+	if len(label) > labelWidth {
+		if labelWidth > 1 {
+			label = label[:labelWidth-1] + "…"
+		} else {
+			label = label[:labelWidth]
+		}
+	}
+
+	leftPart := titleStyle.Width(labelWidth).Render(label)
+	rightPart := keyStyle.Render(keyTag)
+	gap := lipgloss.NewStyle().Background(t.Base).Render(" ")
+
+	return lipgloss.JoinHorizontal(lipgloss.Top, leftPart, gap, rightPart)
+}
+
 // SelectedStyle returns the style for selected list items.
 func SelectedStyle() lipgloss.Style {
 	t := theme.Active
@@ -160,19 +201,64 @@ func FileStatusColor(code byte) lipgloss.Color {
 	}
 }
 
-// DiffLineStyle returns the style for a diff line.
+// DiffLineStyle returns the style for a diff line based on its leading character.
 func DiffLineStyle(lineType byte) lipgloss.Style {
 	t := theme.Active
 	switch lineType {
 	case '+':
-		return lipgloss.NewStyle().Foreground(t.DiffAdded()).Background(t.Base)
+		return lipgloss.NewStyle().Foreground(t.DiffAdded()).Background(t.DiffAddedBg())
 	case '-':
-		return lipgloss.NewStyle().Foreground(t.DiffRemoved()).Background(t.Base)
+		return lipgloss.NewStyle().Foreground(t.DiffRemoved()).Background(t.DiffRemovedBg())
 	case '@':
-		return lipgloss.NewStyle().Foreground(t.DiffHunkHeader()).Background(t.Base).Bold(true)
+		return lipgloss.NewStyle().Foreground(t.DiffHunkHeader()).Background(t.DiffHunkBg()).Bold(true)
 	default:
 		return lipgloss.NewStyle().Foreground(t.DiffContext()).Background(t.Base)
 	}
+}
+
+// DiffFileHeaderStyle returns the style for diff file header lines
+// (diff --git, ---, +++).
+func DiffFileHeaderStyle() lipgloss.Style {
+	t := theme.Active
+	return lipgloss.NewStyle().Foreground(t.Text).Background(t.Base).Bold(true)
+}
+
+// DiffMetaStyle returns the style for diff metadata lines (index, similarity, etc.).
+func DiffMetaStyle() lipgloss.Style {
+	t := theme.Active
+	return lipgloss.NewStyle().Foreground(t.Overlay0).Background(t.Base)
+}
+
+// DiffLineNumStyle returns the style for line numbers in the diff gutter.
+func DiffLineNumStyle(lineType byte) lipgloss.Style {
+	t := theme.Active
+	switch lineType {
+	case '+':
+		return lipgloss.NewStyle().Foreground(t.DiffAdded()).Background(t.DiffAddedBg())
+	case '-':
+		return lipgloss.NewStyle().Foreground(t.DiffRemoved()).Background(t.DiffRemovedBg())
+	case '@':
+		return lipgloss.NewStyle().Foreground(t.DiffLineNum()).Background(t.DiffHunkBg())
+	default:
+		return lipgloss.NewStyle().Foreground(t.DiffLineNum()).Background(t.Base)
+	}
+}
+
+// DiffGutterSepStyle returns the style for the gutter separator character.
+func DiffGutterSepStyle(lineType byte) lipgloss.Style {
+	t := theme.Active
+	var bg lipgloss.Color
+	switch lineType {
+	case '+':
+		bg = t.DiffAddedBg()
+	case '-':
+		bg = t.DiffRemovedBg()
+	case '@':
+		bg = t.DiffHunkBg()
+	default:
+		bg = t.Base
+	}
+	return lipgloss.NewStyle().Foreground(t.DiffLineNumSep()).Background(bg)
 }
 
 // RefType classifies a git decoration string.

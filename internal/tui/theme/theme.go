@@ -34,6 +34,11 @@ type Theme struct {
 	Flamingo  lipgloss.Color
 	Rosewater lipgloss.Color
 	Sapphire  lipgloss.Color
+
+	// Diff background colors (accent blended with base at ~20%)
+	DiffAddedLineBg   lipgloss.Color // green-tinted bg for + lines
+	DiffRemovedLineBg lipgloss.Color // red-tinted bg for - lines
+	DiffHunkHeaderBg  lipgloss.Color // bg for @@ hunk header lines
 }
 
 // Semantic color accessors for git-specific use cases.
@@ -49,6 +54,21 @@ func (t Theme) DiffContext() lipgloss.Color { return t.Subtext0 }
 
 // DiffHunkHeader returns the color for hunk headers.
 func (t Theme) DiffHunkHeader() lipgloss.Color { return t.Blue }
+
+// DiffAddedBg returns the background color for added (+) lines.
+func (t Theme) DiffAddedBg() lipgloss.Color { return t.DiffAddedLineBg }
+
+// DiffRemovedBg returns the background color for removed (-) lines.
+func (t Theme) DiffRemovedBg() lipgloss.Color { return t.DiffRemovedLineBg }
+
+// DiffHunkBg returns the background color for hunk header (@@ ) lines.
+func (t Theme) DiffHunkBg() lipgloss.Color { return t.DiffHunkHeaderBg }
+
+// DiffLineNum returns the color for diff line numbers (context lines).
+func (t Theme) DiffLineNum() lipgloss.Color { return t.Overlay0 }
+
+// DiffLineNumSep returns the color for the line number gutter separator.
+func (t Theme) DiffLineNumSep() lipgloss.Color { return t.Overlay0 }
 
 // StatusModified returns the color for modified files.
 func (t Theme) StatusModified() lipgloss.Color { return t.Yellow }

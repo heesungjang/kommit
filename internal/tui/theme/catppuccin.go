@@ -31,6 +31,10 @@ func CatppuccinMocha() Theme {
 		Flamingo:  lipgloss.Color("#f2cdcd"),
 		Rosewater: lipgloss.Color("#f5e0dc"),
 		Sapphire:  lipgloss.Color("#74c7ec"),
+		// Diff backgrounds: 20% accent blended with base #1e1e2e
+		DiffAddedLineBg:   lipgloss.Color("#394545"), // 20% green
+		DiffRemovedLineBg: lipgloss.Color("#493447"), // 20% red
+		DiffHunkHeaderBg:  lipgloss.Color("#313244"), // Surface0
 	}
 }
 
@@ -63,6 +67,10 @@ func CatppuccinLatte() Theme {
 		Flamingo:  lipgloss.Color("#dd7878"),
 		Rosewater: lipgloss.Color("#dc8a78"),
 		Sapphire:  lipgloss.Color("#209fb5"),
+		// Diff backgrounds: 20% accent blended with base #eff1f5
+		DiffAddedLineBg:   lipgloss.Color("#d8ead7"), // 20% green
+		DiffRemovedLineBg: lipgloss.Color("#ead4d8"), // 20% red
+		DiffHunkHeaderBg:  lipgloss.Color("#ccd0da"), // Surface0
 	}
 }
 
@@ -95,6 +103,10 @@ func CatppuccinMacchiato() Theme {
 		Flamingo:  lipgloss.Color("#f0c6c6"),
 		Rosewater: lipgloss.Color("#f4dbd6"),
 		Sapphire:  lipgloss.Color("#7dc4e4"),
+		// Diff backgrounds: 20% accent blended with base #24273a
+		DiffAddedLineBg:   lipgloss.Color("#3e4b4b"), // 20% green
+		DiffRemovedLineBg: lipgloss.Color("#4e3a4d"), // 20% red
+		DiffHunkHeaderBg:  lipgloss.Color("#363a4f"), // Surface0
 	}
 }
 

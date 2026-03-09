@@ -335,14 +335,22 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, cmd
 		}
 
-		// Global shortcuts.
-		switch {
-		case key.Matches(msg, a.keys.Quit):
-			return a, tea.Quit
-		case key.Matches(msg, a.keys.Help):
-			ctx := keys.ActiveContext
-			return a, func() tea.Msg {
-				return showDialogMsg{model: dialog.NewHelp(ctx, a.width, a.height)}
+		// Skip global shortcuts when an inline editor is active (e.g., commit message).
+		editing := false
+		if lp, ok := a.mainView.(interface{ IsEditing() bool }); ok {
+			editing = lp.IsEditing()
+		}
+
+		if !editing {
+			// Global shortcuts.
+			switch {
+			case key.Matches(msg, a.keys.Quit):
+				return a, tea.Quit
+			case key.Matches(msg, a.keys.Help):
+				ctx := keys.ActiveContext
+				return a, func() tea.Msg {
+					return showDialogMsg{model: dialog.NewHelp(ctx, a.width, a.height)}
+				}
 			}
 		}
 

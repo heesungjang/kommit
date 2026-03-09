@@ -2,9 +2,13 @@ package pages
 
 import (
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/textarea"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -39,17 +43,21 @@ type wipDetailMsg struct {
 	err      error
 }
 
-// wipDiffMsg carries the diff for a single WIP file (loaded on-demand).
-type wipDiffMsg struct {
-	path   string
-	staged bool
-	diff   string
-	err    error
+// centerDiffMsg carries a loaded diff to display in the center panel.
+type centerDiffMsg struct {
+	path string
+	diff string
+	err  error
 }
 
 // wipStageResultMsg is sent after a stage/unstage/discard operation completes.
 type wipStageResultMsg struct {
 	err error
+}
+
+// amendPrefillMsg carries the previous commit message for amend mode prefill.
+type amendPrefillMsg struct {
+	message string
 }
 
 // ---------------------------------------------------------------------------
@@ -81,6 +89,7 @@ type wipPanelFocus int
 const (
 	wipFocusUnstaged wipPanelFocus = iota
 	wipFocusStaged
+	wipFocusCommit
 )
 
 // ---------------------------------------------------------------------------
@@ -95,16 +104,16 @@ type LogPage struct {
 	// Left sidebar (branches, remotes, tags, stash)
 	sidebar Sidebar
 
-	commits   []git.CommitInfo
-	cursor    int
-	hasWIP    bool           // true when uncommitted changes exist; commits[0] is synthetic
-	graphRows []git.GraphRow // parallel to commits; one GraphRow per commit
+	commits      []git.CommitInfo
+	cursor       int
+	hasWIP       bool           // true when uncommitted changes exist; commits[0] is synthetic
+	graphRows    []git.GraphRow // parallel to commits; one GraphRow per commit
+	graphScrollX int            // horizontal scroll offset for graph column
 
 	// Detail view — structured file list (for commits)
 	detailCommit     *git.CommitInfo
 	detailFiles      []git.DiffFile
 	detailFileCursor int
-	detailScroll     int // scroll within the currently viewed file's diff
 
 	// WIP staging area — interactive when WIP row is selected
 	wipUnstaged       []git.FileStatus
@@ -112,18 +121,30 @@ type LogPage struct {
 	wipUnstagedCursor int
 	wipStagedCursor   int
 	wipFocus          wipPanelFocus // which sub-panel is focused within the WIP detail
-	wipDiffContent    string        // diff for the currently selected WIP file
-	wipDiffPath       string
-	wipDiffScroll     int
+
+	// Inline commit message area (GitKraken-style, always visible in WIP)
+	commitSummary textinput.Model // single-line commit title/summary
+	commitDesc    textarea.Model  // multi-line commit description/body
+	commitField   int             // 0 = summary focused, 1 = description focused
+	commitAmend   bool            // true when in amend mode
+	commitEditing bool            // true when actively typing in commit input (Enter to start, Esc to stop)
 
 	// Pending discard in WIP context
 	wipPendingDiscardPath      string
 	wipPendingDiscardUntracked bool
 
-	// Stash diff display — shown in right panel when viewing a stash entry
+	// Stash diff display
 	viewingStash     bool
 	stashDiffIndex   int
 	stashDiffContent string
+
+	// Center diff mode — when a file is selected in the right panel,
+	// the center panel shows that file's diff instead of the graph.
+	centerDiffMode    bool
+	centerDiffLines   []string // pre-split diff lines for center panel
+	centerDiffPath    string   // file path shown in diff header
+	centerDiffScroll  int      // vertical scroll offset in center diff
+	centerDiffScrollX int      // horizontal scroll offset in center diff (characters)
 
 	// Focus
 	focus logFocus
@@ -144,41 +165,136 @@ type LogPage struct {
 
 // sidebarWidth computes the width for the sidebar panel.
 func (l LogPage) sidebarWidth() int {
-	// ~18% of total width, minimum 20, maximum 30
-	w := l.width * 18 / 100
-	if w < 20 {
-		w = 20
+	// ~15% of total width, minimum 18, maximum 26
+	w := l.width * 15 / 100
+	if w < 18 {
+		w = 18
 	}
-	if w > 30 {
-		w = 30
+	if w > 26 {
+		w = 26
 	}
 	return w
 }
 
-// NewLogPage creates a new log page (the main unified view).
-func NewLogPage(repo *git.Repository, width, height int) LogPage {
-	sbw := width * 18 / 100
-	if sbw < 20 {
-		sbw = 20
+// maxGraphWidth returns the maximum number of graph cells across all commits.
+func (l LogPage) maxGraphWidth() int {
+	w := 0
+	for _, gr := range l.graphRows {
+		if len(gr.Cells) > w {
+			w = len(gr.Cells)
+		}
 	}
-	if sbw > 30 {
-		sbw = 30
+	return w
+}
+
+// graphViewportCols returns how many graph cell columns fit in the current
+// layout (i.e. graphColWidth - 1 for the trailing separator space).
+func (l LogPage) graphViewportCols() int {
+	bw := styles.PanelBorderWidth
+	sidebarW := l.sidebarWidth()
+	remaining := l.width - sidebarW - 3*bw
+	centerWidth := remaining * 70 / 100
+	if centerWidth < 30 {
+		centerWidth = 30
+	}
+	if centerWidth > remaining-20 {
+		centerWidth = remaining - 20
+	}
+	if centerWidth < 10 {
+		centerWidth = 10
+	}
+	innerWidth := centerWidth - styles.PanelPaddingWidth
+
+	graphWidth := l.maxGraphWidth()
+	graphColWidth := 0
+	if graphWidth > 0 {
+		graphColWidth = graphWidth + 1
+	}
+	maxGraph := innerWidth * 30 / 100
+	if maxGraph > 40 {
+		maxGraph = 40
+	}
+	if maxGraph < 10 {
+		maxGraph = 10
+	}
+	if graphColWidth > maxGraph {
+		graphColWidth = maxGraph
+	}
+	if graphColWidth <= 1 {
+		return 0
+	}
+	return graphColWidth - 1
+}
+
+// NewLogPage creates a new log page (the main unified view).
+// newCommitSummary creates a fresh single-line text input for the commit title.
+func newCommitSummary() textinput.Model {
+	t := theme.Active
+	ti := textinput.New()
+	ti.Placeholder = "Summary (required)"
+	ti.CharLimit = 72
+	ti.Prompt = ""
+	ti.TextStyle = lipgloss.NewStyle().Foreground(t.Text).Background(t.Surface0)
+	ti.PlaceholderStyle = lipgloss.NewStyle().Foreground(t.Overlay0).Background(t.Surface0)
+	ti.Cursor.Style = lipgloss.NewStyle().Background(t.Surface0)
+	return ti
+}
+
+// newCommitDesc creates a fresh multi-line textarea for the commit description.
+func newCommitDesc() textarea.Model {
+	t := theme.Active
+	ta := textarea.New()
+	ta.Placeholder = "Description (optional)"
+	ta.CharLimit = 0 // unlimited
+	ta.SetHeight(3)
+	ta.ShowLineNumbers = false
+	ta.Prompt = ""
+	ta.FocusedStyle.Base = lipgloss.NewStyle().Background(t.Surface0)
+	ta.FocusedStyle.Text = lipgloss.NewStyle().Foreground(t.Text).Background(t.Surface0)
+	ta.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(t.Overlay0).Background(t.Surface0)
+	ta.FocusedStyle.CursorLine = lipgloss.NewStyle().Background(t.Surface0)
+	ta.BlurredStyle.Base = lipgloss.NewStyle().Background(t.Surface0)
+	ta.BlurredStyle.Text = lipgloss.NewStyle().Foreground(t.Text).Background(t.Surface0)
+	ta.BlurredStyle.Placeholder = lipgloss.NewStyle().Foreground(t.Overlay0).Background(t.Surface0)
+	ta.BlurredStyle.CursorLine = lipgloss.NewStyle().Background(t.Surface0)
+	// Re-establish style pointer after modifying BlurredStyle/FocusedStyle.
+	// textarea.New() sets m.style to a stale pointer; Blur() re-points it
+	// to &m.BlurredStyle so our style overrides actually take effect.
+	ta.Blur()
+	return ta
+}
+
+func NewLogPage(repo *git.Repository, width, height int) LogPage {
+	sbw := width * 15 / 100
+	if sbw < 18 {
+		sbw = 18
+	}
+	if sbw > 26 {
+		sbw = 26
 	}
 	return LogPage{
-		repo:       repo,
-		sidebar:    NewSidebar(repo, sbw, height),
-		navKeys:    keys.NewNavigationKeys(),
-		statusKeys: keys.NewStatusKeys(),
-		remoteKeys: keys.NewRemoteOpsKeys(),
-		width:      width,
-		height:     height,
-		loading:    true,
+		repo:          repo,
+		sidebar:       NewSidebar(repo, sbw, height),
+		commitSummary: newCommitSummary(),
+		commitDesc:    newCommitDesc(),
+		navKeys:       keys.NewNavigationKeys(),
+		statusKeys:    keys.NewStatusKeys(),
+		remoteKeys:    keys.NewRemoteOpsKeys(),
+		width:         width,
+		height:        height,
+		loading:       true,
 	}
 }
 
 // isWIPSelected returns true when the cursor is on the synthetic WIP row.
 func (l LogPage) isWIPSelected() bool {
 	return l.hasWIP && l.cursor == 0
+}
+
+// IsEditing returns true when actively typing in a commit input field.
+// Used by the app shell to suppress global shortcuts like q=quit.
+func (l LogPage) IsEditing() bool {
+	return l.commitEditing
 }
 
 // Init loads the commit log and sidebar data.
@@ -207,6 +323,7 @@ func (l LogPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		l.commits = msg.commits
 		l.graphRows = msg.graphRows
 		l.hasWIP = msg.hasWIP
+		l.graphScrollX = 0 // reset horizontal scroll on reload
 
 		// Clamp cursor to valid range after reload.
 		if l.cursor >= len(l.commits) {
@@ -221,9 +338,15 @@ func (l LogPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if prevHadWIP && !l.hasWIP {
 			l.wipUnstaged = nil
 			l.wipStaged = nil
-			l.wipDiffContent = ""
-			l.wipDiffPath = ""
+			l.centerDiffMode = false
+			l.centerDiffLines = nil
+			l.centerDiffPath = ""
 			l.focus = focusLogList
+			// Reset inline commit area
+			l.commitSummary = newCommitSummary()
+			l.commitDesc = newCommitDesc()
+			l.commitAmend = false
+			l.commitField = 0
 		}
 
 		if l.hasWIP {
@@ -256,9 +379,11 @@ func (l LogPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if l.wipStagedCursor < 0 {
 			l.wipStagedCursor = 0
 		}
-		l.wipDiffScroll = 0
-		l.wipDiffContent = ""
-		l.wipDiffPath = ""
+		l.centerDiffScroll = 0
+		l.centerDiffScrollX = 0
+		l.centerDiffLines = nil
+		l.centerDiffPath = ""
+		l.centerDiffMode = false
 
 		// Auto-redirect focus when current panel becomes empty.
 		switch l.wipFocus {
@@ -282,14 +407,16 @@ func (l LogPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			})
 		}
 
-		return l, tea.Batch(l.loadWIPSelectedDiff(), func() tea.Msg {
+		return l, func() tea.Msg {
 			return StatusDirtyMsg{Dirty: dirty}
-		})
+		}
 
-	case wipDiffMsg:
-		l.wipDiffContent = msg.diff
-		l.wipDiffPath = msg.path
-		l.wipDiffScroll = 0
+	case centerDiffMsg:
+		l.centerDiffPath = msg.path
+		l.centerDiffLines = strings.Split(msg.diff, "\n")
+		l.centerDiffScroll = 0
+		l.centerDiffScrollX = 0
+		l.centerDiffMode = true
 		return l, nil
 
 	case wipStageResultMsg:
@@ -309,7 +436,11 @@ func (l LogPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		l.detailFileCursor = 0
-		l.detailScroll = 0
+		l.centerDiffMode = false
+		l.centerDiffScroll = 0
+		l.centerDiffScrollX = 0
+		l.centerDiffLines = nil
+		l.centerDiffPath = ""
 		return l, nil
 
 	// Handle confirm dialog results — route to WIP panel or sidebar.
@@ -367,13 +498,33 @@ func (l LogPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return l, l.loadStashDiff(msg.Index)
 
 	case stashDiffMsg:
+		l.stashDiffIndex = msg.index
+		l.centerDiffScroll = 0
+		l.centerDiffScrollX = 0
 		if msg.err != nil {
 			l.stashDiffContent = "Error loading stash diff: " + msg.err.Error()
+			l.centerDiffMode = false
+			l.centerDiffLines = nil
+			l.centerDiffPath = ""
 		} else {
 			l.stashDiffContent = msg.diff
+			l.centerDiffLines = strings.Split(msg.diff, "\n")
+			l.centerDiffPath = fmt.Sprintf("stash@{%d}", msg.index)
+			l.centerDiffMode = true
 		}
-		l.stashDiffIndex = msg.index
-		l.detailScroll = 0
+		return l, nil
+
+	case amendPrefillMsg:
+		l.commitAmend = true
+		// Split message into summary (first line) and description (rest)
+		summary, desc := splitCommitMessage(msg.message)
+		l.commitSummary.SetValue(summary)
+		l.commitDesc.SetValue(desc)
+		l.wipFocus = wipFocusCommit
+		l.commitField = 0
+		l.commitEditing = true
+		l.commitSummary.Focus()
+		l.commitDesc.Blur()
 		return l, nil
 
 	case RefreshStatusMsg:
@@ -387,6 +538,18 @@ func (l LogPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return l.handleKey(msg)
 	}
 
+	// When the commit area is focused, forward non-key messages (blink, etc.)
+	// to the active input field.
+	if l.isWIPSelected() && l.focus == focusLogDetail && l.wipFocus == wipFocusCommit {
+		var cmd tea.Cmd
+		if l.commitField == 0 {
+			l.commitSummary, cmd = l.commitSummary.Update(msg)
+		} else {
+			l.commitDesc, cmd = l.commitDesc.Update(msg)
+		}
+		return l, cmd
+	}
+
 	return l, nil
 }
 
@@ -395,6 +558,12 @@ func (l LogPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // ---------------------------------------------------------------------------
 
 func (l LogPage) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// When commit message editor is active, route ALL keys directly to it.
+	// This prevents q/p/1/2/3/etc. from triggering global actions while typing.
+	if l.IsEditing() {
+		return l.handleWIPCommitKeys(msg)
+	}
+
 	isTab := key.Matches(msg, key.NewBinding(key.WithKeys("tab")))
 	isShiftTab := key.Matches(msg, key.NewBinding(key.WithKeys("shift+tab")))
 
@@ -428,16 +597,37 @@ func (l LogPage) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			case focusSidebar:
 				l.focus = focusLogDetail
 				if l.isWIPSelected() {
-					if len(l.wipStaged) > 0 {
-						l.wipFocus = wipFocusStaged
-					} else {
-						l.wipFocus = wipFocusUnstaged
-					}
+					// Land on the commit area (last sub-panel in cycle)
+					// Selected but not editing — user can press Enter to start typing
+					l.wipFocus = wipFocusCommit
+					l.commitSummary.Blur()
+					l.commitDesc.Blur()
+					l.commitEditing = false
 				}
 			case focusLogList:
 				l.focus = focusSidebar
 			case focusLogDetail:
 				l.focus = focusLogList
+			}
+		}
+		return l, nil
+	}
+
+	// Direct panel focus keys: 1 = sidebar, 2 = center, 3 = right
+	switch {
+	case key.Matches(msg, key.NewBinding(key.WithKeys("1"))):
+		l.focus = focusSidebar
+		return l, nil
+	case key.Matches(msg, key.NewBinding(key.WithKeys("2"))):
+		l.focus = focusLogList
+		return l, nil
+	case key.Matches(msg, key.NewBinding(key.WithKeys("3"))):
+		l.focus = focusLogDetail
+		if l.isWIPSelected() {
+			if len(l.wipUnstaged) == 0 && len(l.wipStaged) > 0 {
+				l.wipFocus = wipFocusStaged
+			} else {
+				l.wipFocus = wipFocusUnstaged
 			}
 		}
 		return l, nil
@@ -490,6 +680,63 @@ func (l LogPage) loadDetailForCursor() tea.Cmd {
 }
 
 func (l LogPage) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// When center is showing a diff, j/k scroll the diff and Esc exits.
+	if l.centerDiffMode {
+		maxScroll := len(l.centerDiffLines) - 10
+		if maxScroll < 0 {
+			maxScroll = 0
+		}
+		switch {
+		case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
+			l.centerDiffMode = false
+			l.centerDiffLines = nil
+			l.centerDiffPath = ""
+			l.centerDiffScroll = 0
+			l.centerDiffScrollX = 0
+			l.focus = focusLogDetail // return focus to right panel
+			return l, nil
+		case key.Matches(msg, l.navKeys.Down):
+			if l.centerDiffScroll < maxScroll {
+				l.centerDiffScroll++
+			}
+			return l, nil
+		case key.Matches(msg, l.navKeys.Up):
+			if l.centerDiffScroll > 0 {
+				l.centerDiffScroll--
+			}
+			return l, nil
+		case key.Matches(msg, l.navKeys.PageDown):
+			l.centerDiffScroll += 10
+			if l.centerDiffScroll > maxScroll {
+				l.centerDiffScroll = maxScroll
+			}
+			return l, nil
+		case key.Matches(msg, l.navKeys.PageUp):
+			l.centerDiffScroll -= 10
+			if l.centerDiffScroll < 0 {
+				l.centerDiffScroll = 0
+			}
+			return l, nil
+		case key.Matches(msg, l.navKeys.Home):
+			l.centerDiffScroll = 0
+			return l, nil
+		case key.Matches(msg, l.navKeys.End):
+			l.centerDiffScroll = maxScroll
+			return l, nil
+		case key.Matches(msg, l.navKeys.Left): // h — pan left
+			l.centerDiffScrollX -= 4
+			if l.centerDiffScrollX < 0 {
+				l.centerDiffScrollX = 0
+			}
+			return l, nil
+		case key.Matches(msg, l.navKeys.Right): // l — pan right
+			l.centerDiffScrollX += 4
+			return l, nil
+		}
+		return l, nil
+	}
+
+	// Normal commit list navigation (graph mode).
 	switch {
 	case key.Matches(msg, l.navKeys.Down):
 		if l.cursor < len(l.commits)-1 {
@@ -526,6 +773,22 @@ func (l LogPage) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case key.Matches(msg, key.NewBinding(key.WithKeys("r"))):
 		return l, l.loadLog()
+	case key.Matches(msg, key.NewBinding(key.WithKeys("H"))):
+		// Scroll graph left
+		if l.graphScrollX > 0 {
+			l.graphScrollX--
+		}
+		return l, nil
+	case key.Matches(msg, key.NewBinding(key.WithKeys("L"))):
+		// Scroll graph right
+		maxScroll := l.maxGraphWidth() - l.graphViewportCols()
+		if maxScroll < 0 {
+			maxScroll = 0
+		}
+		if l.graphScrollX < maxScroll {
+			l.graphScrollX++
+		}
+		return l, nil
 	}
 	return l, nil
 }
@@ -535,55 +798,146 @@ func (l LogPage) handleDetailKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return l.handleWIPDetailKeys(msg)
 	}
 	switch {
+	case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
+		l.centerDiffMode = false
+		l.centerDiffLines = nil
+		l.centerDiffPath = ""
+		l.centerDiffScroll = 0
+		l.centerDiffScrollX = 0
+		return l, nil
+	case key.Matches(msg, l.navKeys.Select): // Enter — view diff for selected file
+		if len(l.detailFiles) > 0 && l.detailFileCursor < len(l.detailFiles) {
+			l.centerDiffScroll = 0
+			l.centerDiffScrollX = 0
+			return l, l.loadCenterDiff()
+		}
 	case key.Matches(msg, l.navKeys.Down):
 		if l.detailFileCursor < len(l.detailFiles)-1 {
 			l.detailFileCursor++
-			l.detailScroll = 0
 		}
 	case key.Matches(msg, l.navKeys.Up):
 		if l.detailFileCursor > 0 {
 			l.detailFileCursor--
-			l.detailScroll = 0
 		}
 	case key.Matches(msg, l.navKeys.Home):
 		l.detailFileCursor = 0
-		l.detailScroll = 0
 	case key.Matches(msg, l.navKeys.End):
 		if len(l.detailFiles) > 0 {
 			l.detailFileCursor = len(l.detailFiles) - 1
-			l.detailScroll = 0
 		}
 	case key.Matches(msg, l.navKeys.PageDown):
-		maxScroll := l.detailMaxScroll()
-		l.detailScroll += 10
-		if l.detailScroll > maxScroll {
-			l.detailScroll = maxScroll
+		if l.centerDiffMode {
+			l.centerDiffScroll += 10
+			max := len(l.centerDiffLines) - 10
+			if max < 0 {
+				max = 0
+			}
+			if l.centerDiffScroll > max {
+				l.centerDiffScroll = max
+			}
 		}
 	case key.Matches(msg, l.navKeys.PageUp):
-		l.detailScroll -= 10
-		if l.detailScroll < 0 {
-			l.detailScroll = 0
+		if l.centerDiffMode {
+			l.centerDiffScroll -= 10
+			if l.centerDiffScroll < 0 {
+				l.centerDiffScroll = 0
+			}
 		}
 	}
 	return l, nil
 }
 
 func (l LogPage) handleWIPDetailKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Tab within WIP panel cycles unstaged → staged → sidebar
+	// Tab within WIP panel cycles unstaged → staged → commit → sidebar
 	if key.Matches(msg, key.NewBinding(key.WithKeys("tab"))) {
-		if l.wipFocus == wipFocusUnstaged && len(l.wipStaged) > 0 {
-			l.wipFocus = wipFocusStaged
-		} else {
-			// Cycle to sidebar
+		switch l.wipFocus {
+		case wipFocusUnstaged:
+			if len(l.wipStaged) > 0 {
+				l.wipFocus = wipFocusStaged
+			} else {
+				l.wipFocus = wipFocusCommit
+				l.commitEditing = false
+				l.commitSummary.Blur()
+				l.commitDesc.Blur()
+			}
+		case wipFocusStaged:
+			l.wipFocus = wipFocusCommit
+			l.commitEditing = false
+			l.commitSummary.Blur()
+			l.commitDesc.Blur()
+		case wipFocusCommit:
+			l.commitEditing = false
+			l.commitSummary.Blur()
+			l.commitDesc.Blur()
+			l.focus = focusSidebar
+		default:
 			l.focus = focusSidebar
 		}
 		return l, nil
 	}
 	if key.Matches(msg, key.NewBinding(key.WithKeys("shift+tab"))) {
-		if l.wipFocus == wipFocusStaged {
+		switch l.wipFocus {
+		case wipFocusCommit:
+			l.commitEditing = false
+			l.commitSummary.Blur()
+			l.commitDesc.Blur()
+			if len(l.wipStaged) > 0 {
+				l.wipFocus = wipFocusStaged
+			} else if len(l.wipUnstaged) > 0 {
+				l.wipFocus = wipFocusUnstaged
+			} else {
+				l.focus = focusLogList
+			}
+		case wipFocusStaged:
 			l.wipFocus = wipFocusUnstaged
-		} else {
+		default:
 			l.focus = focusLogList
+		}
+		return l, nil
+	}
+
+	// Section jump shortcuts: u/s/c (available when not actively editing text)
+	if !l.commitEditing {
+		switch {
+		case key.Matches(msg, key.NewBinding(key.WithKeys("u"))):
+			l.commitSummary.Blur()
+			l.commitDesc.Blur()
+			l.commitEditing = false
+			l.wipFocus = wipFocusUnstaged
+			return l, nil
+		case key.Matches(msg, key.NewBinding(key.WithKeys("s"))):
+			l.commitSummary.Blur()
+			l.commitDesc.Blur()
+			l.commitEditing = false
+			l.wipFocus = wipFocusStaged
+			return l, nil
+		case key.Matches(msg, key.NewBinding(key.WithKeys("c"))):
+			l.wipFocus = wipFocusCommit
+			l.commitAmend = false
+			l.commitEditing = false
+			l.commitSummary.Blur()
+			l.commitDesc.Blur()
+			return l, nil
+		}
+	}
+
+	// Commit area selected but not editing — handle Enter/A to start editing
+	if l.wipFocus == wipFocusCommit && !l.commitEditing {
+		switch {
+		case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
+			// Start editing the commit summary
+			l.commitEditing = true
+			l.commitField = 0
+			l.commitSummary.Focus()
+			l.commitDesc.Blur()
+			return l, nil
+		case key.Matches(msg, l.statusKeys.CommitAmend):
+			// Start editing in amend mode
+			l.commitEditing = true
+			l.commitField = 0
+			l.commitSummary.Focus()
+			l.commitDesc.Blur()
+			return l, l.loadAmendPrefill()
 		}
 		return l, nil
 	}
@@ -593,54 +947,75 @@ func (l LogPage) handleWIPDetailKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return l.handleWIPUnstagedKeys(msg)
 	case wipFocusStaged:
 		return l.handleWIPStagedKeys(msg)
+	case wipFocusCommit:
+		return l.handleWIPCommitKeys(msg)
 	}
 	return l, nil
 }
 
 func (l LogPage) handleWIPUnstagedKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
+	case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
+		l.centerDiffMode = false
+		l.centerDiffLines = nil
+		l.centerDiffPath = ""
+		l.centerDiffScroll = 0
+		l.centerDiffScrollX = 0
+		return l, nil
+	case key.Matches(msg, l.navKeys.Select): // Enter — view diff for selected file
+		if len(l.wipUnstaged) > 0 && l.wipUnstagedCursor < len(l.wipUnstaged) {
+			l.centerDiffScroll = 0
+			l.centerDiffScrollX = 0
+			return l, l.loadCenterDiff()
+		}
 	case key.Matches(msg, l.navKeys.Down):
 		if l.wipUnstagedCursor < len(l.wipUnstaged)-1 {
 			l.wipUnstagedCursor++
-			return l, l.loadWIPSelectedDiff()
 		}
 	case key.Matches(msg, l.navKeys.Up):
 		if l.wipUnstagedCursor > 0 {
 			l.wipUnstagedCursor--
-			return l, l.loadWIPSelectedDiff()
 		}
 	case key.Matches(msg, l.navKeys.Home):
 		l.wipUnstagedCursor = 0
-		return l, l.loadWIPSelectedDiff()
 	case key.Matches(msg, l.navKeys.End):
 		if len(l.wipUnstaged) > 0 {
 			l.wipUnstagedCursor = len(l.wipUnstaged) - 1
-			return l, l.loadWIPSelectedDiff()
 		}
 	case key.Matches(msg, l.navKeys.PageDown):
-		l.wipDiffScroll += 10
-		max := l.wipMaxScroll()
-		if l.wipDiffScroll > max {
-			l.wipDiffScroll = max
+		if l.centerDiffMode {
+			l.centerDiffScroll += 10
+			max := len(l.centerDiffLines) - 10
+			if max < 0 {
+				max = 0
+			}
+			if l.centerDiffScroll > max {
+				l.centerDiffScroll = max
+			}
 		}
 		return l, nil
 	case key.Matches(msg, l.navKeys.PageUp):
-		l.wipDiffScroll -= 10
-		if l.wipDiffScroll < 0 {
-			l.wipDiffScroll = 0
+		if l.centerDiffMode {
+			l.centerDiffScroll -= 10
+			if l.centerDiffScroll < 0 {
+				l.centerDiffScroll = 0
+			}
 		}
 		return l, nil
-	case key.Matches(msg, l.statusKeys.Stage), key.Matches(msg, key.NewBinding(key.WithKeys(" "))):
-		// Stage the selected file
+	case key.Matches(msg, key.NewBinding(key.WithKeys(" "))):
 		if len(l.wipUnstaged) > 0 && l.wipUnstagedCursor < len(l.wipUnstaged) {
 			return l, l.wipStageFile(l.wipUnstaged[l.wipUnstagedCursor].Path)
 		}
 	case key.Matches(msg, l.statusKeys.StageAll):
 		return l, l.wipStageAll()
-	case key.Matches(msg, l.statusKeys.Commit):
-		return l, l.wipRequestCommit()
 	case key.Matches(msg, l.statusKeys.CommitAmend):
-		return l, l.wipRequestAmend()
+		// Activate inline commit area in amend mode (directly start editing)
+		l.wipFocus = wipFocusCommit
+		l.commitEditing = true
+		l.commitSummary.Focus()
+		l.commitDesc.Blur()
+		l.commitField = 0
+		return l, l.loadAmendPrefill()
 	case key.Matches(msg, l.statusKeys.Discard):
 		if len(l.wipUnstaged) > 0 && l.wipUnstagedCursor < len(l.wipUnstaged) {
 			f := l.wipUnstaged[l.wipUnstagedCursor]
@@ -665,120 +1040,160 @@ func (l LogPage) handleWIPUnstagedKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (l LogPage) handleWIPStagedKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
+	case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
+		l.centerDiffMode = false
+		l.centerDiffLines = nil
+		l.centerDiffPath = ""
+		l.centerDiffScroll = 0
+		l.centerDiffScrollX = 0
+		return l, nil
+	case key.Matches(msg, l.navKeys.Select): // Enter — view diff for selected file
+		if len(l.wipStaged) > 0 && l.wipStagedCursor < len(l.wipStaged) {
+			l.centerDiffScroll = 0
+			l.centerDiffScrollX = 0
+			return l, l.loadCenterDiff()
+		}
 	case key.Matches(msg, l.navKeys.Down):
 		if l.wipStagedCursor < len(l.wipStaged)-1 {
 			l.wipStagedCursor++
-			return l, l.loadWIPSelectedDiff()
 		}
 	case key.Matches(msg, l.navKeys.Up):
 		if l.wipStagedCursor > 0 {
 			l.wipStagedCursor--
-			return l, l.loadWIPSelectedDiff()
 		}
 	case key.Matches(msg, l.navKeys.Home):
 		l.wipStagedCursor = 0
-		return l, l.loadWIPSelectedDiff()
 	case key.Matches(msg, l.navKeys.End):
 		if len(l.wipStaged) > 0 {
 			l.wipStagedCursor = len(l.wipStaged) - 1
-			return l, l.loadWIPSelectedDiff()
 		}
 	case key.Matches(msg, l.navKeys.PageDown):
-		l.wipDiffScroll += 10
-		max := l.wipMaxScroll()
-		if l.wipDiffScroll > max {
-			l.wipDiffScroll = max
+		if l.centerDiffMode {
+			l.centerDiffScroll += 10
+			max := len(l.centerDiffLines) - 10
+			if max < 0 {
+				max = 0
+			}
+			if l.centerDiffScroll > max {
+				l.centerDiffScroll = max
+			}
 		}
 		return l, nil
 	case key.Matches(msg, l.navKeys.PageUp):
-		l.wipDiffScroll -= 10
-		if l.wipDiffScroll < 0 {
-			l.wipDiffScroll = 0
+		if l.centerDiffMode {
+			l.centerDiffScroll -= 10
+			if l.centerDiffScroll < 0 {
+				l.centerDiffScroll = 0
+			}
 		}
 		return l, nil
-	case key.Matches(msg, l.statusKeys.Unstage), key.Matches(msg, key.NewBinding(key.WithKeys(" "))):
+	case key.Matches(msg, key.NewBinding(key.WithKeys(" "))):
 		// Unstage the selected file
 		if len(l.wipStaged) > 0 && l.wipStagedCursor < len(l.wipStaged) {
 			return l, l.wipUnstageFile(l.wipStaged[l.wipStagedCursor].Path)
 		}
-	case key.Matches(msg, l.statusKeys.Commit):
-		return l, l.wipRequestCommit()
 	case key.Matches(msg, l.statusKeys.CommitAmend):
-		return l, l.wipRequestAmend()
+		// Activate inline commit area in amend mode (directly start editing)
+		l.wipFocus = wipFocusCommit
+		l.commitEditing = true
+		l.commitSummary.Focus()
+		l.commitDesc.Blur()
+		l.commitField = 0
+		return l, l.loadAmendPrefill()
 	}
 	return l, nil
 }
 
-// wipMaxScroll returns the max scroll for the WIP diff content.
-func (l LogPage) wipMaxScroll() int {
-	if l.wipDiffContent == "" {
-		return 0
+func (l LogPage) handleWIPCommitKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
+		// Stop editing but stay on the commit area (selected, not editing)
+		l.commitEditing = false
+		l.commitSummary.Blur()
+		l.commitDesc.Blur()
+		return l, nil
+
+	case key.Matches(msg, key.NewBinding(key.WithKeys("ctrl+s"))):
+		// Submit the commit
+		return l.submitCommit()
+
+	case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
+		// Enter in summary field submits; in description field inserts newline
+		if l.commitField == 0 {
+			return l.submitCommit()
+		}
+		// Fall through to textarea Update below for newline insertion
+
+	case key.Matches(msg, key.NewBinding(key.WithKeys("tab"))):
+		// Toggle between summary and description
+		if l.commitField == 0 {
+			l.commitField = 1
+			l.commitSummary.Blur()
+			l.commitDesc.Focus()
+		} else {
+			l.commitField = 0
+			l.commitDesc.Blur()
+			l.commitSummary.Focus()
+		}
+		return l, nil
+
+	case key.Matches(msg, key.NewBinding(key.WithKeys("shift+tab"))):
+		// Reverse toggle
+		if l.commitField == 1 {
+			l.commitField = 0
+			l.commitDesc.Blur()
+			l.commitSummary.Focus()
+		} else {
+			// Exit editing and go backwards to staged/unstaged
+			l.commitEditing = false
+			l.commitSummary.Blur()
+			l.commitDesc.Blur()
+			if len(l.wipStaged) > 0 {
+				l.wipFocus = wipFocusStaged
+			} else if len(l.wipUnstaged) > 0 {
+				l.wipFocus = wipFocusUnstaged
+			}
+		}
+		return l, nil
 	}
-	lines := strings.Count(l.wipDiffContent, "\n") + 1
-	visible := l.height - styles.PanelBorderHeight - 10
-	if visible < 1 {
-		visible = 1
+
+	// Forward all other keys to the active input field for typing
+	var cmd tea.Cmd
+	if l.commitField == 0 {
+		l.commitSummary, cmd = l.commitSummary.Update(msg)
+	} else {
+		l.commitDesc, cmd = l.commitDesc.Update(msg)
 	}
-	max := lines - visible
-	if max < 0 {
-		return 0
-	}
-	return max
+	return l, cmd
 }
 
-// detailDiffLineCount returns the number of diff lines for the currently
-// selected file in the detail panel.
-func (l LogPage) detailDiffLineCount() int {
-	if len(l.detailFiles) == 0 || l.detailFileCursor >= len(l.detailFiles) {
-		return 0
+// submitCommit validates and submits the commit message.
+func (l LogPage) submitCommit() (tea.Model, tea.Cmd) {
+	summary := l.commitSummary.Value()
+	if summary == "" {
+		return l, nil
 	}
-	f := l.detailFiles[l.detailFileCursor]
-	count := 0
-	for _, h := range f.Hunks {
-		count++ // hunk header
-		count += len(h.Lines)
+	desc := l.commitDesc.Value()
+	message := summary
+	if strings.TrimSpace(desc) != "" {
+		message = summary + "\n\n" + strings.TrimSpace(desc)
 	}
-	return count
-}
-
-// detailMaxScroll returns the maximum scroll offset for the diff portion
-// of the detail panel (the selected file's diff).
-func (l LogPage) detailMaxScroll() int {
-	diffLines := l.detailDiffLineCount()
-	if diffLines == 0 {
-		return 0
+	amend := l.commitAmend
+	// Reset fields
+	l.commitSummary.SetValue("")
+	l.commitDesc.SetValue("")
+	l.commitSummary.Blur()
+	l.commitDesc.Blur()
+	l.commitAmend = false
+	l.commitField = 0
+	if len(l.wipUnstaged) > 0 {
+		l.wipFocus = wipFocusUnstaged
+	} else if len(l.wipStaged) > 0 {
+		l.wipFocus = wipFocusStaged
 	}
-	// Visible area for diff: total panel height minus border, title, header area, file list, separator
-	headerLines := l.detailHeaderLineCount()
-	fileListLines := len(l.detailFiles) + 1     // files + separator
-	overhead := 1 + headerLines + fileListLines // title + header + file list
-	visible := l.height - styles.PanelBorderHeight - overhead
-	if visible < 1 {
-		visible = 1
+	return l, func() tea.Msg {
+		return dialog.CommitRequestMsg{Message: message, Amend: amend}
 	}
-	max := diffLines - visible
-	if max < 0 {
-		return 0
-	}
-	return max
-}
-
-// detailHeaderLineCount returns the number of lines in the commit header.
-func (l LogPage) detailHeaderLineCount() int {
-	if l.detailCommit == nil {
-		return 0
-	}
-	c := l.detailCommit
-	lines := 4 // hash, author, date, empty
-	if len(c.Refs) > 0 {
-		lines++
-	}
-	lines++ // subject
-	if c.Body != "" {
-		lines += 1 + strings.Count(c.Body, "\n") + 1 // empty + body lines
-	}
-	lines += 2 // empty + separator
-	return lines
 }
 
 // ---------------------------------------------------------------------------
@@ -793,12 +1208,12 @@ func (l LogPage) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	sidebarEnd := sidebarW + bw // sidebar outer width
 
 	remaining := l.width - sidebarW - 3*bw // 3 panels × PanelBorderWidth each
-	centerWidth := remaining * 50 / 100
+	centerWidth := remaining * 70 / 100
 	if centerWidth < 30 {
 		centerWidth = 30
 	}
-	if centerWidth > remaining-24 {
-		centerWidth = remaining - 24
+	if centerWidth > remaining-20 {
+		centerWidth = remaining - 20
 	}
 	if centerWidth < 10 {
 		centerWidth = 10
@@ -828,27 +1243,19 @@ func (l LogPage) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			l.focus = focusSidebar
 			// Let sidebar handle scroll via key up equivalent
 		case zoneCenter:
-			if l.cursor > 0 {
+			if l.centerDiffMode {
+				// Scroll center diff up
+				l.centerDiffScroll -= 3
+				if l.centerDiffScroll < 0 {
+					l.centerDiffScroll = 0
+				}
+			} else if l.cursor > 0 {
 				l.cursor--
 				l.focus = focusLogList
 				return l, l.loadDetailForCursor()
 			}
 		case zoneRight:
-			if l.isWIPSelected() && !l.viewingStash {
-				if l.wipDiffScroll > 0 {
-					l.wipDiffScroll -= 3
-					if l.wipDiffScroll < 0 {
-						l.wipDiffScroll = 0
-					}
-				}
-			} else {
-				if l.detailScroll > 0 {
-					l.detailScroll -= 3
-					if l.detailScroll < 0 {
-						l.detailScroll = 0
-					}
-				}
-			}
+			// Right panel has no scrollable diff; no-op for now
 			l.focus = focusLogDetail
 		}
 		return l, nil
@@ -858,25 +1265,23 @@ func (l LogPage) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		case zoneSidebar:
 			l.focus = focusSidebar
 		case zoneCenter:
-			if l.cursor < len(l.commits)-1 {
+			if l.centerDiffMode {
+				// Scroll center diff down
+				l.centerDiffScroll += 3
+				max := len(l.centerDiffLines) - 10
+				if max < 0 {
+					max = 0
+				}
+				if l.centerDiffScroll > max {
+					l.centerDiffScroll = max
+				}
+			} else if l.cursor < len(l.commits)-1 {
 				l.cursor++
 				l.focus = focusLogList
 				return l, l.loadDetailForCursor()
 			}
 		case zoneRight:
-			if l.isWIPSelected() && !l.viewingStash {
-				maxScroll := l.wipMaxScroll()
-				l.wipDiffScroll += 3
-				if l.wipDiffScroll > maxScroll {
-					l.wipDiffScroll = maxScroll
-				}
-			} else {
-				maxScroll := l.detailMaxScroll()
-				l.detailScroll += 3
-				if l.detailScroll > maxScroll {
-					l.detailScroll = maxScroll
-				}
-			}
+			// Right panel has no scrollable diff; no-op for now
 			l.focus = focusLogDetail
 		}
 		return l, nil
@@ -970,14 +1375,18 @@ func (l LogPage) handleWIPMouseClick(msg tea.MouseMsg, leftOuter int) (tea.Model
 		if idx < len(l.wipUnstaged) {
 			l.wipFocus = wipFocusUnstaged
 			l.wipUnstagedCursor = idx
-			return l, l.loadWIPSelectedDiff()
+			l.centerDiffScroll = 0
+			l.centerDiffScrollX = 0
+			return l, l.loadCenterDiff()
 		}
 	} else if relY >= stagedFileStart && relY < stagedFileEnd && len(l.wipStaged) > 0 {
 		idx := relY - stagedFileStart
 		if idx < len(l.wipStaged) {
 			l.wipFocus = wipFocusStaged
 			l.wipStagedCursor = idx
-			return l, l.loadWIPSelectedDiff()
+			l.centerDiffScroll = 0
+			l.centerDiffScrollX = 0
+			return l, l.loadCenterDiff()
 		}
 	}
 
@@ -1011,12 +1420,12 @@ func (l LogPage) View() string {
 	sidebarW := l.sidebarWidth()
 
 	remaining := l.width - sidebarW - 3*bw // 3 panels × PanelBorderWidth each
-	centerWidth := remaining * 50 / 100
+	centerWidth := remaining * 70 / 100
 	if centerWidth < 30 {
 		centerWidth = 30
 	}
-	if centerWidth > remaining-24 {
-		centerWidth = remaining - 24
+	if centerWidth > remaining-20 {
+		centerWidth = remaining - 20
 	}
 	if centerWidth < 10 {
 		centerWidth = 10
@@ -1027,7 +1436,13 @@ func (l LogPage) View() string {
 	}
 
 	sidebarPane := l.sidebar.View(l.focus == focusSidebar)
-	centerPane := l.renderCommitList(centerWidth, l.height)
+
+	var centerPane string
+	if l.centerDiffMode {
+		centerPane = l.renderCenterDiff(centerWidth, l.height)
+	} else {
+		centerPane = l.renderCommitList(centerWidth, l.height)
+	}
 
 	var rightPane string
 	if l.viewingStash {
@@ -1046,8 +1461,9 @@ func (l LogPage) renderCommitList(width, height int) string {
 	if l.hasWIP {
 		commitCount-- // exclude synthetic WIP entry from count
 	}
-	titleStr := styles.TitleStyle(l.focus == focusLogList).Width(innerWidth).Render(
+	titleStr := styles.PanelTitle(
 		fmt.Sprintf("Commits (%d)", commitCount),
+		"2", l.focus == focusLogList, innerWidth,
 	)
 
 	var lines []string
@@ -1057,8 +1473,8 @@ func (l LogPage) renderCommitList(width, height int) string {
 
 	// Viewport windowing: only render visible commits, following the cursor.
 	ph := height - styles.PanelBorderHeight
-	// Visible lines: panel height minus title (1) minus hints area (2: empty + hints)
-	visibleCount := ph - 3
+	// Visible lines: panel height minus title (1) minus title gap (1) minus hints area (2: empty + hints)
+	visibleCount := ph - 4
 	if visibleCount < 1 {
 		visibleCount = 1
 	}
@@ -1092,15 +1508,22 @@ func (l LogPage) renderCommitList(width, height int) string {
 	if graphWidth > 0 {
 		graphColWidth = graphWidth + 1 // graph chars + 1 space
 	}
-	// Cap graph width to keep commit info readable
-	if graphColWidth > 20 {
-		graphColWidth = 20
+	// Cap graph to ~30% of inner width, bounded [10, 40]
+	maxGraph := innerWidth * 30 / 100
+	if maxGraph > 40 {
+		maxGraph = 40
+	}
+	if maxGraph < 10 {
+		maxGraph = 10
+	}
+	if graphColWidth > maxGraph {
+		graphColWidth = maxGraph
 	}
 
 	hashWidth := 8
-	dateWidth := 11
+	dateWidth := 10
 	authorWidth := 15
-	subjectWidth := innerWidth - graphColWidth - hashWidth - dateWidth - authorWidth - 6
+	subjectWidth := innerWidth - graphColWidth - hashWidth - dateWidth - authorWidth - 5
 	if subjectWidth < 10 {
 		subjectWidth = 10
 	}
@@ -1115,20 +1538,56 @@ func (l LogPage) renderCommitList(width, height int) string {
 		}
 		bgS := lipgloss.NewStyle().Background(bg)
 
-		// Render graph prefix
+		// Render graph prefix with horizontal scroll viewport
 		graphStr := ""
 		if i < len(l.graphRows) && graphColWidth > 0 {
 			gr := l.graphRows[i]
-			var graphParts []string
-			for j := 0; j < graphWidth && j < len(gr.Cells); j++ {
-				cell := gr.Cells[j]
-				color := styles.GraphColor(cell.Column)
-				graphParts = append(graphParts, lipgloss.NewStyle().Foreground(color).Background(bg).Render(cell.Char))
+			displayCols := graphColWidth - 1 // -1 for trailing separator space
+			scrollX := l.graphScrollX
+			truncLeft := scrollX > 0
+			truncRight := graphWidth > scrollX+displayCols
+
+			// Determine the cell range to render
+			startCol := scrollX
+			endCol := scrollX + displayCols
+			if truncLeft {
+				startCol++ // reserve first column for ◂ indicator
 			}
-			// Pad remaining columns with spaces
-			for j := len(gr.Cells); j < graphWidth; j++ {
+			if truncRight {
+				endCol-- // reserve last column for ▸ indicator
+			}
+
+			var graphParts []string
+
+			// Left scroll indicator
+			if truncLeft {
+				graphParts = append(graphParts, lipgloss.NewStyle().
+					Foreground(t.Subtext0).Background(bg).Render("◂"))
+			}
+
+			// Render visible graph cells
+			for j := startCol; j < endCol; j++ {
+				if j < len(gr.Cells) {
+					cell := gr.Cells[j]
+					color := styles.GraphColor(cell.Column)
+					graphParts = append(graphParts, lipgloss.NewStyle().
+						Foreground(color).Background(bg).Render(cell.Char))
+				} else {
+					graphParts = append(graphParts, bgS.Render(" "))
+				}
+			}
+
+			// Right scroll indicator
+			if truncRight {
+				graphParts = append(graphParts, lipgloss.NewStyle().
+					Foreground(t.Subtext0).Background(bg).Render("▸"))
+			}
+
+			// Pad if total parts < displayCols (graph fits entirely)
+			for len(graphParts) < displayCols {
 				graphParts = append(graphParts, bgS.Render(" "))
 			}
+
 			graphStr = lipgloss.JoinHorizontal(lipgloss.Top, graphParts...)
 		}
 
@@ -1170,8 +1629,11 @@ func (l LogPage) renderCommitList(width, height int) string {
 		effectiveSubjectWidth := subjectWidth
 		if badgeWidth > 0 {
 			effectiveSubjectWidth = subjectWidth - badgeWidth - 1
-			if effectiveSubjectWidth < 8 {
-				effectiveSubjectWidth = 8
+			if effectiveSubjectWidth < 4 {
+				// Badges too wide — skip them to avoid line overflow
+				badges = ""
+				badgeWidth = 0
+				effectiveSubjectWidth = subjectWidth
 			}
 		}
 		subject := lipgloss.NewStyle().Foreground(t.Text).Background(bg).Width(effectiveSubjectWidth).Render(truncate(c.Subject, effectiveSubjectWidth))
@@ -1206,13 +1668,254 @@ func (l LogPage) renderCommitList(width, height int) string {
 	if len(l.commits) > visibleCount {
 		scrollInfo = fmt.Sprintf("  [%d/%d]", l.cursor+1, len(l.commits))
 	}
+	graphHint := ""
+	if l.maxGraphWidth() > l.graphViewportCols() {
+		graphHint = "  H/L:scroll graph"
+	}
 	hints := styles.KeyHintStyle().Background(t.Base).Width(innerWidth).Render(
-		"j/k:navigate  tab:switch panel  g/G:top/bottom" + scrollInfo,
+		"j/k:navigate  g/G:top/bottom" + graphHint + scrollInfo,
 	)
+	titleGap := lipgloss.NewStyle().Background(t.Base).Width(innerWidth).Render("")
 	emptyLine := lipgloss.NewStyle().Background(t.Base).Width(innerWidth).Render("")
-	return styles.PanelStyle(l.focus == focusLogList).Width(width).Height(ph).Render(
-		lipgloss.JoinVertical(lipgloss.Left, titleStr, content, emptyLine, hints),
+	full := lipgloss.JoinVertical(lipgloss.Left, titleStr, titleGap, content, emptyLine, hints)
+	// Clip to panel height so all panels stay the same outer height.
+	if cl := strings.Split(full, "\n"); len(cl) > ph {
+		full = strings.Join(cl[:ph], "\n")
+	}
+	return styles.PanelStyle(l.focus == focusLogList).Width(width).Height(ph).Render(full)
+}
+
+// renderCenterDiff renders the center panel as a diff view (replacing the
+// commit graph) when a file is selected in the right panel.
+func (l LogPage) renderCenterDiff(width, height int) string {
+	t := theme.Active
+	iw := width - styles.PanelPaddingWidth
+	ph := height - styles.PanelBorderHeight
+
+	// Title shows the file path
+	titleLabel := "Diff"
+	if l.centerDiffPath != "" {
+		titleLabel = "Diff: " + l.centerDiffPath
+	}
+	// Truncate label to fit within the title area (leave room for [2] tag)
+	maxLabel := iw - 5
+	if maxLabel > 0 && len(titleLabel) > maxLabel {
+		titleLabel = titleLabel[:maxLabel] + "…"
+	}
+	focused := l.focus == focusLogList
+	titleStr := styles.PanelTitle(titleLabel, "2", focused, iw)
+
+	titleGap := lipgloss.NewStyle().Background(t.Base).Width(iw).Render("")
+
+	if len(l.centerDiffLines) == 0 {
+		content := styles.DimStyle().Width(iw).Render("  No diff content")
+		full := lipgloss.JoinVertical(lipgloss.Left, titleStr, titleGap, content)
+		if cl := strings.Split(full, "\n"); len(cl) > ph {
+			full = strings.Join(cl[:ph], "\n")
+		}
+		return styles.PanelStyle(focused).Width(width).Height(ph).Render(full)
+	}
+
+	// Apply scroll offset
+	startLine := l.centerDiffScroll
+	if startLine > len(l.centerDiffLines) {
+		startLine = len(l.centerDiffLines)
+	}
+	if startLine < 0 {
+		startLine = 0
+	}
+
+	// Visible lines: ph minus title (1) minus title gap (1) minus hints (2: empty + hint line)
+	contentHeight := ph - 4
+	if contentHeight < 1 {
+		contentHeight = 1
+	}
+
+	endLine := startLine + contentHeight
+	if endLine > len(l.centerDiffLines) {
+		endLine = len(l.centerDiffLines)
+	}
+
+	// --- Line number computation ---
+	// We need to compute line numbers for ALL lines up to endLine,
+	// starting from the beginning of the diff. Track old/new counters
+	// through the entire content up to endLine.
+	const gutterWidth = 11 // "NNNN NNNN │" = 4+1+4+1+1 = 11
+	contentWidth := iw - gutterWidth
+	if contentWidth < 10 {
+		contentWidth = 10
+	}
+
+	// State for line number tracking
+	oldNum := 0
+	newNum := 0
+	inHunk := false
+
+	var sections []string
+	for i := 0; i < endLine; i++ {
+		line := ""
+		if i < len(l.centerDiffLines) {
+			line = l.centerDiffLines[i]
+		}
+
+		lineType := byte(' ')
+		if len(line) > 0 {
+			lineType = line[0]
+		}
+
+		// Detect line category
+		isDiffHeader := strings.HasPrefix(line, "diff --git")
+		isFileOld := strings.HasPrefix(line, "--- ")
+		isFileNew := strings.HasPrefix(line, "+++ ")
+		isIndex := strings.HasPrefix(line, "index ")
+		isSimilarity := strings.HasPrefix(line, "similarity ") || strings.HasPrefix(line, "rename ") || strings.HasPrefix(line, "new file") || strings.HasPrefix(line, "deleted file") || strings.HasPrefix(line, "old mode") || strings.HasPrefix(line, "new mode")
+		isHunkHeader := strings.HasPrefix(line, "@@")
+
+		// Parse hunk header for line numbers
+		if isHunkHeader {
+			inHunk = true
+			oldNum, newNum = parseDiffHunkNums(line)
+		}
+
+		// Only render visible lines (i >= startLine)
+		if i < startLine {
+			// Still need to update line counters for non-visible lines
+			if inHunk && !isHunkHeader && !isDiffHeader && !isFileOld && !isFileNew && !isIndex && !isSimilarity {
+				switch lineType {
+				case '+':
+					newNum++
+				case '-':
+					oldNum++
+				default: // context
+					oldNum++
+					newNum++
+				}
+			}
+			continue
+		}
+
+		// Render the gutter + content for this visible line
+		var gutterStr string
+		var contentStr string
+
+		scrollX := l.centerDiffScrollX
+
+		if isDiffHeader || isFileOld || isFileNew {
+			// File header lines: no line numbers, bold text
+			gutterStr = styles.DiffGutterSepStyle(' ').Render(strings.Repeat(" ", gutterWidth))
+			rendered := expandTabs(line, 4)
+			rendered = horizontalSlice(rendered, scrollX, contentWidth)
+			contentStr = styles.DiffFileHeaderStyle().Width(contentWidth).Render(rendered)
+		} else if isIndex || isSimilarity {
+			// Metadata lines: no line numbers, dimmed
+			gutterStr = styles.DiffGutterSepStyle(' ').Render(strings.Repeat(" ", gutterWidth))
+			rendered := expandTabs(line, 4)
+			rendered = horizontalSlice(rendered, scrollX, contentWidth)
+			contentStr = styles.DiffMetaStyle().Width(contentWidth).Render(rendered)
+		} else if isHunkHeader {
+			// Hunk header: no line numbers, special styling
+			gutterStr = styles.DiffGutterSepStyle('@').Render(strings.Repeat("─", gutterWidth-1) + "┤")
+			rendered := expandTabs(line, 4)
+			rendered = horizontalSlice(rendered, scrollX, contentWidth)
+			contentStr = styles.DiffLineStyle('@').Width(contentWidth).Render(rendered)
+		} else if inHunk {
+			// Content lines within a hunk: show line numbers
+			oldStr := "    "
+			newStr := "    "
+			switch lineType {
+			case '+':
+				newStr = fmt.Sprintf("%4d", newNum)
+				newNum++
+			case '-':
+				oldStr = fmt.Sprintf("%4d", oldNum)
+				oldNum++
+			default: // context line
+				oldStr = fmt.Sprintf("%4d", oldNum)
+				newStr = fmt.Sprintf("%4d", newNum)
+				oldNum++
+				newNum++
+			}
+
+			numOldStyled := styles.DiffLineNumStyle(lineType).Render(oldStr)
+			space := styles.DiffGutterSepStyle(lineType).Render(" ")
+			numNewStyled := styles.DiffLineNumStyle(lineType).Render(newStr)
+			sep := styles.DiffGutterSepStyle(lineType).Render(" │")
+			gutterStr = lipgloss.JoinHorizontal(lipgloss.Top, numOldStyled, space, numNewStyled, sep)
+
+			rendered := expandTabs(line, 4)
+			rendered = horizontalSlice(rendered, scrollX, contentWidth)
+			contentStr = styles.DiffLineStyle(lineType).Width(contentWidth).Render(rendered)
+		} else {
+			// Lines before first hunk (shouldn't happen often)
+			gutterStr = styles.DiffGutterSepStyle(' ').Render(strings.Repeat(" ", gutterWidth))
+			rendered := expandTabs(line, 4)
+			rendered = horizontalSlice(rendered, scrollX, contentWidth)
+			contentStr = styles.DiffLineStyle(lineType).Width(contentWidth).Render(rendered)
+		}
+
+		fullLine := lipgloss.JoinHorizontal(lipgloss.Top, gutterStr, contentStr)
+		sections = append(sections, fullLine)
+	}
+
+	content := lipgloss.JoinVertical(lipgloss.Left, sections...)
+
+	// Scroll and hint line
+	scrollInfo := ""
+	if len(l.centerDiffLines) > contentHeight {
+		scrollInfo = fmt.Sprintf("  [%d/%d lines]", startLine+1, len(l.centerDiffLines))
+	}
+	emptyLine := lipgloss.NewStyle().Background(t.Base).Width(iw).Render("")
+	hints := styles.KeyHintStyle().Background(t.Base).Width(iw).Render(
+		"j/k:scroll  h/l:pan  Esc:back to graph  g/G:top/bottom" + scrollInfo,
 	)
+
+	full := lipgloss.JoinVertical(lipgloss.Left, titleStr, titleGap, content, emptyLine, hints)
+	// Clip to panel height
+	if cl := strings.Split(full, "\n"); len(cl) > ph {
+		full = strings.Join(cl[:ph], "\n")
+	}
+	return styles.PanelStyle(focused).Width(width).Height(ph).Render(full)
+}
+
+// parseDiffHunkNums extracts the old and new starting line numbers from a
+// @@ -old,count +new,count @@ hunk header line.
+func parseDiffHunkNums(line string) (oldStart, newStart int) {
+	// Find the range info between @@ markers: "@@ -124,7 +148,8 @@ ..."
+	idx := strings.Index(line, "@@")
+	if idx < 0 {
+		return 1, 1
+	}
+	rest := line[idx+2:]
+	idx2 := strings.Index(rest, "@@")
+	if idx2 <= 0 {
+		return 1, 1
+	}
+	rangeInfo := strings.TrimSpace(rest[:idx2])
+	parts := strings.Fields(rangeInfo)
+	for _, part := range parts {
+		if strings.HasPrefix(part, "-") {
+			nums := strings.SplitN(part[1:], ",", 2)
+			if len(nums) >= 1 {
+				if n, err := strconv.Atoi(nums[0]); err == nil {
+					oldStart = n
+				}
+			}
+		} else if strings.HasPrefix(part, "+") {
+			nums := strings.SplitN(part[1:], ",", 2)
+			if len(nums) >= 1 {
+				if n, err := strconv.Atoi(nums[0]); err == nil {
+					newStart = n
+				}
+			}
+		}
+	}
+	if oldStart == 0 {
+		oldStart = 1
+	}
+	if newStart == 0 {
+		newStart = 1
+	}
+	return
 }
 
 func (l LogPage) renderCommitDetail(width, height int) string {
@@ -1222,17 +1925,18 @@ func (l LogPage) renderCommitDetail(width, height int) string {
 
 	focused := l.focus == focusLogDetail
 	iw := width - styles.PanelPaddingWidth // inner width
-	titleStr := styles.TitleStyle(focused).Width(iw).Render("Detail")
+	titleStr := styles.PanelTitle("Detail", "3", focused, iw)
 	ph := height - styles.PanelBorderHeight
+
+	t := theme.Active
+	titleGap := lipgloss.NewStyle().Background(t.Base).Width(iw).Render("")
 
 	if l.detailCommit == nil {
 		content := styles.DimStyle().Width(iw).Render("Select a commit to view details")
 		return styles.PanelStyle(focused).Width(width).Height(ph).Render(
-			lipgloss.JoinVertical(lipgloss.Left, titleStr, content),
+			lipgloss.JoinVertical(lipgloss.Left, titleStr, titleGap, content),
 		)
 	}
-
-	t := theme.Active
 	c := l.detailCommit
 
 	bgLine := func(s string) string {
@@ -1291,70 +1995,19 @@ func (l LogPage) renderCommitDetail(width, height int) string {
 			sections = append(sections, lipgloss.NewStyle().Background(bg).Width(iw).Render(lineContent))
 		}
 	}
-	sections = append(sections, bgLine(lipgloss.NewStyle().Foreground(t.Surface2).Background(t.Base).Render(strings.Repeat("─", iw))))
-
-	// --- Section 3: Diff for selected file ---
-	if len(l.detailFiles) > 0 && l.detailFileCursor < len(l.detailFiles) {
-		f := l.detailFiles[l.detailFileCursor]
-		// File header
-		diffHeader := fmt.Sprintf("--- %s", f.OldPath)
-		if f.NewPath != f.OldPath {
-			diffHeader += fmt.Sprintf("\n+++ %s", f.NewPath)
-		} else {
-			diffHeader += fmt.Sprintf("\n+++ %s", f.NewPath)
-		}
-		for _, hdrLine := range strings.Split(diffHeader, "\n") {
-			sections = append(sections, lipgloss.NewStyle().Foreground(t.Text).Background(t.Base).Bold(true).Width(iw).Render(hdrLine))
-		}
-
-		if f.Binary {
-			sections = append(sections, styles.DimStyle().Width(iw).Render("  Binary file"))
-		} else {
-			// Render hunks with scroll offset
-			var diffLines []string
-			for _, h := range f.Hunks {
-				diffLines = append(diffLines, h.Header)
-				diffLines = append(diffLines, h.Lines...)
-			}
-
-			// Apply scroll offset to diff lines
-			startLine := l.detailScroll
-			if startLine > len(diffLines) {
-				startLine = len(diffLines)
-			}
-			if startLine < 0 {
-				startLine = 0
-			}
-
-			// Compute how many diff lines we can show
-			fixedLines := len(sections) + 1 // +1 for title
-			contentHeight := ph - 1         // minus title
-			availForDiff := contentHeight - fixedLines
-			if availForDiff < 1 {
-				availForDiff = 1
-			}
-
-			endLine := startLine + availForDiff
-			if endLine > len(diffLines) {
-				endLine = len(diffLines)
-			}
-
-			for _, line := range diffLines[startLine:endLine] {
-				lineType := byte(' ')
-				if len(line) > 0 {
-					lineType = line[0]
-				}
-				rendered := expandTabs(line, 4)
-				rendered = truncateToWidth(rendered, iw)
-				sections = append(sections, styles.DiffLineStyle(lineType).Width(iw).Render(rendered))
-			}
-		}
-	}
+	// Hint: j/k navigates files, diff shows in center panel
+	sections = append(sections, bgLine(""))
+	sections = append(sections, bgLine(styles.KeyHintStyle().Background(t.Base).Render(
+		"j/k:files  Enter:view diff  Esc:close diff",
+	)))
 
 	content := lipgloss.JoinVertical(lipgloss.Left, sections...)
-	return styles.PanelStyle(focused).Width(width).Height(ph).Render(
-		lipgloss.JoinVertical(lipgloss.Left, titleStr, content),
-	)
+	full := lipgloss.JoinVertical(lipgloss.Left, titleStr, titleGap, content)
+	// Clip to panel height so all panels stay the same outer height.
+	if cl := strings.Split(full, "\n"); len(cl) > ph {
+		full = strings.Join(cl[:ph], "\n")
+	}
+	return styles.PanelStyle(focused).Width(width).Height(ph).Render(full)
 }
 
 func (l LogPage) renderWIPDetail(width, height int) string {
@@ -1367,30 +2020,44 @@ func (l LogPage) renderWIPDetail(width, height int) string {
 		return lipgloss.NewStyle().Background(t.Base).Width(iw).Render(s)
 	}
 
-	var sections []string
-
-	// Count total height for file lists vs diff split
-	totalFiles := len(l.wipUnstaged) + len(l.wipStaged)
-	// File lists section takes: 2 headers + file count + 2 separators + commit hint area (3 lines)
-	fileListHeight := totalFiles + 7
-	if len(l.wipUnstaged) == 0 {
-		fileListHeight++ // "working tree clean" line
+	// ---------------------------------------------------------------
+	// Build file list sections (top part — will be clipped/padded)
+	// ---------------------------------------------------------------
+	// sectionTitle renders a section header with a right-aligned shortcut key tag.
+	sectionTitle := func(label, shortcut string, active bool) string {
+		fg := t.Subtext0
+		if active {
+			fg = t.Blue
+		}
+		keyTag := "[" + shortcut + "]"
+		keyStyle := lipgloss.NewStyle().Foreground(t.Overlay0).Background(t.Base)
+		titleStyle := lipgloss.NewStyle().Foreground(fg).Background(t.Base).Bold(true)
+		labelWidth := iw - len(keyTag) - 1
+		if labelWidth < 4 {
+			return titleStyle.Width(iw).Render(label)
+		}
+		if len(label) > labelWidth {
+			if labelWidth > 1 {
+				label = label[:labelWidth-1] + "…"
+			} else {
+				label = label[:labelWidth]
+			}
+		}
+		leftPart := titleStyle.Width(labelWidth).Render(label)
+		rightPart := keyStyle.Render(keyTag)
+		gap := lipgloss.NewStyle().Background(t.Base).Render(" ")
+		return lipgloss.JoinHorizontal(lipgloss.Top, leftPart, gap, rightPart)
 	}
-	if len(l.wipStaged) == 0 {
-		fileListHeight++ // "no files staged" line
-	}
 
-	// --- Section 1: Unstaged Files ---
-	unstagedTitle := fmt.Sprintf("▾ Unstaged Files (%d)", len(l.wipUnstaged))
+	var fileSections []string
+
+	// --- Unstaged Files ---
 	unstagedFocused := focused && l.wipFocus == wipFocusUnstaged
-	titleColor := t.Subtext0
-	if unstagedFocused {
-		titleColor = t.Blue
-	}
-	sections = append(sections, lipgloss.NewStyle().Foreground(titleColor).Background(t.Base).Bold(true).Width(iw).Render(unstagedTitle))
+	fileSections = append(fileSections, sectionTitle(fmt.Sprintf("▾ Unstaged Files (%d)", len(l.wipUnstaged)), "u", unstagedFocused))
+	fileSections = append(fileSections, bgLine("")) // margin bottom
 
 	if len(l.wipUnstaged) == 0 {
-		sections = append(sections, styles.DimStyle().Width(iw).Render("  Working tree clean"))
+		fileSections = append(fileSections, styles.DimStyle().Width(iw).Render("  Working tree clean"))
 	} else {
 		for i, f := range l.wipUnstaged {
 			icon := f.StatusIcon()
@@ -1413,23 +2080,19 @@ func (l LogPage) renderWIPDetail(width, height int) string {
 			if selected {
 				style = style.Bold(true)
 			}
-			sections = append(sections, style.Render(text))
+			fileSections = append(fileSections, style.Render(text))
 		}
 	}
 
-	sections = append(sections, bgLine(lipgloss.NewStyle().Foreground(t.Surface2).Background(t.Base).Render(strings.Repeat("─", iw))))
+	fileSections = append(fileSections, bgLine(lipgloss.NewStyle().Foreground(t.Surface2).Background(t.Base).Render(strings.Repeat("─", iw))))
 
-	// --- Section 2: Staged Files ---
-	stagedTitle := fmt.Sprintf("▾ Staged Files (%d)", len(l.wipStaged))
+	// --- Staged Files ---
 	stagedFocused := focused && l.wipFocus == wipFocusStaged
-	titleColor = t.Subtext0
-	if stagedFocused {
-		titleColor = t.Blue
-	}
-	sections = append(sections, lipgloss.NewStyle().Foreground(titleColor).Background(t.Base).Bold(true).Width(iw).Render(stagedTitle))
+	fileSections = append(fileSections, sectionTitle(fmt.Sprintf("▾ Staged Files (%d)", len(l.wipStaged)), "s", stagedFocused))
+	fileSections = append(fileSections, bgLine("")) // margin bottom
 
 	if len(l.wipStaged) == 0 {
-		sections = append(sections, styles.DimStyle().Width(iw).Render("  No files staged"))
+		fileSections = append(fileSections, styles.DimStyle().Width(iw).Render("  No files staged"))
 	} else {
 		for i, f := range l.wipStaged {
 			icon := f.StatusIcon()
@@ -1452,70 +2115,173 @@ func (l LogPage) renderWIPDetail(width, height int) string {
 			if selected {
 				style = style.Bold(true)
 			}
-			sections = append(sections, style.Render(text))
+			fileSections = append(fileSections, style.Render(text))
 		}
 	}
 
-	sections = append(sections, bgLine(lipgloss.NewStyle().Foreground(t.Surface2).Background(t.Base).Render(strings.Repeat("─", iw))))
+	// ---------------------------------------------------------------
+	// Build commit area (bottom part — pinned to panel bottom)
+	// Wrapped in a single border container that highlights when focused.
+	// ---------------------------------------------------------------
+	commitFocused := focused && l.wipFocus == wipFocusCommit
 
-	// --- Section 3: Commit hint area ---
-	commitIcon := lipgloss.NewStyle().Foreground(t.Peach).Background(t.Base).Render("─○")
-	commitLabel := lipgloss.NewStyle().Foreground(t.Text).Background(t.Base).Bold(true).Render(" Commit")
-	sections = append(sections, bgLine(commitIcon+commitLabel))
-	sections = append(sections, bgLine(styles.KeyHintStyle().Background(t.Base).Render(
-		"space:stage/unstage  a:stage all  c:commit  A:amend  d:discard",
-	)))
-
-	sections = append(sections, bgLine(lipgloss.NewStyle().Foreground(t.Surface2).Background(t.Base).Render(strings.Repeat("─", iw))))
-
-	// --- Section 4: Diff for selected file ---
-	if l.wipDiffContent != "" {
-		titleLine := "Diff"
-		if l.wipDiffPath != "" {
-			titleLine = "Diff: " + l.wipDiffPath
-		}
-		sections = append(sections, lipgloss.NewStyle().Foreground(t.Subtext0).Background(t.Base).Bold(true).Width(iw).Render(titleLine))
-
-		allLines := strings.Split(l.wipDiffContent, "\n")
-		startLine := l.wipDiffScroll
-		if startLine > len(allLines) {
-			startLine = len(allLines)
-		}
-		if startLine < 0 {
-			startLine = 0
-		}
-
-		fixedLines := len(sections) + 1 // +1 for panel title
-		contentHeight := ph - 1
-		availForDiff := contentHeight - fixedLines
-		if availForDiff < 1 {
-			availForDiff = 1
-		}
-
-		endLine := startLine + availForDiff
-		if endLine > len(allLines) {
-			endLine = len(allLines)
-		}
-
-		for _, line := range allLines[startLine:endLine] {
-			lineType := byte(' ')
-			if len(line) > 0 {
-				lineType = line[0]
-			}
-			rendered := expandTabs(line, 4)
-			rendered = truncateToWidth(rendered, iw)
-			sections = append(sections, styles.DiffLineStyle(lineType).Width(iw).Render(rendered))
-		}
+	// Inner width for content inside the outer commit container border
+	ciw := iw - 2 // -2 for outer container border
+	if ciw < 10 {
+		ciw = 10
+	}
+	cBgLine := func(s string) string {
+		return lipgloss.NewStyle().Background(t.Base).Width(ciw).Render(s)
 	}
 
-	titleStr := styles.TitleStyle(focused).Width(iw).Render(
-		fmt.Sprintf("Working Changes (%d staged, %d unstaged)", len(l.wipStaged), len(l.wipUnstaged)),
-	)
+	var commitInner []string
 
-	content := lipgloss.JoinVertical(lipgloss.Left, sections...)
-	return styles.PanelStyle(focused).Width(width).Height(ph).Render(
-		lipgloss.JoinVertical(lipgloss.Left, titleStr, content),
+	// Header: ─○ Commit (or ─○ Amend Commit) with [c] shortcut
+	commitHeaderLabel := "─○ Commit"
+	if l.commitAmend {
+		commitHeaderLabel = "─○ Amend Commit"
+	}
+	{
+		fg := t.Subtext0
+		if commitFocused {
+			fg = t.Blue
+		}
+		keyTag := "[c]"
+		keyStyle := lipgloss.NewStyle().Foreground(t.Overlay0).Background(t.Base)
+		titleStyle := lipgloss.NewStyle().Foreground(fg).Background(t.Base).Bold(true)
+		labelWidth := ciw - len(keyTag) - 1
+		if labelWidth < 4 {
+			labelWidth = 4
+		}
+		label := commitHeaderLabel
+		if lipgloss.Width(label) > labelWidth {
+			label = label[:labelWidth-1] + "…"
+		}
+		gap := ciw - lipgloss.Width(label) - lipgloss.Width(keyTag)
+		if gap < 1 {
+			gap = 1
+		}
+		gapStyle := lipgloss.NewStyle().Background(t.Base)
+		commitInner = append(commitInner, lipgloss.NewStyle().Background(t.Base).Width(ciw).Render(
+			titleStyle.Render(label)+gapStyle.Render(strings.Repeat(" ", gap))+keyStyle.Render(keyTag),
+		))
+	}
+	commitInner = append(commitInner, cBgLine("")) // margin bottom
+
+	// Summary input — single-line
+	inputWidth := ciw - 2 // -2 for individual input border
+	if inputWidth < 6 {
+		inputWidth = 6
+	}
+	l.commitSummary.Width = inputWidth
+
+	summaryBorder := t.Surface2
+	if commitFocused && l.commitEditing && l.commitField == 0 {
+		summaryBorder = t.Blue
+	}
+	summaryView := fillBg(l.commitSummary.View(), t.Surface0, inputWidth)
+	summaryBox := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(summaryBorder).
+		BorderBackground(t.Surface0).
+		Background(t.Surface0).
+		Width(ciw - 2). // -2 for input border
+		Render(summaryView)
+	commitInner = append(commitInner, cBgLine(summaryBox))
+
+	// Description textarea — multi-line
+	l.commitDesc.SetWidth(inputWidth)
+
+	descBorder := t.Surface2
+	if commitFocused && l.commitEditing && l.commitField == 1 {
+		descBorder = t.Blue
+	}
+	descView := fillBg(l.commitDesc.View(), t.Surface0, inputWidth)
+	descBox := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(descBorder).
+		BorderBackground(t.Surface0).
+		Background(t.Surface0).
+		Width(ciw - 2). // -2 for input border
+		Render(descView)
+	commitInner = append(commitInner, cBgLine(descBox))
+
+	// Hint line
+	if commitFocused && l.commitEditing {
+		hintText := "Enter:commit  Tab:desc  Esc:stop"
+		if l.commitField == 1 {
+			hintText = "ctrl+s:commit  Tab:summary  Esc:stop"
+		}
+		commitInner = append(commitInner, cBgLine(styles.KeyHintStyle().Background(t.Base).Render(hintText)))
+	} else if commitFocused {
+		commitInner = append(commitInner, cBgLine(styles.KeyHintStyle().Background(t.Base).Render(
+			"Enter:edit  A:amend  u:unstaged  s:staged",
+		)))
+	} else {
+		commitInner = append(commitInner, cBgLine(styles.KeyHintStyle().Background(t.Base).Render(
+			"Enter:diff  space:stage/unstage  a:all  A:amend  d:discard",
+		)))
+	}
+
+	// Wrap commit area in a single outer container border
+	containerBorder := t.Surface2
+	if commitFocused {
+		containerBorder = t.Blue
+	}
+	innerContent := lipgloss.JoinVertical(lipgloss.Left, commitInner...)
+	commitContent := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(containerBorder).
+		BorderBackground(t.Base).
+		Background(t.Base).
+		Width(iw - 2). // outer border width
+		Render(innerContent)
+
+	// ---------------------------------------------------------------
+	// Measure commit area height (in rendered lines)
+	// ---------------------------------------------------------------
+	commitHeight := strings.Count(commitContent, "\n") + 1
+
+	// ---------------------------------------------------------------
+	// Title
+	// ---------------------------------------------------------------
+	titleStr := styles.PanelTitle(
+		"Working Changes",
+		"3", focused, iw,
 	)
+	titleGap := lipgloss.NewStyle().Background(t.Base).Width(iw).Render("")
+
+	// ---------------------------------------------------------------
+	// Compute file area height and pad/clip to fill the gap
+	// ---------------------------------------------------------------
+	fileAreaHeight := ph - 2 - commitHeight // 2 for title line + gap
+	if fileAreaHeight < 1 {
+		fileAreaHeight = 1
+	}
+
+	fileContent := lipgloss.JoinVertical(lipgloss.Left, fileSections...)
+	fileLines := strings.Split(fileContent, "\n")
+
+	// Clip if file list is too tall
+	if len(fileLines) > fileAreaHeight {
+		fileLines = fileLines[:fileAreaHeight]
+	}
+	// Pad with empty bg lines if file list is shorter — this pushes commit area to the bottom
+	for len(fileLines) < fileAreaHeight {
+		fileLines = append(fileLines, lipgloss.NewStyle().Background(t.Base).Width(iw).Render(""))
+	}
+	fileContent = strings.Join(fileLines, "\n")
+
+	// ---------------------------------------------------------------
+	// Assemble: title + file area (padded) + commit area (pinned bottom)
+	// ---------------------------------------------------------------
+	full := lipgloss.JoinVertical(lipgloss.Left, titleStr, titleGap, fileContent, commitContent)
+
+	// Safety clip to panel height
+	if cl := strings.Split(full, "\n"); len(cl) > ph {
+		full = strings.Join(cl[:ph], "\n")
+	}
+	return styles.PanelStyle(focused).Width(width).Height(ph).Render(full)
 }
 
 // ---------------------------------------------------------------------------
@@ -1565,41 +2331,65 @@ func (l LogPage) loadWIPDetail() tea.Cmd {
 	}
 }
 
-func (l LogPage) loadWIPSelectedDiff() tea.Cmd {
+// loadCenterDiff determines the appropriate file based on context (WIP
+// unstaged/staged or commit detail) and loads its diff to display in the
+// center panel. It replaces the old loadWIPSelectedDiff().
+func (l LogPage) loadCenterDiff() tea.Cmd {
 	repo := l.repo
-	var path string
-	var staged bool
-	var untracked bool
 
-	switch l.wipFocus {
-	case wipFocusUnstaged:
-		if len(l.wipUnstaged) > 0 && l.wipUnstagedCursor < len(l.wipUnstaged) {
-			f := l.wipUnstaged[l.wipUnstagedCursor]
-			path = f.Path
-			staged = false
-			untracked = f.IsUntracked()
+	// --- WIP context ---
+	if l.isWIPSelected() {
+		var path string
+		var staged bool
+		var untracked bool
+
+		switch l.wipFocus {
+		case wipFocusUnstaged:
+			if len(l.wipUnstaged) > 0 && l.wipUnstagedCursor < len(l.wipUnstaged) {
+				f := l.wipUnstaged[l.wipUnstagedCursor]
+				path = f.Path
+				staged = false
+				untracked = f.IsUntracked()
+			}
+		case wipFocusStaged:
+			if len(l.wipStaged) > 0 && l.wipStagedCursor < len(l.wipStaged) {
+				path = l.wipStaged[l.wipStagedCursor].Path
+				staged = true
+			}
 		}
-	case wipFocusStaged:
-		if len(l.wipStaged) > 0 && l.wipStagedCursor < len(l.wipStaged) {
-			path = l.wipStaged[l.wipStagedCursor].Path
-			staged = true
+
+		if path == "" {
+			return nil
+		}
+
+		return func() tea.Msg {
+			var diff string
+			var err error
+			if untracked {
+				diff, err = repo.FileDiffUntracked(path)
+			} else {
+				diff, err = repo.FileDiff(path, staged)
+			}
+			return centerDiffMsg{path: path, diff: diff, err: err}
 		}
 	}
 
-	if path == "" {
-		return nil
+	// --- Commit detail context ---
+	if l.detailCommit != nil && len(l.detailFiles) > 0 && l.detailFileCursor < len(l.detailFiles) {
+		f := l.detailFiles[l.detailFileCursor]
+		commitHash := l.detailCommit.Hash
+		filePath := f.NewPath
+		if f.Status == "deleted" {
+			filePath = f.OldPath
+		}
+
+		return func() tea.Msg {
+			diff, err := repo.DiffCommitFile(commitHash, filePath)
+			return centerDiffMsg{path: filePath, diff: diff, err: err}
+		}
 	}
 
-	return func() tea.Msg {
-		var diff string
-		var err error
-		if untracked {
-			diff, err = repo.FileDiffUntracked(path)
-		} else {
-			diff, err = repo.FileDiff(path, staged)
-		}
-		return wipDiffMsg{path: path, staged: staged, diff: diff, err: err}
-	}
+	return nil
 }
 
 func (l LogPage) wipStageFile(path string) tea.Cmd {
@@ -1642,17 +2432,20 @@ func (l LogPage) wipCleanFile(path string) tea.Cmd {
 	}
 }
 
-func (l LogPage) wipRequestCommit() tea.Cmd {
-	stagedCount := len(l.wipStaged)
+// loadAmendPrefill fetches the last commit message and sends it back as an
+// amendPrefillMsg so the inline commit textarea can be pre-filled.
+func (l LogPage) loadAmendPrefill() tea.Cmd {
+	repo := l.repo
 	return func() tea.Msg {
-		return RequestCommitDialogMsg{StagedCount: stagedCount}
-	}
-}
-
-func (l LogPage) wipRequestAmend() tea.Cmd {
-	stagedCount := len(l.wipStaged)
-	return func() tea.Msg {
-		return RequestAmendDialogMsg{StagedCount: stagedCount}
+		info, err := repo.LastCommit()
+		if err != nil || info == nil {
+			return amendPrefillMsg{message: ""}
+		}
+		msg := info.Subject
+		if info.Body != "" {
+			msg = info.Subject + "\n\n" + info.Body
+		}
+		return amendPrefillMsg{message: msg}
 	}
 }
 
@@ -1678,56 +2471,39 @@ func (l LogPage) renderStashDiff(width, height int) string {
 	ph := height - styles.PanelBorderHeight
 	t := theme.Active
 
-	titleStr := styles.TitleStyle(focused).Width(iw).Render(
-		fmt.Sprintf("Stash Diff (stash@{%d})", l.stashDiffIndex),
+	titleStr := styles.PanelTitle(
+		fmt.Sprintf("Stash Info (stash@{%d})", l.stashDiffIndex),
+		"3", focused, iw,
 	)
-
-	if l.stashDiffContent == "" {
-		content := styles.DimStyle().Width(iw).Render("Loading stash diff...")
-		return styles.PanelStyle(focused).Width(width).Height(ph).Render(
-			lipgloss.JoinVertical(lipgloss.Left, titleStr, content),
-		)
-	}
-
-	allLines := strings.Split(l.stashDiffContent, "\n")
-	startLine := l.detailScroll
-	if startLine > len(allLines) {
-		startLine = len(allLines)
-	}
-	if startLine < 0 {
-		startLine = 0
-	}
-
-	contentHeight := ph - 1 // minus title
-	if contentHeight < 1 {
-		contentHeight = 1
-	}
-	endLine := startLine + contentHeight
-	if endLine > len(allLines) {
-		endLine = len(allLines)
-	}
 
 	var sections []string
-	for _, line := range allLines[startLine:endLine] {
-		lineType := byte(' ')
-		if len(line) > 0 {
-			lineType = line[0]
-		}
-		rendered := expandTabs(line, 4)
-		rendered = truncateToWidth(rendered, iw)
-		sections = append(sections, styles.DiffLineStyle(lineType).Width(iw).Render(rendered))
+
+	bgLine := func(s string) string {
+		return lipgloss.NewStyle().Background(t.Base).Width(iw).Render(s)
 	}
 
-	// Scroll hint
-	if len(allLines) > contentHeight {
-		hint := fmt.Sprintf("[%d/%d lines]", startLine+1, len(allLines))
-		sections = append(sections, styles.KeyHintStyle().Background(t.Base).Width(iw).Render(hint))
+	if l.stashDiffContent == "" {
+		sections = append(sections, styles.DimStyle().Width(iw).Render("Loading stash info..."))
+	} else {
+		sections = append(sections, bgLine(lipgloss.NewStyle().Foreground(t.Yellow).Background(t.Base).Bold(true).Render(
+			fmt.Sprintf("stash@{%d}", l.stashDiffIndex),
+		)))
+		sections = append(sections, bgLine(""))
+		sections = append(sections, bgLine(styles.DimStyle().Render("Diff is shown in the center panel.")))
+		sections = append(sections, bgLine(""))
+		sections = append(sections, bgLine(styles.KeyHintStyle().Background(t.Base).Render(
+			"Esc:back to graph  j/k:scroll diff",
+		)))
 	}
 
+	titleGap := lipgloss.NewStyle().Background(t.Base).Width(iw).Render("")
 	content := lipgloss.JoinVertical(lipgloss.Left, sections...)
-	return styles.PanelStyle(focused).Width(width).Height(ph).Render(
-		lipgloss.JoinVertical(lipgloss.Left, titleStr, content),
-	)
+	full := lipgloss.JoinVertical(lipgloss.Left, titleStr, titleGap, content)
+	// Clip to panel height so all panels stay the same outer height.
+	if cl := strings.Split(full, "\n"); len(cl) > ph {
+		full = strings.Join(cl[:ph], "\n")
+	}
+	return styles.PanelStyle(focused).Width(width).Height(ph).Render(full)
 }
 
 // ---------------------------------------------------------------------------
@@ -1777,6 +2553,100 @@ func truncateToWidth(s string, maxWidth int) string {
 		_ = r
 	}
 	return s
+}
+
+// horizontalSlice drops the first offset visible characters from s, then
+// truncates the result to width characters. This is used for horizontal
+// scrolling of diff content while keeping the line-number gutter fixed.
+func horizontalSlice(s string, offset, width int) string {
+	if offset <= 0 {
+		return truncateToWidth(s, width)
+	}
+	// Skip the first 'offset' characters
+	skipped := 0
+	start := len(s) // default: entire string consumed
+	for i, r := range s {
+		if skipped >= offset {
+			start = i
+			break
+		}
+		skipped++
+		_ = r
+	}
+	if start >= len(s) {
+		return ""
+	}
+	return truncateToWidth(s[start:], width)
+}
+
+// fillBg forces a background color on every line of a rendered string.
+// Bubbles components emit ANSI reset sequences (\x1b[0m) and their own
+// background codes (\x1b[40m etc.) that kill any outer background. This
+// function strips all ANSI background sequences from the input, then
+// re-inserts our desired background after every reset so the color
+// persists across the entire line.
+func fillBg(s string, bg lipgloss.Color, width int) string {
+	hex := string(bg)
+	if len(hex) > 0 && hex[0] == '#' {
+		hex = hex[1:]
+	}
+	r, g, b := hexToRGB(hex)
+	bgSeq := fmt.Sprintf("\x1b[48;2;%d;%d;%dm", r, g, b)
+	reset := "\x1b[0m"
+
+	// Strip any existing ANSI background sequences from the source.
+	// This covers: \x1b[4Xm (basic 8), \x1b[10Xm (bright 8),
+	// \x1b[48;5;Nm (256-color), and \x1b[48;2;R;G;Bm (24-bit).
+	stripped := ansiBgRe.ReplaceAllString(s, "")
+
+	lines := strings.Split(stripped, "\n")
+	for i, line := range lines {
+		// After every ANSI reset, re-insert our background.
+		patched := strings.ReplaceAll(line, reset, reset+bgSeq)
+		// Pad to full width.
+		w := lipgloss.Width(line)
+		pad := 0
+		if w < width {
+			pad = width - w
+		}
+		lines[i] = bgSeq + patched + strings.Repeat(" ", pad) + reset
+	}
+	return strings.Join(lines, "\n")
+}
+
+// ansiBgRe matches ANSI escape sequences that set a background color.
+var ansiBgRe = regexp.MustCompile(
+	`\x1b\[` + // CSI
+		`(?:` +
+		`4[0-7]` + // basic 8 bg colors: 40-47
+		`|49` + // default bg
+		`|10[0-7]` + // bright bg colors: 100-107
+		`|48;5;\d+` + // 256-color bg
+		`|48;2;\d+;\d+;\d+` + // 24-bit bg
+		`)m`,
+)
+
+// hexToRGB converts a 6-character hex string to r, g, b values.
+func hexToRGB(hex string) (r, g, b uint8) {
+	if len(hex) != 6 {
+		return 0, 0, 0
+	}
+	val, _ := strconv.ParseUint(hex, 16, 32)
+	r = uint8((val >> 16) & 0xFF)
+	g = uint8((val >> 8) & 0xFF)
+	b = uint8(val & 0xFF)
+	return r, g, b
+}
+
+// splitCommitMessage splits a full commit message into summary (first line)
+// and description (everything after the first blank line separator).
+func splitCommitMessage(message string) (summary, description string) {
+	parts := strings.SplitN(message, "\n", 2)
+	summary = parts[0]
+	if len(parts) > 1 {
+		description = strings.TrimSpace(parts[1])
+	}
+	return summary, description
 }
 
 var _ tea.Model = LogPage{}

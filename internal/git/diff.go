@@ -69,6 +69,19 @@ func (r *Repository) DiffCommit(hash string) (*DiffResult, error) {
 	return parseDiff(out), nil
 }
 
+// DiffCommitFile returns the raw diff text for a single file in a commit.
+func (r *Repository) DiffCommitFile(hash, path string) (string, error) {
+	out, err := r.run("diff", "--no-color", hash+"^!", "--", path)
+	if err != nil {
+		// Try for root commit
+		out, err = r.run("diff", "--no-color", "--root", hash, "--", path)
+		if err != nil {
+			return "", fmt.Errorf("getting diff for %s in commit %s: %w", path, hash, err)
+		}
+	}
+	return out, nil
+}
+
 // DiffBranch returns the diff between two branches/refs.
 func (r *Repository) DiffBranch(base, target string) (*DiffResult, error) {
 	out, err := r.run("diff", "--no-color", base+"..."+target, "--")
