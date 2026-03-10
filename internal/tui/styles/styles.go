@@ -216,6 +216,12 @@ func DiffLineStyle(lineType byte) lipgloss.Style {
 	}
 }
 
+// DiffCurrentHunkStyle returns the style for the currently selected hunk header.
+func DiffCurrentHunkStyle() lipgloss.Style {
+	t := theme.Active
+	return lipgloss.NewStyle().Foreground(t.Blue).Background(t.DiffHunkBg()).Bold(true)
+}
+
 // DiffFileHeaderStyle returns the style for diff file header lines
 // (diff --git, ---, +++).
 func DiffFileHeaderStyle() lipgloss.Style {

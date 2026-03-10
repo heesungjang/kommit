@@ -76,11 +76,13 @@ type Sidebar struct {
 	// Pending operations for dialogs
 	pendingRenameBranch string
 	pendingDeleteBranch string
+	pendingDeleteTag    string
 	pendingDropStash    int
 
 	// State
 	loading bool
 	err     error
+	filter  string // search filter for sidebar items (client-side)
 
 	// Keys
 	navKeys    keys.NavigationKeys
@@ -173,6 +175,22 @@ func (s Sidebar) visibleItems() []sidebarItem {
 		}
 	}
 
+	// Apply filter if set
+	if s.filter != "" {
+		var filtered []sidebarItem
+		for _, item := range items {
+			// Always show section headers
+			if item.kind == itemSectionHeader {
+				filtered = append(filtered, item)
+				continue
+			}
+			if strings.Contains(strings.ToLower(item.label), s.filter) {
+				filtered = append(filtered, item)
+			}
+		}
+		return filtered
+	}
+
 	return items
 }
 
@@ -255,6 +273,10 @@ func (s Sidebar) HandleDialogResult(msg tea.Msg) (Sidebar, tea.Cmd) {
 			}
 		case "sidebar-stash-save":
 			return s, s.stashSave(msg.Value)
+		case "sidebar-new-tag":
+			if msg.Value != "" {
+				return s, s.createTag(msg.Value)
+			}
 		}
 
 	case dialogTextInputCancelMsg:
@@ -276,6 +298,13 @@ func (s Sidebar) HandleDialogResult(msg tea.Msg) (Sidebar, tea.Cmd) {
 				return s, s.stashDrop(idx)
 			}
 			s.pendingDropStash = -1
+		case "sidebar-delete-tag":
+			if msg.Confirmed && s.pendingDeleteTag != "" {
+				name := s.pendingDeleteTag
+				s.pendingDeleteTag = ""
+				return s, s.deleteTag(name)
+			}
+			s.pendingDeleteTag = ""
 		}
 	}
 
@@ -337,14 +366,24 @@ func (s Sidebar) handleKey(msg tea.KeyMsg) (Sidebar, tea.Cmd) {
 	case key.Matches(msg, key.NewBinding(key.WithKeys("enter", " "))):
 		return s.handleActivate()
 
-	// Branch actions (when a branch item is selected)
+	// Branch / Tag actions — routed by current section
 	case key.Matches(msg, s.branchKeys.New):
+		cur := s.currentItem()
+		if cur != nil && cur.section == sectionTags {
+			return s, func() tea.Msg {
+				return RequestTextInputMsg{ID: "sidebar-new-tag", Title: "New Tag (at HEAD)", Placeholder: "tag-name"}
+			}
+		}
 		return s, func() tea.Msg {
 			return RequestTextInputMsg{ID: "sidebar-new-branch", Title: "New Branch", Placeholder: "branch-name"}
 		}
 	case key.Matches(msg, s.branchKeys.Rename):
 		return s.handleRename()
 	case key.Matches(msg, s.branchKeys.Delete):
+		cur := s.currentItem()
+		if cur != nil && cur.section == sectionTags {
+			return s.handleDeleteTag()
+		}
 		return s.handleDelete()
 	case key.Matches(msg, s.branchKeys.Merge):
 		return s.handleMerge()
@@ -447,6 +486,22 @@ func (s Sidebar) handleDelete() (Sidebar, tea.Cmd) {
 			ID:      "sidebar-delete-branch",
 			Title:   "Delete Branch",
 			Message: fmt.Sprintf("Delete branch '%s'?\n\nThis cannot be undone.", b.Name),
+		}
+	}
+}
+
+func (s Sidebar) handleDeleteTag() (Sidebar, tea.Cmd) {
+	item := s.currentItem()
+	if item == nil || item.kind != itemTag || item.index >= len(s.tags) {
+		return s, nil
+	}
+	t := s.tags[item.index]
+	s.pendingDeleteTag = t.Name
+	return s, func() tea.Msg {
+		return RequestConfirmMsg{
+			ID:      "sidebar-delete-tag",
+			Title:   "Delete Tag",
+			Message: fmt.Sprintf("Delete tag '%s'?\n\nThis cannot be undone.", t.Name),
 		}
 	}
 }
@@ -640,6 +695,18 @@ func (s Sidebar) View(focused bool) string {
 	)
 
 	titleGap := lipgloss.NewStyle().Background(t.Base).Width(iw).Render("")
+
+	// Pad content to exactly visibleCount lines so hints are pinned to the bottom
+	contentLines := strings.Split(content, "\n")
+	if len(contentLines) > visibleCount {
+		contentLines = contentLines[:visibleCount]
+	}
+	bgEmpty := lipgloss.NewStyle().Background(t.Base).Width(iw).Render("")
+	for len(contentLines) < visibleCount {
+		contentLines = append(contentLines, bgEmpty)
+	}
+	content = strings.Join(contentLines, "\n")
+
 	full := lipgloss.JoinVertical(lipgloss.Left, titleStr, titleGap, content, hints)
 	// Clip to panel height so sidebar stays the same outer height as other panels.
 	if cl := strings.Split(full, "\n"); len(cl) > ph {
@@ -774,6 +841,22 @@ func (s Sidebar) stashDrop(index int) tea.Cmd {
 	}
 }
 
+func (s Sidebar) createTag(name string) tea.Cmd {
+	repo := s.repo
+	return func() tea.Msg {
+		err := repo.CreateTag(name, "") // tag at HEAD
+		return sidebarOpDoneMsg{action: "Tag created: " + name, err: err}
+	}
+}
+
+func (s Sidebar) deleteTag(name string) tea.Cmd {
+	repo := s.repo
+	return func() tea.Msg {
+		err := repo.DeleteTag(name)
+		return sidebarOpDoneMsg{action: "Tag deleted: " + name, err: err}
+	}
+}
+
 // Refresh reloads sidebar data.
 func (s Sidebar) Refresh() tea.Cmd {
 	return s.loadData()
@@ -787,4 +870,38 @@ func (s Sidebar) HasStashes() bool {
 // StashCount returns the number of stash entries.
 func (s Sidebar) StashCount() int {
 	return len(s.stashes)
+}
+
+// SetFilter sets a client-side filter string for sidebar items.
+func (s Sidebar) SetFilter(query string) Sidebar {
+	s.filter = strings.ToLower(query)
+	s.cursor = 0 // reset cursor when filter changes
+	return s
+}
+
+// ClearFilter removes the client-side filter.
+func (s Sidebar) ClearFilter() Sidebar {
+	s.filter = ""
+	return s
+}
+
+// CurrentSectionName returns the name of the sidebar section under the cursor.
+// Possible values: "local", "remote", "tags", "stash", or "" if nothing selected.
+func (s Sidebar) CurrentSectionName() string {
+	it := s.currentItem()
+	if it == nil {
+		return ""
+	}
+	switch it.section {
+	case sectionLocal:
+		return "local"
+	case sectionRemote:
+		return "remote"
+	case sectionTags:
+		return "tags"
+	case sectionStash:
+		return "stash"
+	default:
+		return ""
+	}
 }

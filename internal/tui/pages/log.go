@@ -2,7 +2,11 @@ package pages
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -45,9 +49,11 @@ type wipDetailMsg struct {
 
 // centerDiffMsg carries a loaded diff to display in the center panel.
 type centerDiffMsg struct {
-	path string
-	diff string
-	err  error
+	path     string
+	diff     string
+	err      error
+	isWIP    bool // true when this diff is from WIP context (staged/unstaged)
+	isStaged bool // within WIP, whether this is a staged diff
 }
 
 // wipStageResultMsg is sent after a stage/unstage/discard operation completes.
@@ -58,6 +64,16 @@ type wipStageResultMsg struct {
 // amendPrefillMsg carries the previous commit message for amend mode prefill.
 type amendPrefillMsg struct {
 	message string
+}
+
+// commitOpDoneMsg is sent after a revert or cherry-pick completes successfully.
+type commitOpDoneMsg struct {
+	op string // "revert" or "cherry-pick"
+}
+
+// editorDoneMsg is sent when an external editor process exits.
+type editorDoneMsg struct {
+	err error
 }
 
 // ---------------------------------------------------------------------------
@@ -133,6 +149,9 @@ type LogPage struct {
 	wipPendingDiscardPath      string
 	wipPendingDiscardUntracked bool
 
+	// Pending commit operation (revert/cherry-pick) — hash stored for confirm dialog
+	pendingOpHash string
+
 	// Stash diff display
 	viewingStash     bool
 	stashDiffIndex   int
@@ -146,6 +165,24 @@ type LogPage struct {
 	centerDiffScroll  int      // vertical scroll offset in center diff
 	centerDiffScrollX int      // horizontal scroll offset in center diff (characters)
 
+	// Hunk navigation and staging
+	centerDiffHunkStarts []int      // line indices where each hunk starts (@@)
+	centerDiffHunks      []git.Hunk // parsed hunk data for staging operations
+	currentHunkIdx       int        // currently selected hunk index
+	centerDiffIsWIP      bool       // true if this diff is from WIP context
+	centerDiffIsStaged   bool       // within WIP, whether staged or unstaged
+
+	// Line-level selection (visual mode)
+	diffVisualMode   bool // true when in visual/line-selection mode
+	diffVisualCursor int  // current cursor position (line index in centerDiffLines)
+	diffVisualAnchor int  // anchor point where selection started
+
+	// Search/filter
+	searching   bool            // true when search input is active
+	searchInput textinput.Model // search text input
+	searchQuery string          // active filter query (applied after Enter)
+	searchPanel logFocus        // which panel the search is filtering
+
 	// Focus
 	focus logFocus
 
@@ -154,9 +191,10 @@ type LogPage struct {
 	err     error
 
 	// Keys
-	navKeys    keys.NavigationKeys
-	statusKeys keys.StatusKeys
-	remoteKeys keys.RemoteOpsKeys
+	navKeys       keys.NavigationKeys
+	statusKeys    keys.StatusKeys
+	remoteKeys    keys.RemoteOpsKeys
+	commitOpsKeys keys.CommitOpsKeys
 
 	// Dimensions
 	width  int
@@ -228,6 +266,18 @@ func (l LogPage) graphViewportCols() int {
 
 // NewLogPage creates a new log page (the main unified view).
 // newCommitSummary creates a fresh single-line text input for the commit title.
+func newSearchInput() textinput.Model {
+	t := theme.Active
+	ti := textinput.New()
+	ti.Placeholder = "search..."
+	ti.Prompt = "/"
+	ti.PromptStyle = lipgloss.NewStyle().Foreground(t.Yellow).Bold(true)
+	ti.TextStyle = lipgloss.NewStyle().Foreground(t.Text)
+	ti.PlaceholderStyle = lipgloss.NewStyle().Foreground(t.Overlay0)
+	ti.CharLimit = 256
+	return ti
+}
+
 func newCommitSummary() textinput.Model {
 	t := theme.Active
 	ti := textinput.New()
@@ -280,6 +330,8 @@ func NewLogPage(repo *git.Repository, width, height int) LogPage {
 		navKeys:       keys.NewNavigationKeys(),
 		statusKeys:    keys.NewStatusKeys(),
 		remoteKeys:    keys.NewRemoteOpsKeys(),
+		commitOpsKeys: keys.NewCommitOpsKeys(),
+		searchInput:   newSearchInput(),
 		width:         width,
 		height:        height,
 		loading:       true,
@@ -291,10 +343,39 @@ func (l LogPage) isWIPSelected() bool {
 	return l.hasWIP && l.cursor == 0
 }
 
-// IsEditing returns true when actively typing in a commit input field.
-// Used by the app shell to suppress global shortcuts like q=quit.
+// IsEditing returns true when actively typing in an input field
+// (commit message or search). Used by the app shell to suppress global
+// shortcuts like q=quit.
 func (l LogPage) IsEditing() bool {
-	return l.commitEditing
+	return l.commitEditing || l.searching
+}
+
+// updateContext sets keys.ActiveContext based on current panel focus so the
+// help dialog shows the correct bindings.
+func (l *LogPage) updateContext() {
+	switch l.focus {
+	case focusSidebar:
+		switch l.sidebar.CurrentSectionName() {
+		case "stash":
+			keys.ActiveContext = keys.ContextStash
+		case "remote":
+			keys.ActiveContext = keys.ContextRemotes
+		default:
+			keys.ActiveContext = keys.ContextBranches
+		}
+	case focusLogList:
+		if l.centerDiffMode {
+			keys.ActiveContext = keys.ContextDiff
+		} else {
+			keys.ActiveContext = keys.ContextLog
+		}
+	case focusLogDetail:
+		if l.isWIPSelected() {
+			keys.ActiveContext = keys.ContextStatus
+		} else {
+			keys.ActiveContext = keys.ContextLog
+		}
+	}
 }
 
 // Init loads the commit log and sidebar data.
@@ -342,6 +423,7 @@ func (l LogPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			l.centerDiffLines = nil
 			l.centerDiffPath = ""
 			l.focus = focusLogList
+			l.updateContext()
 			// Reset inline commit area
 			l.commitSummary = newCommitSummary()
 			l.commitDesc = newCommitDesc()
@@ -417,11 +499,82 @@ func (l LogPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		l.centerDiffScroll = 0
 		l.centerDiffScrollX = 0
 		l.centerDiffMode = true
+		l.centerDiffIsWIP = msg.isWIP
+		l.centerDiffIsStaged = msg.isStaged
+		l.currentHunkIdx = 0
+
+		// Parse hunk positions and build Hunk structs for staging
+		l.centerDiffHunkStarts = nil
+		l.centerDiffHunks = nil
+		var currentHunk *git.Hunk
+		for i, line := range l.centerDiffLines {
+			if strings.HasPrefix(line, "@@") {
+				// Save previous hunk
+				if currentHunk != nil {
+					l.centerDiffHunks = append(l.centerDiffHunks, *currentHunk)
+				}
+				l.centerDiffHunkStarts = append(l.centerDiffHunkStarts, i)
+				oldStart, newStart := parseDiffHunkNums(line)
+				currentHunk = &git.Hunk{
+					Header:   line,
+					StartOld: oldStart,
+					StartNew: newStart,
+				}
+			} else if currentHunk != nil && !strings.HasPrefix(line, "diff --git") && !strings.HasPrefix(line, "--- ") && !strings.HasPrefix(line, "+++ ") && !strings.HasPrefix(line, "index ") {
+				currentHunk.Lines = append(currentHunk.Lines, line)
+			}
+		}
+		if currentHunk != nil {
+			l.centerDiffHunks = append(l.centerDiffHunks, *currentHunk)
+		}
+
+		// Compute CountOld/CountNew for each hunk from its lines
+		for i := range l.centerDiffHunks {
+			h := &l.centerDiffHunks[i]
+			for _, ln := range h.Lines {
+				if len(ln) == 0 {
+					h.CountOld++
+					h.CountNew++
+					continue
+				}
+				switch ln[0] {
+				case '+':
+					h.CountNew++
+				case '-':
+					h.CountOld++
+				default:
+					h.CountOld++
+					h.CountNew++
+				}
+			}
+		}
+
 		return l, nil
 
 	case wipStageResultMsg:
-		// After stage/unstage/discard, reload WIP data
+		// After stage/unstage/discard, reload WIP data.
+		// If we're in diff mode, also reload the diff to reflect the change.
+		if l.centerDiffMode && l.centerDiffIsWIP {
+			return l, tea.Batch(l.loadWIPDetail(), l.loadCenterDiff())
+		}
 		return l, l.loadWIPDetail()
+
+	case commitOpDoneMsg:
+		// After revert or cherry-pick, show success and refresh
+		label := msg.op
+		if label == "cherry-pick" {
+			label = "Cherry-pick"
+		} else {
+			label = "Revert"
+		}
+		return l, tea.Batch(
+			func() tea.Msg { return RequestToastMsg{Message: label + " complete"} },
+			func() tea.Msg { return RefreshStatusMsg{} },
+		)
+
+	case editorDoneMsg:
+		// Editor exited — refresh to pick up any changes
+		return l, func() tea.Msg { return RefreshStatusMsg{} }
 
 	case commitDetailMsg:
 		if msg.err != nil {
@@ -458,6 +611,21 @@ func (l LogPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		l.wipPendingDiscardPath = ""
 		l.wipPendingDiscardUntracked = false
+		// Revert commit
+		if msg.ID == "revert-commit" && msg.Confirmed && l.pendingOpHash != "" {
+			hash := l.pendingOpHash
+			l.pendingOpHash = ""
+			return l, l.doRevertCommit(hash)
+		}
+		// Cherry-pick commit
+		if msg.ID == "cherry-pick-commit" && msg.Confirmed && l.pendingOpHash != "" {
+			hash := l.pendingOpHash
+			l.pendingOpHash = ""
+			return l, l.doCherryPick(hash)
+		}
+		if msg.ID == "revert-commit" || msg.ID == "cherry-pick-commit" {
+			l.pendingOpHash = ""
+		}
 		// Route sidebar confirm results
 		if strings.HasPrefix(msg.ID, "sidebar-") {
 			var cmd tea.Cmd
@@ -535,10 +703,22 @@ func (l LogPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return l.handleMouse(msg)
 
 	case tea.KeyMsg:
-		return l.handleKey(msg)
+		m, cmd := l.handleKey(msg)
+		if lp, ok := m.(LogPage); ok {
+			lp.updateContext()
+			return lp, cmd
+		}
+		return m, cmd
 	}
 
 	// When the commit area is focused, forward non-key messages (blink, etc.)
+	// Forward non-key messages to the search input when active (cursor blink).
+	if l.searching {
+		var cmd tea.Cmd
+		l.searchInput, cmd = l.searchInput.Update(msg)
+		return l, cmd
+	}
+
 	// to the active input field.
 	if l.isWIPSelected() && l.focus == focusLogDetail && l.wipFocus == wipFocusCommit {
 		var cmd tea.Cmd
@@ -558,6 +738,11 @@ func (l LogPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // ---------------------------------------------------------------------------
 
 func (l LogPage) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// When search input is active, route keys to it.
+	if l.searching {
+		return l.handleSearchKeys(msg)
+	}
+
 	// When commit message editor is active, route ALL keys directly to it.
 	// This prevents q/p/1/2/3/etc. from triggering global actions while typing.
 	if l.IsEditing() {
@@ -644,11 +829,22 @@ func (l LogPage) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch {
 		case key.Matches(msg, l.remoteKeys.Push):
 			return l, func() tea.Msg { return RequestGitOpMsg{Op: "push"} }
+		case key.Matches(msg, l.remoteKeys.ForcePush):
+			return l, func() tea.Msg { return RequestGitOpMsg{Op: "push", Force: true} }
 		case key.Matches(msg, l.remoteKeys.Pull):
 			return l, func() tea.Msg { return RequestGitOpMsg{Op: "pull"} }
 		case key.Matches(msg, l.remoteKeys.Fetch):
 			return l, func() tea.Msg { return RequestGitOpMsg{Op: "fetch"} }
 		}
+	}
+
+	// Search — available from any panel (not in diff mode or visual mode)
+	if key.Matches(msg, key.NewBinding(key.WithKeys("/"))) && !l.centerDiffMode {
+		l.searching = true
+		l.searchPanel = l.focus
+		l.searchInput.SetValue("")
+		l.searchInput.Focus()
+		return l, l.searchInput.Focus()
 	}
 
 	switch l.focus {
@@ -686,6 +882,12 @@ func (l LogPage) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if maxScroll < 0 {
 			maxScroll = 0
 		}
+
+		// Visual (line-selection) mode — `v` to toggle
+		if l.diffVisualMode {
+			return l.handleDiffVisualKeys(msg)
+		}
+
 		switch {
 		case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
 			l.centerDiffMode = false
@@ -693,6 +895,7 @@ func (l LogPage) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			l.centerDiffPath = ""
 			l.centerDiffScroll = 0
 			l.centerDiffScrollX = 0
+			l.diffVisualMode = false
 			l.focus = focusLogDetail // return focus to right panel
 			return l, nil
 		case key.Matches(msg, l.navKeys.Down):
@@ -731,6 +934,51 @@ func (l LogPage) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return l, nil
 		case key.Matches(msg, l.navKeys.Right): // l — pan right
 			l.centerDiffScrollX += 4
+			return l, nil
+
+		// Toggle visual (line-selection) mode
+		case key.Matches(msg, key.NewBinding(key.WithKeys("v"))):
+			if l.centerDiffIsWIP && len(l.centerDiffHunkStarts) > 0 {
+				l.diffVisualMode = true
+				l.diffVisualCursor = l.centerDiffScroll
+				l.diffVisualAnchor = l.centerDiffScroll
+			}
+			return l, nil
+
+		// Hunk navigation
+		case key.Matches(msg, key.NewBinding(key.WithKeys("n", "]"))):
+			if len(l.centerDiffHunkStarts) > 0 && l.currentHunkIdx < len(l.centerDiffHunkStarts)-1 {
+				l.currentHunkIdx++
+				l.centerDiffScroll = l.centerDiffHunkStarts[l.currentHunkIdx]
+				if l.centerDiffScroll > maxScroll {
+					l.centerDiffScroll = maxScroll
+				}
+			}
+			return l, nil
+		case key.Matches(msg, key.NewBinding(key.WithKeys("N", "["))):
+			if len(l.centerDiffHunkStarts) > 0 && l.currentHunkIdx > 0 {
+				l.currentHunkIdx--
+				l.centerDiffScroll = l.centerDiffHunkStarts[l.currentHunkIdx]
+				if l.centerDiffScroll > maxScroll {
+					l.centerDiffScroll = maxScroll
+				}
+			}
+			return l, nil
+
+		// Hunk staging — only in WIP diff context
+		case key.Matches(msg, key.NewBinding(key.WithKeys("s"))):
+			if l.centerDiffIsWIP && !l.centerDiffIsStaged && l.currentHunkIdx < len(l.centerDiffHunks) {
+				hunk := l.centerDiffHunks[l.currentHunkIdx]
+				path := l.centerDiffPath
+				return l, l.stageHunk(path, hunk)
+			}
+			return l, nil
+		case key.Matches(msg, key.NewBinding(key.WithKeys("u"))):
+			if l.centerDiffIsWIP && l.centerDiffIsStaged && l.currentHunkIdx < len(l.centerDiffHunks) {
+				hunk := l.centerDiffHunks[l.currentHunkIdx]
+				path := l.centerDiffPath
+				return l, l.unstageHunk(path, hunk)
+			}
 			return l, nil
 		}
 		return l, nil
@@ -790,6 +1038,41 @@ func (l LogPage) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return l, nil
 	}
+
+	// Commit operations — only on past (non-WIP) commits
+	if !l.isWIPSelected() && l.cursor >= 0 && l.cursor < len(l.commits) {
+		commit := l.commits[l.cursor]
+		short := commit.ShortHash
+		if short == "" {
+			short = commit.Hash
+			if len(short) > 7 {
+				short = short[:7]
+			}
+		}
+		switch {
+		case key.Matches(msg, l.commitOpsKeys.Revert):
+			l.pendingOpHash = commit.Hash
+			return l, func() tea.Msg {
+				return RequestConfirmMsg{
+					ID:      "revert-commit",
+					Title:   "Revert Commit?",
+					Message: "Revert " + short + " " + commit.Subject + "?",
+				}
+			}
+		case key.Matches(msg, l.commitOpsKeys.CherryPick):
+			l.pendingOpHash = commit.Hash
+			return l, func() tea.Msg {
+				return RequestConfirmMsg{
+					ID:      "cherry-pick-commit",
+					Title:   "Cherry-Pick?",
+					Message: "Cherry-pick " + short + " onto current branch?",
+				}
+			}
+		case key.Matches(msg, l.commitOpsKeys.CopyHash):
+			return l, l.copyToClipboard(commit.Hash)
+		}
+	}
+
 	return l, nil
 }
 
@@ -841,6 +1124,17 @@ func (l LogPage) handleDetailKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			l.centerDiffScroll -= 10
 			if l.centerDiffScroll < 0 {
 				l.centerDiffScroll = 0
+			}
+		}
+	case key.Matches(msg, key.NewBinding(key.WithKeys("e"))):
+		// Open selected file in editor (past commit context — file may not exist on disk)
+		if len(l.detailFiles) > 0 && l.detailFileCursor < len(l.detailFiles) {
+			path := l.detailFiles[l.detailFileCursor].NewPath
+			if path == "" {
+				path = l.detailFiles[l.detailFileCursor].OldPath
+			}
+			if path != "" {
+				return l, l.openInEditor(path)
 			}
 		}
 	}
@@ -1034,6 +1328,10 @@ func (l LogPage) handleWIPUnstagedKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+	case key.Matches(msg, key.NewBinding(key.WithKeys("e"))):
+		if len(l.wipUnstaged) > 0 && l.wipUnstagedCursor < len(l.wipUnstaged) {
+			return l, l.openInEditor(l.wipUnstaged[l.wipUnstagedCursor].Path)
+		}
 	}
 	return l, nil
 }
@@ -1100,6 +1398,10 @@ func (l LogPage) handleWIPStagedKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		l.commitDesc.Blur()
 		l.commitField = 0
 		return l, l.loadAmendPrefill()
+	case key.Matches(msg, key.NewBinding(key.WithKeys("e"))):
+		if len(l.wipStaged) > 0 && l.wipStagedCursor < len(l.wipStaged) {
+			return l, l.openInEditor(l.wipStaged[l.wipStagedCursor].Path)
+		}
 	}
 	return l, nil
 }
@@ -1451,7 +1753,56 @@ func (l LogPage) View() string {
 		rightPane = l.renderCommitDetail(rightWidth, l.height)
 	}
 
-	return lipgloss.JoinHorizontal(lipgloss.Top, sidebarPane, centerPane, rightPane)
+	layout := lipgloss.JoinHorizontal(lipgloss.Top, sidebarPane, centerPane, rightPane)
+
+	// Overlay search bar at the bottom when active
+	if l.searching {
+		searchBar := l.renderSearchBar()
+		// Replace the last line of the layout with the search bar
+		lines := strings.Split(layout, "\n")
+		if len(lines) > 0 {
+			lines[len(lines)-1] = searchBar
+		}
+		layout = strings.Join(lines, "\n")
+	} else if l.searchQuery != "" {
+		// Show active filter indicator
+		filterBar := l.renderFilterIndicator()
+		lines := strings.Split(layout, "\n")
+		if len(lines) > 0 {
+			lines[len(lines)-1] = filterBar
+		}
+		layout = strings.Join(lines, "\n")
+	}
+
+	return layout
+}
+
+// renderSearchBar renders the search input bar.
+func (l LogPage) renderSearchBar() string {
+	t := theme.Active
+	input := l.searchInput.View()
+	bar := lipgloss.NewStyle().
+		Foreground(t.Text).
+		Background(t.Surface0).
+		Width(l.width).
+		Render(input)
+	return bar
+}
+
+// renderFilterIndicator shows a small bar indicating an active search filter.
+func (l LogPage) renderFilterIndicator() string {
+	t := theme.Active
+	label := lipgloss.NewStyle().Foreground(t.Yellow).Bold(true).Render(" FILTER: ")
+	query := lipgloss.NewStyle().Foreground(t.Text).Render(l.searchQuery)
+	hint := lipgloss.NewStyle().Foreground(t.Overlay0).Render("  (/ to search, Esc in / to clear)")
+
+	content := label + query + hint
+	w := lipgloss.Width(content)
+	pad := ""
+	if w < l.width {
+		pad = strings.Repeat(" ", l.width-w)
+	}
+	return lipgloss.NewStyle().Background(t.Surface0).Render(content + pad)
 }
 
 func (l LogPage) renderCommitList(width, height int) string {
@@ -1664,6 +2015,18 @@ func (l LogPage) renderCommitList(width, height int) string {
 	}
 
 	content := lipgloss.JoinVertical(lipgloss.Left, lines...)
+
+	// Pad content to exactly visibleCount lines so hints are pinned to the bottom
+	contentLines := strings.Split(content, "\n")
+	if len(contentLines) > visibleCount {
+		contentLines = contentLines[:visibleCount]
+	}
+	bgEmpty := lipgloss.NewStyle().Background(t.Base).Width(innerWidth).Render("")
+	for len(contentLines) < visibleCount {
+		contentLines = append(contentLines, bgEmpty)
+	}
+	content = strings.Join(contentLines, "\n")
+
 	scrollInfo := ""
 	if len(l.commits) > visibleCount {
 		scrollInfo = fmt.Sprintf("  [%d/%d]", l.cursor+1, len(l.commits))
@@ -1750,6 +2113,7 @@ func (l LogPage) renderCenterDiff(width, height int) string {
 	oldNum := 0
 	newNum := 0
 	inHunk := false
+	hunkIdx := -1 // which hunk the current line belongs to
 
 	var sections []string
 	for i := 0; i < endLine; i++ {
@@ -1774,8 +2138,10 @@ func (l LogPage) renderCenterDiff(width, height int) string {
 		// Parse hunk header for line numbers
 		if isHunkHeader {
 			inHunk = true
+			hunkIdx++
 			oldNum, newNum = parseDiffHunkNums(line)
 		}
+		isCurrentHunk := hunkIdx >= 0 && hunkIdx == l.currentHunkIdx
 
 		// Only render visible lines (i >= startLine)
 		if i < startLine {
@@ -1814,10 +2180,19 @@ func (l LogPage) renderCenterDiff(width, height int) string {
 			contentStr = styles.DiffMetaStyle().Width(contentWidth).Render(rendered)
 		} else if isHunkHeader {
 			// Hunk header: no line numbers, special styling
-			gutterStr = styles.DiffGutterSepStyle('@').Render(strings.Repeat("─", gutterWidth-1) + "┤")
+			// Highlight the current hunk header with a distinct marker
+			if isCurrentHunk {
+				gutterStr = styles.DiffGutterSepStyle('@').Render("►" + strings.Repeat("─", gutterWidth-2) + "┤")
+			} else {
+				gutterStr = styles.DiffGutterSepStyle('@').Render(strings.Repeat("─", gutterWidth-1) + "┤")
+			}
 			rendered := expandTabs(line, 4)
 			rendered = horizontalSlice(rendered, scrollX, contentWidth)
-			contentStr = styles.DiffLineStyle('@').Width(contentWidth).Render(rendered)
+			if isCurrentHunk {
+				contentStr = styles.DiffCurrentHunkStyle().Width(contentWidth).Render(rendered)
+			} else {
+				contentStr = styles.DiffLineStyle('@').Width(contentWidth).Render(rendered)
+			}
 		} else if inHunk {
 			// Content lines within a hunk: show line numbers
 			oldStr := "    "
@@ -1853,11 +2228,41 @@ func (l LogPage) renderCenterDiff(width, height int) string {
 			contentStr = styles.DiffLineStyle(lineType).Width(contentWidth).Render(rendered)
 		}
 
+		// Visual mode: highlight selected lines with a distinct marker
+		if l.diffVisualMode {
+			vLo, vHi := l.visualSelectionRange()
+			if i >= vLo && i <= vHi {
+				// Add selection indicator in gutter
+				marker := lipgloss.NewStyle().Foreground(t.Blue).Background(t.Surface1).Bold(true).Render("▌")
+				fullLine := lipgloss.JoinHorizontal(lipgloss.Top, marker, gutterStr, contentStr)
+				sections = append(sections, fullLine)
+				continue
+			}
+			// Show cursor position when outside selection
+			if i == l.diffVisualCursor {
+				marker := lipgloss.NewStyle().Foreground(t.Blue).Background(t.Base).Render("▸")
+				fullLine := lipgloss.JoinHorizontal(lipgloss.Top, marker, gutterStr, contentStr)
+				sections = append(sections, fullLine)
+				continue
+			}
+		}
+
 		fullLine := lipgloss.JoinHorizontal(lipgloss.Top, gutterStr, contentStr)
 		sections = append(sections, fullLine)
 	}
 
 	content := lipgloss.JoinVertical(lipgloss.Left, sections...)
+
+	// Pad content to exactly contentHeight lines so hints are pinned to the bottom
+	diffContentLines := strings.Split(content, "\n")
+	if len(diffContentLines) > contentHeight {
+		diffContentLines = diffContentLines[:contentHeight]
+	}
+	bgEmpty := lipgloss.NewStyle().Background(t.Base).Width(iw).Render("")
+	for len(diffContentLines) < contentHeight {
+		diffContentLines = append(diffContentLines, bgEmpty)
+	}
+	content = strings.Join(diffContentLines, "\n")
 
 	// Scroll and hint line
 	scrollInfo := ""
@@ -1865,9 +2270,35 @@ func (l LogPage) renderCenterDiff(width, height int) string {
 		scrollInfo = fmt.Sprintf("  [%d/%d lines]", startLine+1, len(l.centerDiffLines))
 	}
 	emptyLine := lipgloss.NewStyle().Background(t.Base).Width(iw).Render("")
-	hints := styles.KeyHintStyle().Background(t.Base).Width(iw).Render(
-		"j/k:scroll  h/l:pan  Esc:back to graph  g/G:top/bottom" + scrollInfo,
-	)
+
+	var hintParts string
+	if l.diffVisualMode {
+		vLo, vHi := l.visualSelectionRange()
+		sel := vHi - vLo + 1
+		hintParts = fmt.Sprintf("VISUAL  j/k:extend  %d lines", sel)
+		if l.centerDiffIsStaged {
+			hintParts += "  u:unstage lines"
+		} else {
+			hintParts += "  s:stage lines"
+		}
+		hintParts += "  Esc/v:cancel"
+	} else {
+		hintParts = "j/k:scroll  h/l:pan  Esc:back  g/G:top/bottom"
+		if len(l.centerDiffHunkStarts) > 0 {
+			hunkInfo := fmt.Sprintf("  n/N:hunk [%d/%d]", l.currentHunkIdx+1, len(l.centerDiffHunkStarts))
+			hintParts += hunkInfo
+		}
+		if l.centerDiffIsWIP {
+			if l.centerDiffIsStaged {
+				hintParts += "  u:unstage hunk"
+			} else {
+				hintParts += "  s:stage hunk"
+			}
+			hintParts += "  v:select lines"
+		}
+		hintParts += scrollInfo
+	}
+	hints := styles.KeyHintStyle().Background(t.Base).Width(iw).Render(hintParts)
 
 	full := lipgloss.JoinVertical(lipgloss.Left, titleStr, titleGap, content, emptyLine, hints)
 	// Clip to panel height
@@ -1995,14 +2426,32 @@ func (l LogPage) renderCommitDetail(width, height int) string {
 			sections = append(sections, lipgloss.NewStyle().Background(bg).Width(iw).Render(lineContent))
 		}
 	}
-	// Hint: j/k navigates files, diff shows in center panel
-	sections = append(sections, bgLine(""))
-	sections = append(sections, bgLine(styles.KeyHintStyle().Background(t.Base).Render(
-		"j/k:files  Enter:view diff  Esc:close diff",
-	)))
-
+	// Build content from sections (without hints)
 	content := lipgloss.JoinVertical(lipgloss.Left, sections...)
-	full := lipgloss.JoinVertical(lipgloss.Left, titleStr, titleGap, content)
+
+	// Hint line (separate from content, pinned to bottom)
+	hints := bgLine(styles.KeyHintStyle().Background(t.Base).Render(
+		"j/k:files  Enter:view diff  Esc:close diff",
+	))
+	emptyLine := bgLine("")
+
+	// contentBudget = ph - title(1) - titleGap(1) - emptyLine(1) - hints(1)
+	contentBudget := ph - 4
+	if contentBudget < 1 {
+		contentBudget = 1
+	}
+
+	// Pad content to exactly contentBudget lines so hints are pinned to the bottom
+	contentLines := strings.Split(content, "\n")
+	if len(contentLines) > contentBudget {
+		contentLines = contentLines[:contentBudget]
+	}
+	for len(contentLines) < contentBudget {
+		contentLines = append(contentLines, bgLine(""))
+	}
+	content = strings.Join(contentLines, "\n")
+
+	full := lipgloss.JoinVertical(lipgloss.Left, titleStr, titleGap, content, emptyLine, hints)
 	// Clip to panel height so all panels stay the same outer height.
 	if cl := strings.Split(full, "\n"); len(cl) > ph {
 		full = strings.Join(cl[:ph], "\n")
@@ -2206,23 +2655,6 @@ func (l LogPage) renderWIPDetail(width, height int) string {
 		Render(descView)
 	commitInner = append(commitInner, cBgLine(descBox))
 
-	// Hint line
-	if commitFocused && l.commitEditing {
-		hintText := "Enter:commit  Tab:desc  Esc:stop"
-		if l.commitField == 1 {
-			hintText = "ctrl+s:commit  Tab:summary  Esc:stop"
-		}
-		commitInner = append(commitInner, cBgLine(styles.KeyHintStyle().Background(t.Base).Render(hintText)))
-	} else if commitFocused {
-		commitInner = append(commitInner, cBgLine(styles.KeyHintStyle().Background(t.Base).Render(
-			"Enter:edit  A:amend  u:unstaged  s:staged",
-		)))
-	} else {
-		commitInner = append(commitInner, cBgLine(styles.KeyHintStyle().Background(t.Base).Render(
-			"Enter:diff  space:stage/unstage  a:all  A:amend  d:discard",
-		)))
-	}
-
 	// Wrap commit area in a single outer container border
 	containerBorder := t.Surface2
 	if commitFocused {
@@ -2238,9 +2670,9 @@ func (l LogPage) renderWIPDetail(width, height int) string {
 		Render(innerContent)
 
 	// ---------------------------------------------------------------
-	// Measure commit area height (in rendered lines)
+	// Fixed commit box height: header(1) + margin(1) + summary(1+2border=3) + desc(3+2border=5) = 10 inner + 2 outer border = 12
 	// ---------------------------------------------------------------
-	commitHeight := strings.Count(commitContent, "\n") + 1
+	commitBoxHeight := 12
 
 	// ---------------------------------------------------------------
 	// Title
@@ -2252,9 +2684,26 @@ func (l LogPage) renderWIPDetail(width, height int) string {
 	titleGap := lipgloss.NewStyle().Background(t.Base).Width(iw).Render("")
 
 	// ---------------------------------------------------------------
-	// Compute file area height and pad/clip to fill the gap
+	// Build the context-dependent hint line (placed OUTSIDE the commit box)
 	// ---------------------------------------------------------------
-	fileAreaHeight := ph - 2 - commitHeight // 2 for title line + gap
+	var hintText string
+	if commitFocused && l.commitEditing {
+		hintText = "Enter:commit  Tab:desc  Esc:stop"
+		if l.commitField == 1 {
+			hintText = "ctrl+s:commit  Tab:summary  Esc:stop"
+		}
+	} else if commitFocused {
+		hintText = "Enter:edit  A:amend  u:unstaged  s:staged"
+	} else {
+		hintText = "Enter:diff  space:stage/unstage  a:all  A:amend  d:discard"
+	}
+	hintsLine := bgLine(styles.KeyHintStyle().Background(t.Base).Render(hintText))
+
+	// ---------------------------------------------------------------
+	// Compute file area height and pad/clip to fill the gap
+	// fileAreaHeight = ph - title(1) - titleGap(1) - commitBoxHeight - hints(1)
+	// ---------------------------------------------------------------
+	fileAreaHeight := ph - 2 - commitBoxHeight - 1
 	if fileAreaHeight < 1 {
 		fileAreaHeight = 1
 	}
@@ -2273,9 +2722,9 @@ func (l LogPage) renderWIPDetail(width, height int) string {
 	fileContent = strings.Join(fileLines, "\n")
 
 	// ---------------------------------------------------------------
-	// Assemble: title + file area (padded) + commit area (pinned bottom)
+	// Assemble: title + file area (padded) + commit area (fixed height) + hints (pinned bottom)
 	// ---------------------------------------------------------------
-	full := lipgloss.JoinVertical(lipgloss.Left, titleStr, titleGap, fileContent, commitContent)
+	full := lipgloss.JoinVertical(lipgloss.Left, titleStr, titleGap, fileContent, commitContent, hintsLine)
 
 	// Safety clip to panel height
 	if cl := strings.Split(full, "\n"); len(cl) > ph {
@@ -2292,6 +2741,35 @@ func (l LogPage) loadLog() tea.Cmd {
 	repo := l.repo
 	return func() tea.Msg {
 		commits, err := repo.Log(git.LogOptions{MaxCount: 200})
+		if err != nil {
+			return logLoadedMsg{commits: commits, err: err}
+		}
+
+		// Check for uncommitted changes — if dirty, prepend a synthetic WIP entry.
+		status, statusErr := repo.Status()
+		hasWIP := false
+		if statusErr == nil && status != nil {
+			hasWIP = len(status.StagedFiles()) > 0 || len(status.UnstagedFiles()) > 0
+		}
+
+		if hasWIP {
+			wipEntry := git.CommitInfo{
+				Hash:      "",
+				ShortHash: "●",
+				Subject:   "Working Changes",
+			}
+			commits = append([]git.CommitInfo{wipEntry}, commits...)
+		}
+
+		graphRows := git.ComputeGraph(commits)
+		return logLoadedMsg{commits: commits, graphRows: graphRows, hasWIP: hasWIP, err: nil}
+	}
+}
+
+func (l LogPage) loadLogFiltered(query string) tea.Cmd {
+	repo := l.repo
+	return func() tea.Msg {
+		commits, err := repo.Log(git.LogOptions{MaxCount: 200, Grep: query})
 		if err != nil {
 			return logLoadedMsg{commits: commits, err: err}
 		}
@@ -2370,7 +2848,7 @@ func (l LogPage) loadCenterDiff() tea.Cmd {
 			} else {
 				diff, err = repo.FileDiff(path, staged)
 			}
-			return centerDiffMsg{path: path, diff: diff, err: err}
+			return centerDiffMsg{path: path, diff: diff, err: err, isWIP: true, isStaged: staged}
 		}
 	}
 
@@ -2432,6 +2910,317 @@ func (l LogPage) wipCleanFile(path string) tea.Cmd {
 	}
 }
 
+// doRevertCommit runs git revert in the background and refreshes on completion.
+func (l LogPage) doRevertCommit(hash string) tea.Cmd {
+	repo := l.repo
+	return func() tea.Msg {
+		err := repo.RevertCommit(hash)
+		if err != nil {
+			return RequestToastMsg{Message: "Revert failed: " + err.Error(), IsError: true}
+		}
+		return commitOpDoneMsg{op: "revert"}
+	}
+}
+
+// doCherryPick runs git cherry-pick in the background and refreshes on completion.
+func (l LogPage) doCherryPick(hash string) tea.Cmd {
+	repo := l.repo
+	return func() tea.Msg {
+		err := repo.CherryPick(hash)
+		if err != nil {
+			return RequestToastMsg{Message: "Cherry-pick failed: " + err.Error(), IsError: true}
+		}
+		return commitOpDoneMsg{op: "cherry-pick"}
+	}
+}
+
+// copyToClipboard copies text to the system clipboard and shows a toast.
+func (l LogPage) copyToClipboard(text string) tea.Cmd {
+	return func() tea.Msg {
+		var cmd *exec.Cmd
+		switch runtime.GOOS {
+		case "darwin":
+			cmd = exec.Command("pbcopy")
+		case "linux":
+			// Try xclip first, then xsel
+			if _, err := exec.LookPath("xclip"); err == nil {
+				cmd = exec.Command("xclip", "-selection", "clipboard")
+			} else {
+				cmd = exec.Command("xsel", "--clipboard", "--input")
+			}
+		case "windows":
+			cmd = exec.Command("clip")
+		default:
+			return RequestToastMsg{Message: "Clipboard not supported on this OS", IsError: true}
+		}
+		cmd.Stdin = strings.NewReader(text)
+		if err := cmd.Run(); err != nil {
+			return RequestToastMsg{Message: "Copy failed: " + err.Error(), IsError: true}
+		}
+		short := text
+		if len(short) > 7 {
+			short = short[:7]
+		}
+		return RequestToastMsg{Message: "Copied " + short + " to clipboard"}
+	}
+}
+
+// IsSearching returns true when the search input is active.
+func (l LogPage) IsSearching() bool {
+	return l.searching
+}
+
+// handleSearchKeys handles keyboard input while the search bar is active.
+func (l LogPage) handleSearchKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
+		// Cancel search — clear query and close
+		l.searching = false
+		l.searchInput.Blur()
+		// If there was a previous query, clear the filter
+		if l.searchQuery != "" {
+			l.searchQuery = ""
+			return l, l.loadLog() // reload unfiltered
+		}
+		return l, nil
+
+	case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
+		// Apply search
+		l.searching = false
+		l.searchInput.Blur()
+		query := l.searchInput.Value()
+		l.searchQuery = query
+		if query == "" {
+			return l, l.loadLog() // empty query — reload unfiltered
+		}
+		// Apply filter depending on which panel initiated search
+		switch l.searchPanel {
+		case focusLogList:
+			// Server-side grep through commit messages
+			return l, l.loadLogFiltered(query)
+		case focusSidebar:
+			// Client-side filter — filter sidebar items
+			l.sidebar = l.sidebar.SetFilter(query)
+			return l, nil
+		}
+		return l, nil
+	}
+
+	// Forward all other keys to the text input
+	var cmd tea.Cmd
+	l.searchInput, cmd = l.searchInput.Update(msg)
+	return l, cmd
+}
+
+// handleDiffVisualKeys handles keys when in visual (line-selection) mode.
+func (l LogPage) handleDiffVisualKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	maxLine := len(l.centerDiffLines) - 1
+	if maxLine < 0 {
+		maxLine = 0
+	}
+
+	switch {
+	case key.Matches(msg, key.NewBinding(key.WithKeys("esc", "v"))):
+		// Exit visual mode
+		l.diffVisualMode = false
+		return l, nil
+
+	case key.Matches(msg, l.navKeys.Down):
+		if l.diffVisualCursor < maxLine {
+			l.diffVisualCursor++
+			// Auto-scroll to keep cursor visible
+			contentHeight := l.height - styles.PanelBorderHeight - 4 // approximate visible area
+			if contentHeight < 1 {
+				contentHeight = 1
+			}
+			if l.diffVisualCursor >= l.centerDiffScroll+contentHeight {
+				l.centerDiffScroll = l.diffVisualCursor - contentHeight + 1
+			}
+		}
+		return l, nil
+
+	case key.Matches(msg, l.navKeys.Up):
+		if l.diffVisualCursor > 0 {
+			l.diffVisualCursor--
+			if l.diffVisualCursor < l.centerDiffScroll {
+				l.centerDiffScroll = l.diffVisualCursor
+			}
+		}
+		return l, nil
+
+	case key.Matches(msg, key.NewBinding(key.WithKeys("s"))):
+		// Stage selected lines
+		if l.centerDiffIsWIP && !l.centerDiffIsStaged {
+			return l, l.stageSelectedLines()
+		}
+		return l, nil
+
+	case key.Matches(msg, key.NewBinding(key.WithKeys("u"))):
+		// Unstage selected lines
+		if l.centerDiffIsWIP && l.centerDiffIsStaged {
+			return l, l.unstageSelectedLines()
+		}
+		return l, nil
+	}
+	return l, nil
+}
+
+// visualSelectionRange returns the ordered (lo, hi) range of the visual selection.
+func (l LogPage) visualSelectionRange() (int, int) {
+	lo, hi := l.diffVisualAnchor, l.diffVisualCursor
+	if lo > hi {
+		lo, hi = hi, lo
+	}
+	return lo, hi
+}
+
+// stageSelectedLines stages only the selected lines from the visual selection.
+func (l LogPage) stageSelectedLines() tea.Cmd {
+	lo, hi := l.visualSelectionRange()
+	path := l.centerDiffPath
+	repo := l.repo
+
+	// Find which hunk(s) overlap the selection and build partial patches
+	type hunkSelection struct {
+		hunk    git.Hunk
+		indices map[int]bool // indices within hunk.Lines
+	}
+	var selections []hunkSelection
+
+	for hIdx, hunk := range l.centerDiffHunks {
+		if hIdx >= len(l.centerDiffHunkStarts) {
+			break
+		}
+		hunkStart := l.centerDiffHunkStarts[hIdx] + 1 // +1 to skip @@ header line
+		hunkEnd := hunkStart + len(hunk.Lines) - 1
+
+		// Check if selection overlaps this hunk's lines
+		if hi < hunkStart || lo > hunkEnd {
+			continue
+		}
+
+		selected := make(map[int]bool)
+		for lineIdx := range hunk.Lines {
+			diffLineIdx := hunkStart + lineIdx
+			if diffLineIdx >= lo && diffLineIdx <= hi {
+				selected[lineIdx] = true
+			}
+		}
+		if len(selected) > 0 {
+			selections = append(selections, hunkSelection{hunk: hunk, indices: selected})
+		}
+	}
+
+	if len(selections) == 0 {
+		return nil
+	}
+
+	l.diffVisualMode = false
+	return func() tea.Msg {
+		for _, sel := range selections {
+			err := repo.StageLines(path, sel.hunk, sel.indices)
+			if err != nil {
+				return RequestToastMsg{Message: "Stage lines failed: " + err.Error(), IsError: true}
+			}
+		}
+		return wipStageResultMsg{err: nil}
+	}
+}
+
+// unstageSelectedLines unstages only the selected lines from the visual selection.
+func (l LogPage) unstageSelectedLines() tea.Cmd {
+	lo, hi := l.visualSelectionRange()
+	path := l.centerDiffPath
+	repo := l.repo
+
+	type hunkSelection struct {
+		hunk    git.Hunk
+		indices map[int]bool
+	}
+	var selections []hunkSelection
+
+	for hIdx, hunk := range l.centerDiffHunks {
+		if hIdx >= len(l.centerDiffHunkStarts) {
+			break
+		}
+		hunkStart := l.centerDiffHunkStarts[hIdx] + 1
+		hunkEnd := hunkStart + len(hunk.Lines) - 1
+
+		if hi < hunkStart || lo > hunkEnd {
+			continue
+		}
+
+		selected := make(map[int]bool)
+		for lineIdx := range hunk.Lines {
+			diffLineIdx := hunkStart + lineIdx
+			if diffLineIdx >= lo && diffLineIdx <= hi {
+				selected[lineIdx] = true
+			}
+		}
+		if len(selected) > 0 {
+			selections = append(selections, hunkSelection{hunk: hunk, indices: selected})
+		}
+	}
+
+	if len(selections) == 0 {
+		return nil
+	}
+
+	l.diffVisualMode = false
+	return func() tea.Msg {
+		for _, sel := range selections {
+			err := repo.UnstageLines(path, sel.hunk, sel.indices)
+			if err != nil {
+				return RequestToastMsg{Message: "Unstage lines failed: " + err.Error(), IsError: true}
+			}
+		}
+		return wipStageResultMsg{err: nil}
+	}
+}
+
+// stageHunk stages a single diff hunk and refreshes the diff view.
+func (l LogPage) stageHunk(path string, hunk git.Hunk) tea.Cmd {
+	repo := l.repo
+	return func() tea.Msg {
+		err := repo.StageHunk(path, hunk)
+		if err != nil {
+			return RequestToastMsg{Message: "Stage hunk failed: " + err.Error(), IsError: true}
+		}
+		return wipStageResultMsg{err: nil}
+	}
+}
+
+// unstageHunk unstages a single diff hunk and refreshes the diff view.
+func (l LogPage) unstageHunk(path string, hunk git.Hunk) tea.Cmd {
+	repo := l.repo
+	return func() tea.Msg {
+		err := repo.UnstageHunk(path, hunk)
+		if err != nil {
+			return RequestToastMsg{Message: "Unstage hunk failed: " + err.Error(), IsError: true}
+		}
+		return wipStageResultMsg{err: nil}
+	}
+}
+
+// openInEditor returns a tea.Cmd that suspends the TUI and opens the given
+// file in the user's preferred editor.
+func (l LogPage) openInEditor(path string) tea.Cmd {
+	editor := os.Getenv("VISUAL")
+	if editor == "" {
+		editor = os.Getenv("EDITOR")
+	}
+	if editor == "" {
+		editor = "vim"
+	}
+
+	// Build absolute path relative to the repo root.
+	abs := filepath.Join(l.repo.Path(), path)
+	c := exec.Command(editor, abs)
+	return tea.ExecProcess(c, func(err error) tea.Msg {
+		return editorDoneMsg{err: err}
+	})
+}
+
 // loadAmendPrefill fetches the last commit message and sends it back as an
 // amendPrefillMsg so the inline commit textarea can be pre-filled.
 func (l LogPage) loadAmendPrefill() tea.Cmd {
@@ -2490,15 +3279,34 @@ func (l LogPage) renderStashDiff(width, height int) string {
 		)))
 		sections = append(sections, bgLine(""))
 		sections = append(sections, bgLine(styles.DimStyle().Render("Diff is shown in the center panel.")))
-		sections = append(sections, bgLine(""))
-		sections = append(sections, bgLine(styles.KeyHintStyle().Background(t.Base).Render(
-			"Esc:back to graph  j/k:scroll diff",
-		)))
 	}
 
 	titleGap := lipgloss.NewStyle().Background(t.Base).Width(iw).Render("")
 	content := lipgloss.JoinVertical(lipgloss.Left, sections...)
-	full := lipgloss.JoinVertical(lipgloss.Left, titleStr, titleGap, content)
+
+	// Hint line (separate from content, pinned to bottom)
+	hints := bgLine(styles.KeyHintStyle().Background(t.Base).Render(
+		"Esc:back to graph  j/k:scroll diff",
+	))
+	emptyLine := bgLine("")
+
+	// contentBudget = ph - title(1) - titleGap(1) - emptyLine(1) - hints(1)
+	contentBudget := ph - 4
+	if contentBudget < 1 {
+		contentBudget = 1
+	}
+
+	// Pad content to exactly contentBudget lines so hints are pinned to the bottom
+	contentLines := strings.Split(content, "\n")
+	if len(contentLines) > contentBudget {
+		contentLines = contentLines[:contentBudget]
+	}
+	for len(contentLines) < contentBudget {
+		contentLines = append(contentLines, bgLine(""))
+	}
+	content = strings.Join(contentLines, "\n")
+
+	full := lipgloss.JoinVertical(lipgloss.Left, titleStr, titleGap, content, emptyLine, hints)
 	// Clip to panel height so all panels stay the same outer height.
 	if cl := strings.Split(full, "\n"); len(cl) > ph {
 		full = strings.Join(cl[:ph], "\n")

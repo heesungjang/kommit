@@ -67,6 +67,28 @@ func (r *Repository) PushSetUpstream(remote, branch string) error {
 	return err
 }
 
+// ForcePush pushes the current branch with --force-with-lease (safe force).
+func (r *Repository) ForcePush(remote, branch string) error {
+	args := []string{"push", "--force-with-lease"}
+	if remote != "" {
+		args = append(args, remote)
+	}
+	if branch != "" {
+		args = append(args, branch)
+	}
+	_, err := r.run(args...)
+	return err
+}
+
+// HasUpstream returns true if the given branch has an upstream tracking ref.
+func (r *Repository) HasUpstream(branch string) (bool, error) {
+	_, err := r.run("rev-parse", "--abbrev-ref", branch+"@{upstream}")
+	if err != nil {
+		return false, nil // no upstream, not a fatal error
+	}
+	return true, nil
+}
+
 // Pull pulls changes from the remote.
 func (r *Repository) Pull(remote, branch string) error {
 	args := []string{"pull"}

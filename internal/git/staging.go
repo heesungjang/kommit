@@ -81,3 +81,112 @@ func buildPatch(oldPath, newPath string, hunk Hunk) string {
 	}
 	return b.String()
 }
+
+// StageLines stages only the selected lines from a hunk.
+// selectedIndices is a set of line indices within hunk.Lines that the user selected.
+// For staging from unstaged diff:
+//   - Selected "+" lines are included as "+" (added)
+//   - Unselected "+" lines are dropped (treated as not yet added)
+//   - All "-" lines are included as "-" (removed)
+//   - Context lines are always included
+func (r *Repository) StageLines(path string, hunk Hunk, selectedIndices map[int]bool) error {
+	partial := buildPartialPatch(path, hunk, selectedIndices, false)
+	if partial == "" {
+		return nil // nothing to stage
+	}
+	_, err := r.runWithStdin(partial, "apply", "--cached", "--unidiff-zero", "-")
+	return err
+}
+
+// UnstageLines unstages only the selected lines from a staged hunk.
+// For unstaging from staged diff:
+//   - Selected "-" lines are included (will be un-removed)
+//   - Unselected "-" lines are dropped
+//   - All "+" lines are included
+//   - Context lines are always included
+func (r *Repository) UnstageLines(path string, hunk Hunk, selectedIndices map[int]bool) error {
+	partial := buildPartialPatch(path, hunk, selectedIndices, true)
+	if partial == "" {
+		return nil
+	}
+	_, err := r.runWithStdin(partial, "apply", "--cached", "--reverse", "--unidiff-zero", "-")
+	return err
+}
+
+// buildPartialPatch constructs a unified diff patch containing only the selected
+// add/remove lines from a hunk. Unselected add lines are converted to context
+// for staging; unselected remove lines are converted to context for unstaging.
+func buildPartialPatch(path string, hunk Hunk, selectedIndices map[int]bool, reverse bool) string {
+	var patchLines []string
+	oldCount := 0
+	newCount := 0
+
+	for i, line := range hunk.Lines {
+		if len(line) == 0 {
+			// Empty line = context
+			patchLines = append(patchLines, " ")
+			oldCount++
+			newCount++
+			continue
+		}
+
+		ch := line[0]
+		rest := line[1:]
+
+		switch ch {
+		case '+':
+			if reverse {
+				// For unstage (reverse apply): "+" lines are always kept
+				patchLines = append(patchLines, line)
+				newCount++
+			} else {
+				// For stage: only include selected "+" lines; drop unselected
+				if selectedIndices[i] {
+					patchLines = append(patchLines, line)
+					newCount++
+				} else {
+					// Unselected add: skip it (don't stage this addition)
+					// Don't add to patch at all
+				}
+			}
+		case '-':
+			if reverse {
+				// For unstage (reverse apply): only include selected "-" lines
+				if selectedIndices[i] {
+					patchLines = append(patchLines, line)
+					oldCount++
+				} else {
+					// Unselected remove: convert to context (keep the line)
+					patchLines = append(patchLines, " "+rest)
+					oldCount++
+					newCount++
+				}
+			} else {
+				// For stage: "-" lines are always kept
+				patchLines = append(patchLines, line)
+				oldCount++
+			}
+		default:
+			// Context line
+			patchLines = append(patchLines, line)
+			oldCount++
+			newCount++
+		}
+	}
+
+	if len(patchLines) == 0 || (oldCount == 0 && newCount == 0) {
+		return ""
+	}
+
+	// Build the patch with corrected hunk header
+	header := fmt.Sprintf("@@ -%d,%d +%d,%d @@", hunk.StartOld, oldCount, hunk.StartNew, newCount)
+
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("--- a/%s\n", path))
+	b.WriteString(fmt.Sprintf("+++ b/%s\n", path))
+	b.WriteString(header + "\n")
+	for _, pl := range patchLines {
+		b.WriteString(pl + "\n")
+	}
+	return b.String()
+}

@@ -2,12 +2,18 @@ package components
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/nicholascross/opengit/internal/tui/styles"
 	"github.com/nicholascross/opengit/internal/tui/theme"
+)
+
+// ansiBgRe matches ANSI escape sequences that set a background color.
+var ansiBgRe = regexp.MustCompile(
+	`\x1b\[(?:4[0-7]|49|10[0-7]|48;5;\d+|48;2;\d+;\d+;\d+)m`,
 )
 
 // StatusBar displays branch info, ahead/behind counts, and help hints.
@@ -78,61 +84,94 @@ func (sb StatusBar) Update(msg tea.Msg) (StatusBar, tea.Cmd) {
 // View implements tea.Model.
 func (sb StatusBar) View() string {
 	t := theme.Active
-	barStyle := styles.StatusBarStyle().Width(sb.width)
 
 	bg := t.Surface0
-	bgStyle := lipgloss.NewStyle().Background(bg)
+
+	// IMPORTANT: Do NOT set .Background(bg) on individual segment styles.
+	// Lipgloss combines fg+bg into compound SGR sequences (e.g.
+	// \x1b[1;38;2;R;G;B;48;2;R;G;Bm) which the ansiBgRe regex cannot
+	// strip. Instead, only set .Foreground() here and let the ANSI
+	// patching block below uniformly apply the background.
 
 	// Left side: branch info
 	branchStr := lipgloss.NewStyle().
 		Foreground(t.Green).
-		Background(bg).
 		Bold(true).
 		Render(" " + sb.branch)
 
 	// Ahead/behind
 	var abParts []string
 	if sb.ahead > 0 {
-		abParts = append(abParts, lipgloss.NewStyle().Foreground(t.Green).Background(bg).Render(fmt.Sprintf("+%d", sb.ahead)))
+		abParts = append(abParts, lipgloss.NewStyle().Foreground(t.Green).Render(fmt.Sprintf("+%d", sb.ahead)))
 	}
 	if sb.behind > 0 {
-		abParts = append(abParts, lipgloss.NewStyle().Foreground(t.Red).Background(bg).Render(fmt.Sprintf("-%d", sb.behind)))
+		abParts = append(abParts, lipgloss.NewStyle().Foreground(t.Red).Render(fmt.Sprintf("-%d", sb.behind)))
 	}
 	abStr := ""
 	if len(abParts) > 0 {
-		sep := bgStyle.Render("/")
-		abStr = bgStyle.Render(" ") + strings.Join(abParts, sep)
+		abStr = " " + strings.Join(abParts, "/")
 	}
 
 	// Clean/dirty status
 	var statusStr string
 	if sb.clean {
-		statusStr = lipgloss.NewStyle().Foreground(t.Green).Background(bg).Render(" clean")
+		statusStr = lipgloss.NewStyle().Foreground(t.Green).Render(" clean")
 	} else {
-		statusStr = lipgloss.NewStyle().Foreground(t.Yellow).Background(bg).Render(" dirty")
+		statusStr = lipgloss.NewStyle().Foreground(t.Yellow).Render(" dirty")
 	}
 
 	leftContent := branchStr + abStr + statusStr
 
 	// Add repo path if set
 	if sb.repoDir != "" {
-		leftContent += lipgloss.NewStyle().Foreground(t.Overlay0).Background(bg).Render("  " + sb.repoDir)
+		leftContent += lipgloss.NewStyle().Foreground(t.Overlay0).Render("  " + sb.repoDir)
 	}
 
-	// Right side: help hint
-	helpHint := styles.KeyStyle().Background(bg).Render("?") +
-		styles.KeyHintStyle().Background(bg).Render(":help")
+	// Right side: help hint (no bg on individual styles)
+	helpHint := styles.KeyStyle().Render("?") +
+		styles.KeyHintStyle().Render(":help")
 
 	// Calculate padding between left and right
 	leftWidth := lipgloss.Width(leftContent)
 	rightWidth := lipgloss.Width(helpHint)
-	padding := sb.width - leftWidth - rightWidth - 2 // -2 for barStyle padding
+	padding := sb.width - leftWidth - rightWidth - 2 // -2 for left/right margin spaces
 	if padding < 1 {
 		padding = 1
 	}
 
-	padStr := bgStyle.Render(strings.Repeat(" ", padding))
-	content := leftContent + padStr + helpHint
+	padStr := strings.Repeat(" ", padding)
+	content := " " + leftContent + padStr + helpHint + " "
 
-	return barStyle.Render(content)
+	// Force background on every cell using ANSI patching.
+	// Strip all foreign bg codes, then re-insert our bg after every reset.
+	bgSeq := hexToBgSeq(string(bg))
+	if bgSeq != "" {
+		reset := "\x1b[0m"
+		// Strip any foreign background sequences
+		content = ansiBgRe.ReplaceAllString(content, "")
+		// Re-insert our bg after every reset
+		content = strings.ReplaceAll(content, reset, reset+bgSeq)
+		// Ensure full line is covered
+		w := lipgloss.Width(content)
+		if w < sb.width {
+			content += strings.Repeat(" ", sb.width-w)
+		}
+		content = bgSeq + content + reset
+	}
+
+	return content
+}
+
+// hexToBgSeq converts a hex color string (e.g. "#313244") to an ANSI 24-bit
+// background escape sequence.
+func hexToBgSeq(hex string) string {
+	if len(hex) > 0 && hex[0] == '#' {
+		hex = hex[1:]
+	}
+	if len(hex) != 6 {
+		return ""
+	}
+	var r, g, b int
+	fmt.Sscanf(hex, "%02x%02x%02x", &r, &g, &b)
+	return fmt.Sprintf("\x1b[48;2;%d;%d;%dm", r, g, b)
 }

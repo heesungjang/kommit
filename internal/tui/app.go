@@ -73,6 +73,7 @@ type pollResultMsg struct {
 type App struct {
 	repo      *git.Repository
 	mainView  tea.Model // the LogPage — our single unified view
+	toolbar   components.Toolbar
 	statusBar components.StatusBar
 	keys      keys.GlobalKeys
 	width     int
@@ -95,6 +96,7 @@ func NewApp(repo *git.Repository) App {
 	return App{
 		repo:      repo,
 		mainView:  pages.NewLogPage(repo, 80, 24), // initial size; updated on WindowSizeMsg
+		toolbar:   components.NewToolbar(),
 		statusBar: components.NewStatusBar(),
 		keys:      keys.NewGlobalKeys(),
 		toast:     components.NewToast(),
@@ -120,6 +122,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		a.width = msg.Width
 		a.height = msg.Height
+		a.toolbar = a.toolbar.SetWidth(msg.Width)
 		a.statusBar = a.statusBar.SetSize(msg.Width)
 		a.toast = a.toast.SetWidth(msg.Width)
 		// Propagate to main view with adjusted height (minus status bar).
@@ -158,6 +161,24 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case dialog.ConfirmResultMsg:
 		a.showDialog = false
 		a.dialog = nil
+		// Handle git op confirmations (push/pull/force-push)
+		if msg.Confirmed && strings.HasPrefix(msg.ID, "gitop-") {
+			suffix := strings.TrimPrefix(msg.ID, "gitop-")
+			force := false
+			op := suffix
+			if suffix == "force-push" {
+				op = "push"
+				force = true
+			}
+			label := capitalize(op)
+			if force {
+				label = "Force p" + label[1:] // "Force pushing..."
+			}
+			var toastCmd tea.Cmd
+			a.toast, toastCmd = a.toast.ShowInfo(label + "ing...")
+			return a, tea.Batch(toastCmd, a.doGitOp(op, force))
+		}
+		// Forward all other confirmations to the main view
 		var cmd tea.Cmd
 		a.mainView, cmd = a.mainView.Update(msg)
 		cmds = append(cmds, cmd)
@@ -223,14 +244,29 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// -- Git push/pull/fetch request -----------------------------------------
 	case pages.RequestGitOpMsg:
+		// Push and pull require confirmation; fetch is non-destructive.
+		if msg.Op == "push" || msg.Op == "pull" {
+			id := "gitop-" + msg.Op
+			title := capitalize(msg.Op) + "?"
+			body := "Are you sure you want to " + msg.Op + "?"
+			if msg.Force {
+				id = "gitop-force-push"
+				title = "Force Push?"
+				body = "Force push with --force-with-lease?\nThis will overwrite remote history."
+			}
+			dlg := dialog.NewConfirm(id, title, body, a.width, a.height)
+			a.dialog = dlg
+			a.showDialog = true
+			return a, dlg.Init()
+		}
 		var toastCmd tea.Cmd
 		a.toast, toastCmd = a.toast.ShowInfo(capitalize(msg.Op) + "ing...")
-		return a, tea.Batch(toastCmd, a.doGitOp(msg.Op))
+		return a, tea.Batch(toastCmd, a.doGitOp(msg.Op, false))
 
 	case gitOpDoneMsg:
 		if msg.err != nil {
 			var cmd tea.Cmd
-			a.toast, cmd = a.toast.ShowError(capitalize(msg.op) + " failed: " + msg.err.Error())
+			a.toast, cmd = a.toast.ShowError(capitalize(msg.op) + " failed: " + friendlyGitError(msg.op, msg.err))
 			cmds = append(cmds, cmd)
 		} else {
 			var cmd tea.Cmd
@@ -397,10 +433,11 @@ func (a App) View() string {
 		)
 	}
 
+	toolBar := a.toolbar.View()
 	statusBar := a.statusBar.View()
 
 	// Height available for the main view.
-	pageHeight := a.height - lipgloss.Height(statusBar)
+	pageHeight := a.height - lipgloss.Height(toolBar) - lipgloss.Height(statusBar)
 	if pageHeight < 0 {
 		pageHeight = 0
 	}
@@ -412,8 +449,12 @@ func (a App) View() string {
 		Background(t.Base).
 		Render(pageView)
 
-	// Compose the layout: main view + status bar (no tab bar).
-	layout := lipgloss.JoinVertical(lipgloss.Left, pageView, statusBar)
+	// Compose the layout: main view + toolbar + status bar.
+	layout := lipgloss.NewStyle().
+		Width(a.width).
+		Height(a.height).
+		Background(t.Base).
+		Render(lipgloss.JoinVertical(lipgloss.Left, pageView, toolBar, statusBar))
 
 	// Overlay dialog if active.
 	if a.showDialog && a.dialog != nil {
@@ -454,7 +495,7 @@ func (a App) View() string {
 
 // pageHeight returns the height available for the main view.
 func (a App) pageHeight() int {
-	h := a.height - 1 // status bar only (no tab bar)
+	h := a.height - 2 // toolbar (1 line) + status bar (1 line)
 	if h < 0 {
 		return 0
 	}
@@ -513,13 +554,30 @@ func (a App) doCommitAmend(message string) tea.Cmd {
 }
 
 // doGitOp runs a push/pull/fetch operation asynchronously.
-func (a App) doGitOp(op string) tea.Cmd {
+func (a App) doGitOp(op string, force bool) tea.Cmd {
 	repo := a.repo
 	return func() tea.Msg {
 		var err error
 		switch op {
 		case "push":
-			err = repo.Push("", "")
+			if force {
+				err = repo.ForcePush("", "")
+			} else {
+				// Auto-detect missing upstream and set it.
+				branch, brErr := repo.CurrentBranch()
+				if brErr == nil && branch != "" && branch != "HEAD" {
+					hasUp, _ := repo.HasUpstream(branch)
+					if !hasUp {
+						err = repo.PushSetUpstream("origin", branch)
+						if err == nil {
+							return gitOpDoneMsg{op: op, err: nil}
+						}
+					}
+				}
+				if err == nil {
+					err = repo.Push("", "")
+				}
+			}
 		case "pull":
 			err = repo.Pull("", "")
 		case "fetch":
@@ -555,4 +613,48 @@ func capitalize(s string) string {
 		return ""
 	}
 	return strings.ToUpper(s[:1]) + s[1:]
+}
+
+// friendlyGitError returns a user-friendly message for common git errors.
+// If the error is not recognized, the original message is returned.
+func friendlyGitError(op string, err error) string {
+	msg := err.Error()
+	lower := strings.ToLower(msg)
+
+	switch op {
+	case "push":
+		switch {
+		case strings.Contains(lower, "rejected"):
+			return "Push rejected — remote has new commits. Pull first."
+		case strings.Contains(lower, "no upstream"):
+			return "No upstream branch configured."
+		case strings.Contains(lower, "authentication") || strings.Contains(lower, "permission denied"):
+			return "Authentication failed. Check your credentials."
+		case strings.Contains(lower, "could not resolve host"):
+			return "Cannot reach remote. Check your network connection."
+		case strings.Contains(lower, "does not match any"):
+			return "Branch not found on remote."
+		}
+	case "pull":
+		switch {
+		case strings.Contains(lower, "not possible because you have unmerged"):
+			return "Pull failed — resolve merge conflicts first."
+		case strings.Contains(lower, "uncommitted changes"):
+			return "Pull failed — commit or stash your changes first."
+		case strings.Contains(lower, "authentication") || strings.Contains(lower, "permission denied"):
+			return "Authentication failed. Check your credentials."
+		case strings.Contains(lower, "could not resolve host"):
+			return "Cannot reach remote. Check your network connection."
+		case strings.Contains(lower, "conflict"):
+			return "Pull completed with merge conflicts. Resolve them to continue."
+		}
+	case "fetch":
+		switch {
+		case strings.Contains(lower, "authentication") || strings.Contains(lower, "permission denied"):
+			return "Authentication failed. Check your credentials."
+		case strings.Contains(lower, "could not resolve host"):
+			return "Cannot reach remote. Check your network connection."
+		}
+	}
+	return msg
 }

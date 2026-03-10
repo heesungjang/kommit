@@ -32,3 +32,29 @@ func (r *Repository) Tags() ([]TagInfo, error) {
 	}
 	return tags, nil
 }
+
+// CreateTag creates a lightweight tag at the given commit (or HEAD if hash is empty).
+func (r *Repository) CreateTag(name, hash string) error {
+	args := []string{"tag", name}
+	if hash != "" {
+		args = append(args, hash)
+	}
+	_, err := r.run(args...)
+	return err
+}
+
+// CreateAnnotatedTag creates an annotated tag with a message.
+func (r *Repository) CreateAnnotatedTag(name, hash, message string) error {
+	args := []string{"tag", "-a", name, "-m", message}
+	if hash != "" {
+		args = append(args, hash)
+	}
+	_, err := r.run(args...)
+	return err
+}
+
+// DeleteTag deletes a local tag.
+func (r *Repository) DeleteTag(name string) error {
+	_, err := r.run("tag", "-d", name)
+	return err
+}

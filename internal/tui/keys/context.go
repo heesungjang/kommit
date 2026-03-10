@@ -33,6 +33,7 @@ var (
 	Navigation = NewNavigationKeys()
 	Status     = NewStatusKeys()
 	Branch     = NewBranchKeys()
+	CommitOps  = NewCommitOpsKeys()
 	Diff       = NewDiffKeys()
 	Stash      = NewStashKeys()
 	PR         = NewPRKeys()
@@ -61,6 +62,7 @@ func ShortHelp(ctx Context) []key.Binding {
 			Status.Unstage,
 			Status.Commit,
 			RemoteOps.Push,
+			RemoteOps.ForcePush,
 			Status.AICommit,
 		}, common...)
 
@@ -69,6 +71,9 @@ func ShortHelp(ctx Context) []key.Binding {
 			Navigation.Up,
 			Navigation.Down,
 			Navigation.Select,
+			CommitOps.Revert,
+			CommitOps.CherryPick,
+			CommitOps.CopyHash,
 			Global.Search,
 		}, common...)
 
@@ -108,6 +113,7 @@ func ShortHelp(ctx Context) []key.Binding {
 			Navigation.Down,
 			RemoteOps.Fetch,
 			RemoteOps.Push,
+			RemoteOps.ForcePush,
 			RemoteOps.Pull,
 		}, common...)
 
@@ -198,6 +204,7 @@ func FullHelp(ctx Context) [][]key.Binding {
 
 	remoteGroup := []key.Binding{
 		RemoteOps.Push,
+		RemoteOps.ForcePush,
 		RemoteOps.Pull,
 		RemoteOps.Fetch,
 	}
@@ -255,6 +262,9 @@ func FullHelp(ctx Context) [][]key.Binding {
 			Navigation.Select,
 			Navigation.PageUp,
 			Navigation.PageDown,
+			CommitOps.Revert,
+			CommitOps.CherryPick,
+			CommitOps.CopyHash,
 		})
 
 	case ContextPR:

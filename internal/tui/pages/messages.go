@@ -30,7 +30,8 @@ type RequestToastMsg struct {
 
 // RequestGitOpMsg requests a push/pull/fetch operation from the app shell.
 type RequestGitOpMsg struct {
-	Op string // "push", "pull", or "fetch"
+	Op    string // "push", "pull", or "fetch"
+	Force bool   // force push with --force-with-lease
 }
 
 // RequestTextInputMsg asks the app shell to display a text input dialog.

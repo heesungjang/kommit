@@ -274,6 +274,35 @@ func NewBranchKeys() BranchKeys {
 }
 
 // ---------------------------------------------------------------------------
+// Commit operations keybindings (actions on past commits)
+// ---------------------------------------------------------------------------
+
+// CommitOpsKeys defines keybindings for operations on past commits.
+type CommitOpsKeys struct {
+	Revert     key.Binding
+	CherryPick key.Binding
+	CopyHash   key.Binding
+}
+
+// NewCommitOpsKeys returns populated commit operation keybindings.
+func NewCommitOpsKeys() CommitOpsKeys {
+	return CommitOpsKeys{
+		Revert: key.NewBinding(
+			key.WithKeys("R"),
+			key.WithHelp("R", "revert commit"),
+		),
+		CherryPick: key.NewBinding(
+			key.WithKeys("C"),
+			key.WithHelp("C", "cherry-pick"),
+		),
+		CopyHash: key.NewBinding(
+			key.WithKeys("y"),
+			key.WithHelp("y", "copy hash"),
+		),
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Diff view keybindings
 // ---------------------------------------------------------------------------
 
@@ -347,9 +376,10 @@ func NewStashKeys() StashKeys {
 
 // RemoteOpsKeys defines keybindings for push/pull/fetch that work from any page.
 type RemoteOpsKeys struct {
-	Push  key.Binding
-	Pull  key.Binding
-	Fetch key.Binding
+	Push      key.Binding
+	ForcePush key.Binding
+	Pull      key.Binding
+	Fetch     key.Binding
 }
 
 // NewRemoteOpsKeys returns populated remote operation keybindings.
@@ -358,6 +388,10 @@ func NewRemoteOpsKeys() RemoteOpsKeys {
 		Push: key.NewBinding(
 			key.WithKeys("p"),
 			key.WithHelp("p", "push"),
+		),
+		ForcePush: key.NewBinding(
+			key.WithKeys("F"),
+			key.WithHelp("F", "force push"),
 		),
 		Pull: key.NewBinding(
 			key.WithKeys("P"),
