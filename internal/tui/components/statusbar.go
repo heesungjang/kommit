@@ -18,12 +18,15 @@ var ansiBgRe = regexp.MustCompile(
 
 // StatusBar displays branch info, ahead/behind counts, and help hints.
 type StatusBar struct {
-	branch  string
-	ahead   int
-	behind  int
-	clean   bool
-	repoDir string
-	width   int
+	branch    string
+	ahead     int
+	behind    int
+	clean     bool
+	repoDir   string
+	width     int
+	bisecting bool
+	rebasing  bool
+	comparing string // non-empty when comparing commits (shows base hash)
 }
 
 // NewStatusBar creates a new StatusBar component.
@@ -57,6 +60,24 @@ func (sb StatusBar) SetClean(clean bool) StatusBar {
 // SetRepoDir sets the repository directory path.
 func (sb StatusBar) SetRepoDir(dir string) StatusBar {
 	sb.repoDir = dir
+	return sb
+}
+
+// SetBisecting sets whether a bisect session is active.
+func (sb StatusBar) SetBisecting(bisecting bool) StatusBar {
+	sb.bisecting = bisecting
+	return sb
+}
+
+// SetRebasing sets whether a rebase is in progress.
+func (sb StatusBar) SetRebasing(rebasing bool) StatusBar {
+	sb.rebasing = rebasing
+	return sb
+}
+
+// SetComparing sets the compare base hash (empty to clear).
+func (sb StatusBar) SetComparing(hash string) StatusBar {
+	sb.comparing = hash
 	return sb
 }
 
@@ -121,6 +142,17 @@ func (sb StatusBar) View() string {
 	}
 
 	leftContent := branchStr + abStr + statusStr
+
+	// State indicators
+	if sb.bisecting {
+		leftContent += lipgloss.NewStyle().Foreground(t.Red).Bold(true).Render("  BISECTING")
+	}
+	if sb.rebasing {
+		leftContent += lipgloss.NewStyle().Foreground(t.Peach).Bold(true).Render("  REBASING")
+	}
+	if sb.comparing != "" {
+		leftContent += lipgloss.NewStyle().Foreground(t.Mauve).Bold(true).Render("  COMPARING:" + sb.comparing)
+	}
 
 	// Add repo path if set
 	if sb.repoDir != "" {

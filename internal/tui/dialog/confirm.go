@@ -79,6 +79,9 @@ func (c Confirm) View() string {
 	if dialogWidth+2 > c.width-2 { // +2 for border, -2 for centering margin
 		dialogWidth = c.width - 4
 	}
+	if dialogWidth < 20 {
+		dialogWidth = 20
+	}
 
 	title := lipgloss.NewStyle().
 		Foreground(t.Blue).

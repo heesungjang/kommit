@@ -93,6 +93,9 @@ func (t TextInput) View() string {
 	if dialogWidth+2 > t.width-2 {
 		dialogWidth = t.width - 4
 	}
+	if dialogWidth < 20 {
+		dialogWidth = 20
+	}
 
 	title := lipgloss.NewStyle().
 		Foreground(th.Blue).

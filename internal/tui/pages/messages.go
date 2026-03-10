@@ -50,3 +50,23 @@ type RefreshStatusMsg struct{}
 type StatusDirtyMsg struct {
 	Dirty bool
 }
+
+// CompareStateMsg notifies the app shell about compare mode state.
+type CompareStateMsg struct {
+	Active bool
+	Hash   string // short hash of compare base
+}
+
+// RequestMenuMsg asks the app shell to display a menu dialog.
+type RequestMenuMsg struct {
+	ID      string
+	Title   string
+	Options []MenuOption
+}
+
+// MenuOption represents a single option in a menu dialog request.
+type MenuOption struct {
+	Label       string
+	Description string
+	Key         string
+}

@@ -111,6 +111,9 @@ func (c CommitMsg) View() string {
 	if dialogWidth+2 > c.width-2 {
 		dialogWidth = c.width - 4
 	}
+	if dialogWidth < 20 {
+		dialogWidth = 20
+	}
 
 	titleText := "Commit"
 	if c.amend {

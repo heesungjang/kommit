@@ -15,6 +15,24 @@ type DiffFile struct {
 	Binary  bool
 }
 
+// Stats returns the number of added and removed lines in the file.
+func (f DiffFile) Stats() (added, removed int) {
+	for _, h := range f.Hunks {
+		for _, line := range h.Lines {
+			if len(line) == 0 {
+				continue
+			}
+			switch line[0] {
+			case '+':
+				added++
+			case '-':
+				removed++
+			}
+		}
+	}
+	return
+}
+
 // DiffResult holds a complete diff output.
 type DiffResult struct {
 	Files []DiffFile
@@ -246,9 +264,18 @@ type DiffStatEntry struct {
 	Removed int
 }
 
-// DiffStat returns file change statistics.
+// DiffStat returns file change statistics for unstaged changes.
 func (r *Repository) DiffStat() ([]DiffStatEntry, error) {
-	out, err := r.run("diff", "--stat", "--numstat")
+	out, err := r.run("diff", "--numstat")
+	if err != nil {
+		return nil, err
+	}
+	return parseDiffStat(out), nil
+}
+
+// DiffStatStaged returns file change statistics for staged changes.
+func (r *Repository) DiffStatStaged() ([]DiffStatEntry, error) {
+	out, err := r.run("diff", "--cached", "--numstat")
 	if err != nil {
 		return nil, err
 	}

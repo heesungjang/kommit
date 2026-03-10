@@ -78,6 +78,7 @@ type Sidebar struct {
 	pendingDeleteBranch string
 	pendingDeleteTag    string
 	pendingDropStash    int
+	pendingRebaseBranch string
 
 	// State
 	loading bool
@@ -305,6 +306,13 @@ func (s Sidebar) HandleDialogResult(msg tea.Msg) (Sidebar, tea.Cmd) {
 				return s, s.deleteTag(name)
 			}
 			s.pendingDeleteTag = ""
+		case "sidebar-rebase":
+			if msg.Confirmed && s.pendingRebaseBranch != "" {
+				name := s.pendingRebaseBranch
+				s.pendingRebaseBranch = ""
+				return s, s.rebaseBranch(name)
+			}
+			s.pendingRebaseBranch = ""
 		}
 	}
 
@@ -387,6 +395,8 @@ func (s Sidebar) handleKey(msg tea.KeyMsg) (Sidebar, tea.Cmd) {
 		return s.handleDelete()
 	case key.Matches(msg, s.branchKeys.Merge):
 		return s.handleMerge()
+	case key.Matches(msg, s.branchKeys.Rebase):
+		return s.handleRebase()
 
 	// Stash actions
 	case key.Matches(msg, s.stashKeys.Save):
@@ -570,7 +580,7 @@ func (s Sidebar) handleStashDrop() (Sidebar, tea.Cmd) {
 // View
 // ---------------------------------------------------------------------------
 
-func (s Sidebar) View(focused bool) string {
+func (s Sidebar) View(focused bool, borderColor lipgloss.Color) string {
 	t := theme.Active
 	iw := s.width - styles.PanelPaddingWidth
 	ph := s.height - styles.PanelBorderHeight
@@ -585,11 +595,17 @@ func (s Sidebar) View(focused bool) string {
 
 	if s.loading {
 		content := styles.DimStyle().Width(iw).Render("Loading...")
-		return styles.PanelStyle(focused).Width(s.width).Height(ph).Render(content)
+		return styles.ClipPanel(styles.PanelStyleColor(borderColor).Width(s.width).Height(ph).Render(content), s.height)
 	}
 
+	// Build hints early so we can measure their height for viewport windowing
+	hintRendered := lipgloss.NewStyle().Background(t.Base).Width(iw).Render(
+		styles.KeyHintStyle().Render("enter:act  n:new  D:del"),
+	)
+	hintHeight := strings.Count(hintRendered, "\n") + 1
+
 	// Viewport windowing
-	visibleCount := ph - 3 // reserve 1 line for title, 1 for title gap, 1 for hints
+	visibleCount := ph - 2 - hintHeight // title(1) + titleGap(1) + hintHeight
 	if visibleCount < 1 {
 		visibleCount = 1
 	}
@@ -689,11 +705,6 @@ func (s Sidebar) View(focused bool) string {
 	// Title with panel shortcut indicator
 	titleStr := styles.PanelTitle("Sidebar", "1", focused, iw)
 
-	// Key hints at bottom
-	hints := styles.KeyHintStyle().Background(t.Base).Width(iw).Render(
-		"enter:act  n:new  D:del  R:ren",
-	)
-
 	titleGap := lipgloss.NewStyle().Background(t.Base).Width(iw).Render("")
 
 	// Pad content to exactly visibleCount lines so hints are pinned to the bottom
@@ -707,12 +718,12 @@ func (s Sidebar) View(focused bool) string {
 	}
 	content = strings.Join(contentLines, "\n")
 
-	full := lipgloss.JoinVertical(lipgloss.Left, titleStr, titleGap, content, hints)
+	full := lipgloss.JoinVertical(lipgloss.Left, titleStr, titleGap, content, hintRendered)
 	// Clip to panel height so sidebar stays the same outer height as other panels.
 	if cl := strings.Split(full, "\n"); len(cl) > ph {
 		full = strings.Join(cl[:ph], "\n")
 	}
-	return styles.PanelStyle(focused).Width(s.width).Height(ph).Render(full)
+	return styles.ClipPanel(styles.PanelStyleColor(borderColor).Width(s.width).Height(ph).Render(full), s.height)
 }
 
 // Dimensions returns the current width/height.
@@ -806,6 +817,50 @@ func (s Sidebar) mergeBranch(name string) tea.Cmd {
 	return func() tea.Msg {
 		err := repo.Merge(name)
 		return sidebarOpDoneMsg{action: "Merge " + name, err: err}
+	}
+}
+
+func (s Sidebar) handleRebase() (Sidebar, tea.Cmd) {
+	item := s.currentItem()
+	if item == nil {
+		return s, nil
+	}
+	var name string
+	switch item.kind {
+	case itemLocalBranch:
+		if item.index < len(s.localBranches) {
+			b := s.localBranches[item.index]
+			if b.IsCurrent {
+				return s, nil
+			}
+			name = b.Name
+		}
+	case itemRemoteBranch:
+		if item.index < len(s.remoteBranches) {
+			name = s.remoteBranches[item.index].Name
+		}
+	default:
+		return s, nil
+	}
+	if name == "" {
+		return s, nil
+	}
+	s.pendingRebaseBranch = name
+	branchName := name
+	return s, func() tea.Msg {
+		return RequestConfirmMsg{
+			ID:      "sidebar-rebase",
+			Title:   "Rebase?",
+			Message: "Rebase current branch onto " + branchName + "?\n\nThis rewrites commit history.",
+		}
+	}
+}
+
+func (s Sidebar) rebaseBranch(name string) tea.Cmd {
+	repo := s.repo
+	return func() tea.Msg {
+		err := repo.Rebase(name)
+		return sidebarOpDoneMsg{action: "Rebase onto " + name, err: err}
 	}
 }
 

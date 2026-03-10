@@ -282,6 +282,14 @@ type CommitOpsKeys struct {
 	Revert     key.Binding
 	CherryPick key.Binding
 	CopyHash   key.Binding
+	ResetMenu  key.Binding
+	Squash     key.Binding
+	Fixup      key.Binding
+	Drop       key.Binding
+	CompareRef key.Binding
+	BisectMenu key.Binding
+	Undo       key.Binding
+	Redo       key.Binding
 }
 
 // NewCommitOpsKeys returns populated commit operation keybindings.
@@ -298,6 +306,38 @@ func NewCommitOpsKeys() CommitOpsKeys {
 		CopyHash: key.NewBinding(
 			key.WithKeys("y"),
 			key.WithHelp("y", "copy hash"),
+		),
+		ResetMenu: key.NewBinding(
+			key.WithKeys("X"),
+			key.WithHelp("X", "reset to commit"),
+		),
+		Squash: key.NewBinding(
+			key.WithKeys("s"),
+			key.WithHelp("s", "squash commit"),
+		),
+		Fixup: key.NewBinding(
+			key.WithKeys("f"),
+			key.WithHelp("f", "fixup commit"),
+		),
+		Drop: key.NewBinding(
+			key.WithKeys("d"),
+			key.WithHelp("d", "drop commit"),
+		),
+		CompareRef: key.NewBinding(
+			key.WithKeys("W"),
+			key.WithHelp("W", "compare commits"),
+		),
+		BisectMenu: key.NewBinding(
+			key.WithKeys("B"),
+			key.WithHelp("B", "bisect"),
+		),
+		Undo: key.NewBinding(
+			key.WithKeys("z"),
+			key.WithHelp("z", "undo"),
+		),
+		Redo: key.NewBinding(
+			key.WithKeys("ctrl+z"),
+			key.WithHelp("ctrl+z", "redo"),
 		),
 	}
 }

@@ -39,9 +39,11 @@ type hideDialogMsg struct{}
 
 // branchInfoMsg carries branch metadata for the status bar.
 type branchInfoMsg struct {
-	branch string
-	ahead  int
-	behind int
+	branch    string
+	ahead     int
+	behind    int
+	bisecting bool
+	rebasing  bool
 }
 
 // commitDoneMsg is sent when a commit operation completes.
@@ -225,6 +227,31 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.showDialog = true
 		return a, dlg.Init()
 
+	// -- Menu dialog request -------------------------------------------------
+	case pages.RequestMenuMsg:
+		var menuOpts []dialog.MenuOption
+		for _, o := range msg.Options {
+			menuOpts = append(menuOpts, dialog.MenuOption{Label: o.Label, Description: o.Description, Key: o.Key})
+		}
+		dlg := dialog.NewMenu(msg.ID, msg.Title, menuOpts, a.width, a.height)
+		a.dialog = dlg
+		a.showDialog = true
+		return a, dlg.Init()
+
+	// -- Menu dialog result --------------------------------------------------
+	case dialog.MenuResultMsg:
+		a.showDialog = false
+		a.dialog = nil
+		var cmd tea.Cmd
+		a.mainView, cmd = a.mainView.Update(msg)
+		cmds = append(cmds, cmd)
+		return a, tea.Batch(cmds...)
+
+	case dialog.MenuCancelMsg:
+		a.showDialog = false
+		a.dialog = nil
+		return a, nil
+
 	// -- Amend commit dialog request -----------------------------------------
 	case pages.RequestAmendDialogMsg:
 		repo := a.repo
@@ -301,6 +328,15 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, cmd)
 		return a, tea.Batch(cmds...)
 
+	// -- Compare state indicator ---------------------------------------------
+	case pages.CompareStateMsg:
+		if msg.Active {
+			a.statusBar = a.statusBar.SetComparing(msg.Hash)
+		} else {
+			a.statusBar = a.statusBar.SetComparing("")
+		}
+		return a, nil
+
 	// -- Status dirty indicator ---------------------------------------------
 	case pages.StatusDirtyMsg:
 		a.statusBar = a.statusBar.SetClean(!msg.Dirty)
@@ -319,7 +355,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// -- Branch info loaded --------------------------------------------------
 	case branchInfoMsg:
-		a.statusBar = a.statusBar.SetBranch(msg.branch).SetAheadBehind(msg.ahead, msg.behind)
+		a.statusBar = a.statusBar.SetBranch(msg.branch).SetAheadBehind(msg.ahead, msg.behind).
+			SetBisecting(msg.bisecting).SetRebasing(msg.rebasing)
 		return a, nil
 
 	// -- Refresh after mutations ---------------------------------------------
@@ -508,7 +545,13 @@ func (a App) loadBranchInfo() tea.Cmd {
 	return func() tea.Msg {
 		branch, _ := repo.Head()
 		ahead, behind, _ := repo.AheadBehind()
-		return branchInfoMsg{branch: branch, ahead: ahead, behind: behind}
+		return branchInfoMsg{
+			branch:    branch,
+			ahead:     ahead,
+			behind:    behind,
+			bisecting: repo.IsBisecting(),
+			rebasing:  repo.IsRebasing(),
+		}
 	}
 }
 

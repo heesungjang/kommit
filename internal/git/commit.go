@@ -49,6 +49,17 @@ func (r *Repository) LastCommit() (*CommitInfo, error) {
 	return parseCommitInfo(out)
 }
 
+// CommitBody returns the body text of a commit (everything after the subject line).
+// This is fetched separately from the log list to avoid parsing complexity with
+// multi-line bodies in the bulk log format.
+func (r *Repository) CommitBody(hash string) (string, error) {
+	out, err := r.run("log", "-1", "--format=%b", hash)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
 // RevertCommit reverts the given commit.
 func (r *Repository) RevertCommit(hash string) error {
 	_, err := r.run("revert", "--no-edit", hash)

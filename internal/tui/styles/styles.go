@@ -9,6 +9,18 @@ import (
 
 // Shared style helpers that reference the active theme.
 
+// ClipPanel ensures a rendered panel string has exactly targetHeight lines.
+// Lipgloss Height() only pads and never clips, and Width() can introduce
+// wrapping that adds unexpected lines. This function defensively clips the
+// output so that JoinHorizontal never receives mismatched panel heights.
+func ClipPanel(rendered string, targetHeight int) string {
+	lines := strings.Split(rendered, "\n")
+	if len(lines) > targetHeight {
+		lines = lines[:targetHeight]
+	}
+	return strings.Join(lines, "\n")
+}
+
 // PanelBorderWidth is the horizontal overhead added by PanelStyle's border.
 // lipgloss Width() includes padding but excludes border, so the outer rendered
 // width = Width(w) + PanelBorderWidth.
@@ -27,6 +39,18 @@ func PanelStyle(focused bool) lipgloss.Style {
 	if focused {
 		borderColor = t.Blue
 	}
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(borderColor).
+		BorderBackground(t.Base).
+		Background(t.Base).
+		Padding(0, 1)
+}
+
+// PanelStyleColor returns a panel style with an explicit border color.
+// Used by the border animation system to render interpolated border colors.
+func PanelStyleColor(borderColor lipgloss.Color) lipgloss.Style {
+	t := theme.Active
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(borderColor).

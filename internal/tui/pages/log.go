@@ -15,8 +15,10 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/nicholascross/opengit/internal/git"
+	"github.com/nicholascross/opengit/internal/tui/anim"
 	"github.com/nicholascross/opengit/internal/tui/dialog"
 	"github.com/nicholascross/opengit/internal/tui/keys"
 	"github.com/nicholascross/opengit/internal/tui/styles"
@@ -42,9 +44,11 @@ type commitDetailMsg struct {
 
 // wipDetailMsg carries the WIP (working changes) status data.
 type wipDetailMsg struct {
-	unstaged []git.FileStatus
-	staged   []git.FileStatus
-	err      error
+	unstaged      []git.FileStatus
+	staged        []git.FileStatus
+	unstagedStats []git.DiffStatEntry
+	stagedStats   []git.DiffStatEntry
+	err           error
 }
 
 // centerDiffMsg carries a loaded diff to display in the center panel.
@@ -137,6 +141,8 @@ type LogPage struct {
 	wipUnstagedCursor int
 	wipStagedCursor   int
 	wipFocus          wipPanelFocus // which sub-panel is focused within the WIP detail
+	wipUnstagedStats  map[string]git.DiffStatEntry
+	wipStagedStats    map[string]git.DiffStatEntry
 
 	// Inline commit message area (GitKraken-style, always visible in WIP)
 	commitSummary textinput.Model // single-line commit title/summary
@@ -149,8 +155,15 @@ type LogPage struct {
 	wipPendingDiscardPath      string
 	wipPendingDiscardUntracked bool
 
-	// Pending commit operation (revert/cherry-pick) — hash stored for confirm dialog
-	pendingOpHash string
+	// Pending commit operation (revert/cherry-pick/reset/rebase) — hash stored for confirm dialog
+	pendingOpHash   string
+	pendingOpAction string // "revert", "cherry-pick", "squash", "fixup", "drop", "reset-soft", "reset-mixed", "reset-hard"
+
+	// Compare mode — diff two commits
+	compareBase *git.CommitInfo // non-nil when comparing
+
+	// Undo — reflog-based
+	pendingUndoHash string // captured at confirm time to avoid TOCTOU race
 
 	// Stash diff display
 	viewingStash     bool
@@ -199,6 +212,9 @@ type LogPage struct {
 	// Dimensions
 	width  int
 	height int
+
+	// Border animation
+	borderAnim anim.BorderAnim
 }
 
 // sidebarWidth computes the width for the sidebar panel.
@@ -378,6 +394,27 @@ func (l *LogPage) updateContext() {
 	}
 }
 
+// updateBorderTargets sets animation targets for all animated borders based
+// on the current focus state. Called after every key event alongside
+// updateContext(). Returns a tea.Cmd to schedule the first animation tick
+// if any border needs to transition.
+func (l *LogPage) updateBorderTargets() tea.Cmd {
+	l.borderAnim.SetFocus(anim.BorderSidebar, l.focus == focusSidebar)
+	l.borderAnim.SetFocus(anim.BorderCenter, l.focus == focusLogList)
+	l.borderAnim.SetFocus(anim.BorderRight, l.focus == focusLogDetail)
+
+	// Commit box borders only apply when WIP is selected
+	commitFocused := l.focus == focusLogDetail && l.isWIPSelected() && l.wipFocus == wipFocusCommit
+	l.borderAnim.SetFocus(anim.BorderCommitOuter, commitFocused)
+	l.borderAnim.SetFocus(anim.BorderCommitSummary, commitFocused && l.commitEditing && l.commitField == 0)
+	l.borderAnim.SetFocus(anim.BorderCommitDesc, commitFocused && l.commitEditing && l.commitField == 1)
+
+	if l.borderAnim.Active() {
+		return anim.ScheduleTick()
+	}
+	return nil
+}
+
 // Init loads the commit log and sidebar data.
 func (l LogPage) Init() tea.Cmd {
 	return tea.Batch(l.loadLog(), l.sidebar.Init())
@@ -390,6 +427,13 @@ func (l LogPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		l.width = msg.Width
 		l.height = msg.Height
 		l.sidebar = l.sidebar.SetSize(l.sidebarWidth(), msg.Height)
+		return l, nil
+
+	case anim.BorderAnimTickMsg:
+		still := l.borderAnim.Tick()
+		if still {
+			return l, anim.ScheduleTick()
+		}
 		return l, nil
 
 	case logLoadedMsg:
@@ -444,9 +488,20 @@ func (l LogPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			l.wipUnstaged = nil
 			l.wipStaged = nil
+			l.wipUnstagedStats = nil
+			l.wipStagedStats = nil
 		} else {
 			l.wipUnstaged = msg.unstaged
 			l.wipStaged = msg.staged
+			// Build stat lookup maps by path.
+			l.wipUnstagedStats = make(map[string]git.DiffStatEntry, len(msg.unstagedStats))
+			for _, e := range msg.unstagedStats {
+				l.wipUnstagedStats[e.Path] = e
+			}
+			l.wipStagedStats = make(map[string]git.DiffStatEntry, len(msg.stagedStats))
+			for _, e := range msg.stagedStats {
+				l.wipStagedStats[e.Path] = e
+			}
 		}
 		// Clamp cursors to valid range (preserve position after stage/unstage).
 		if l.wipUnstagedCursor >= len(l.wipUnstaged) {
@@ -560,17 +615,25 @@ func (l LogPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return l, l.loadWIPDetail()
 
 	case commitOpDoneMsg:
-		// After revert or cherry-pick, show success and refresh
+		// After any commit operation, show success and refresh
 		label := msg.op
-		if label == "cherry-pick" {
-			label = "Cherry-pick"
-		} else {
-			label = "Revert"
-		}
 		return l, tea.Batch(
 			func() tea.Msg { return RequestToastMsg{Message: label + " complete"} },
 			func() tea.Msg { return RefreshStatusMsg{} },
 		)
+
+	case undoTargetMsg:
+		// Store the target hash and show confirm dialog
+		l.pendingUndoHash = msg.hash
+		short := msg.shortHash
+		message := msg.message
+		return l, func() tea.Msg {
+			return RequestConfirmMsg{
+				ID:      "undo-action",
+				Title:   "Undo?",
+				Message: "Undo: " + message + "?\n\nThis will reset --hard to " + short,
+			}
+		}
 
 	case editorDoneMsg:
 		// Editor exited — refresh to pick up any changes
@@ -626,6 +689,50 @@ func (l LogPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.ID == "revert-commit" || msg.ID == "cherry-pick-commit" {
 			l.pendingOpHash = ""
 		}
+		// Rebase action (squash/fixup/drop)
+		if strings.HasPrefix(msg.ID, "rebase-") && msg.Confirmed && l.pendingOpHash != "" {
+			hash := l.pendingOpHash
+			action := l.pendingOpAction
+			l.pendingOpHash = ""
+			l.pendingOpAction = ""
+			return l, l.doRebaseAction(hash, action)
+		}
+		if strings.HasPrefix(msg.ID, "rebase-") {
+			l.pendingOpHash = ""
+			l.pendingOpAction = ""
+		}
+		// Hard reset confirm
+		if msg.ID == "reset-hard-confirm" && msg.Confirmed && l.pendingOpHash != "" {
+			hash := l.pendingOpHash
+			short := hash
+			if len(short) > 7 {
+				short = short[:7]
+			}
+			l.pendingOpHash = ""
+			l.pendingOpAction = ""
+			return l, l.doResetOp(hash, "hard", short)
+		}
+		if msg.ID == "reset-hard-confirm" {
+			l.pendingOpHash = ""
+			l.pendingOpAction = ""
+		}
+		// Nuke working tree
+		if msg.ID == "nuke-working-tree" && msg.Confirmed {
+			return l, l.doNukeWorkingTree()
+		}
+		// Undo confirm
+		if msg.ID == "undo-action" && msg.Confirmed {
+			cmd := l.doUndoConfirmed()
+			l.pendingUndoHash = ""
+			return l, cmd
+		}
+		if msg.ID == "undo-action" {
+			l.pendingUndoHash = ""
+		}
+		// Bisect reset confirm
+		if msg.ID == "bisect-reset" && msg.Confirmed {
+			return l, l.doBisectReset()
+		}
 		// Route sidebar confirm results
 		if strings.HasPrefix(msg.ID, "sidebar-") {
 			var cmd tea.Cmd
@@ -633,6 +740,10 @@ func (l LogPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return l, cmd
 		}
 		return l, nil
+
+	// Handle menu dialog results
+	case dialog.MenuResultMsg:
+		return l.handleMenuResult(msg)
 
 	// Route text input results to sidebar
 	case dialog.TextInputResultMsg:
@@ -706,7 +817,8 @@ func (l LogPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m, cmd := l.handleKey(msg)
 		if lp, ok := m.(LogPage); ok {
 			lp.updateContext()
-			return lp, cmd
+			animCmd := lp.updateBorderTargets()
+			return lp, tea.Batch(cmd, animCmd)
 		}
 		return m, cmd
 	}
@@ -823,9 +935,11 @@ func (l LogPage) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		l.viewingStash = false
 	}
 
-	// Global push/pull/fetch — available when center or right panel is focused.
+	// Global push/pull/fetch — available when center or right panel is focused
+	// AND when we're NOT on a non-WIP commit in the center panel (to avoid
+	// conflicting with commit ops keys like f=fixup, p=push, etc.).
 	// When sidebar is focused, let it handle p/a/etc. contextually.
-	if l.focus != focusSidebar {
+	if l.focus != focusSidebar && (l.focus != focusLogList || l.isWIPSelected() || len(l.commits) == 0) {
 		switch {
 		case key.Matches(msg, l.remoteKeys.Push):
 			return l, func() tea.Msg { return RequestGitOpMsg{Op: "push"} }
@@ -1039,6 +1153,24 @@ func (l LogPage) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return l, nil
 	}
 
+	// Undo/Redo — works regardless of selection
+	switch {
+	case key.Matches(msg, l.commitOpsKeys.Undo):
+		return l, l.doUndo()
+	case key.Matches(msg, l.commitOpsKeys.Redo):
+		return l, l.doRedo()
+	}
+
+	// Bisect menu — works regardless of selection
+	if key.Matches(msg, l.commitOpsKeys.BisectMenu) {
+		return l, l.showBisectMenu()
+	}
+
+	// Compare mode toggle
+	if key.Matches(msg, l.commitOpsKeys.CompareRef) {
+		return l.handleCompareToggle()
+	}
+
 	// Commit operations — only on past (non-WIP) commits
 	if !l.isWIPSelected() && l.cursor >= 0 && l.cursor < len(l.commits) {
 		commit := l.commits[l.cursor]
@@ -1070,6 +1202,20 @@ func (l LogPage) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		case key.Matches(msg, l.commitOpsKeys.CopyHash):
 			return l, l.copyToClipboard(commit.Hash)
+		case key.Matches(msg, l.commitOpsKeys.ResetMenu):
+			return l, l.showResetMenu(commit, short)
+		case key.Matches(msg, l.commitOpsKeys.Squash):
+			l.pendingOpHash = commit.Hash
+			l.pendingOpAction = "squash"
+			return l, l.showRebaseConfirm(commit, short, "squash")
+		case key.Matches(msg, l.commitOpsKeys.Fixup):
+			l.pendingOpHash = commit.Hash
+			l.pendingOpAction = "fixup"
+			return l, l.showRebaseConfirm(commit, short, "fixup")
+		case key.Matches(msg, l.commitOpsKeys.Drop):
+			l.pendingOpHash = commit.Hash
+			l.pendingOpAction = "drop"
+			return l, l.showRebaseConfirm(commit, short, "drop")
 		}
 	}
 
@@ -1737,7 +1883,7 @@ func (l LogPage) View() string {
 		rightWidth = 20
 	}
 
-	sidebarPane := l.sidebar.View(l.focus == focusSidebar)
+	sidebarPane := l.sidebar.View(l.focus == focusSidebar, l.borderAnim.Color(anim.BorderSidebar, t.Surface1, t.Blue))
 
 	var centerPane string
 	if l.centerDiffMode {
@@ -2035,8 +2181,12 @@ func (l LogPage) renderCommitList(width, height int) string {
 	if l.maxGraphWidth() > l.graphViewportCols() {
 		graphHint = "  H/L:scroll graph"
 	}
-	hints := styles.KeyHintStyle().Background(t.Base).Width(innerWidth).Render(
-		"j/k:navigate  g/G:top/bottom" + graphHint + scrollInfo,
+	hintParts := "j/k:navigate  z:undo  X:reset  B:bisect  W:compare"
+	if l.compareBase != nil {
+		hintParts = "j/k:navigate  W:exit compare"
+	}
+	hints := lipgloss.NewStyle().Background(t.Base).Width(innerWidth).Render(
+		styles.KeyHintStyle().Render(hintParts + graphHint + scrollInfo),
 	)
 	titleGap := lipgloss.NewStyle().Background(t.Base).Width(innerWidth).Render("")
 	emptyLine := lipgloss.NewStyle().Background(t.Base).Width(innerWidth).Render("")
@@ -2045,7 +2195,7 @@ func (l LogPage) renderCommitList(width, height int) string {
 	if cl := strings.Split(full, "\n"); len(cl) > ph {
 		full = strings.Join(cl[:ph], "\n")
 	}
-	return styles.PanelStyle(l.focus == focusLogList).Width(width).Height(ph).Render(full)
+	return styles.PanelStyleColor(l.borderAnim.Color(anim.BorderCenter, t.Surface1, t.Blue)).Width(width).Height(ph).Render(full)
 }
 
 // renderCenterDiff renders the center panel as a diff view (replacing the
@@ -2076,7 +2226,7 @@ func (l LogPage) renderCenterDiff(width, height int) string {
 		if cl := strings.Split(full, "\n"); len(cl) > ph {
 			full = strings.Join(cl[:ph], "\n")
 		}
-		return styles.PanelStyle(focused).Width(width).Height(ph).Render(full)
+		return styles.ClipPanel(styles.PanelStyleColor(l.borderAnim.Color(anim.BorderCenter, t.Surface1, t.Blue)).Width(width).Height(ph).Render(full), height)
 	}
 
 	// Apply scroll offset
@@ -2166,27 +2316,25 @@ func (l LogPage) renderCenterDiff(width, height int) string {
 
 		scrollX := l.centerDiffScrollX
 
-		if isDiffHeader || isFileOld || isFileNew {
-			// File header lines: no line numbers, bold text
-			gutterStr = styles.DiffGutterSepStyle(' ').Render(strings.Repeat(" ", gutterWidth))
-			rendered := expandTabs(line, 4)
-			rendered = horizontalSlice(rendered, scrollX, contentWidth)
-			contentStr = styles.DiffFileHeaderStyle().Width(contentWidth).Render(rendered)
-		} else if isIndex || isSimilarity {
-			// Metadata lines: no line numbers, dimmed
+		if isDiffHeader || isFileOld || isFileNew || isIndex {
+			// Skip file headers and index lines — file path is already in the panel title
+			continue
+		} else if isSimilarity {
+			// Metadata lines (rename, new file, etc.): no line numbers, dimmed
 			gutterStr = styles.DiffGutterSepStyle(' ').Render(strings.Repeat(" ", gutterWidth))
 			rendered := expandTabs(line, 4)
 			rendered = horizontalSlice(rendered, scrollX, contentWidth)
 			contentStr = styles.DiffMetaStyle().Width(contentWidth).Render(rendered)
 		} else if isHunkHeader {
 			// Hunk header: no line numbers, special styling
+			// Strip function context — show only "@@ -N,M +N,M @@"
 			// Highlight the current hunk header with a distinct marker
 			if isCurrentHunk {
 				gutterStr = styles.DiffGutterSepStyle('@').Render("►" + strings.Repeat("─", gutterWidth-2) + "┤")
 			} else {
 				gutterStr = styles.DiffGutterSepStyle('@').Render(strings.Repeat("─", gutterWidth-1) + "┤")
 			}
-			rendered := expandTabs(line, 4)
+			rendered := expandTabs(stripHunkContext(line), 4)
 			rendered = horizontalSlice(rendered, scrollX, contentWidth)
 			if isCurrentHunk {
 				contentStr = styles.DiffCurrentHunkStyle().Width(contentWidth).Render(rendered)
@@ -2298,14 +2446,16 @@ func (l LogPage) renderCenterDiff(width, height int) string {
 		}
 		hintParts += scrollInfo
 	}
-	hints := styles.KeyHintStyle().Background(t.Base).Width(iw).Render(hintParts)
+	hints := lipgloss.NewStyle().Background(t.Base).Width(iw).Render(
+		styles.KeyHintStyle().Render(hintParts),
+	)
 
 	full := lipgloss.JoinVertical(lipgloss.Left, titleStr, titleGap, content, emptyLine, hints)
 	// Clip to panel height
 	if cl := strings.Split(full, "\n"); len(cl) > ph {
 		full = strings.Join(cl[:ph], "\n")
 	}
-	return styles.PanelStyle(focused).Width(width).Height(ph).Render(full)
+	return styles.ClipPanel(styles.PanelStyleColor(l.borderAnim.Color(anim.BorderCenter, t.Surface1, t.Blue)).Width(width).Height(ph).Render(full), height)
 }
 
 // parseDiffHunkNums extracts the old and new starting line numbers from a
@@ -2356,7 +2506,15 @@ func (l LogPage) renderCommitDetail(width, height int) string {
 
 	focused := l.focus == focusLogDetail
 	iw := width - styles.PanelPaddingWidth // inner width
-	titleStr := styles.PanelTitle("Detail", "3", focused, iw)
+	panelTitle := "Detail"
+	if l.compareBase != nil {
+		baseShort := l.compareBase.ShortHash
+		if baseShort == "" && len(l.compareBase.Hash) > 7 {
+			baseShort = l.compareBase.Hash[:7]
+		}
+		panelTitle = "Compare: " + baseShort + "→"
+	}
+	titleStr := styles.PanelTitle(panelTitle, "3", focused, iw)
 	ph := height - styles.PanelBorderHeight
 
 	t := theme.Active
@@ -2364,44 +2522,115 @@ func (l LogPage) renderCommitDetail(width, height int) string {
 
 	if l.detailCommit == nil {
 		content := styles.DimStyle().Width(iw).Render("Select a commit to view details")
-		return styles.PanelStyle(focused).Width(width).Height(ph).Render(
+		return styles.ClipPanel(styles.PanelStyleColor(l.borderAnim.Color(anim.BorderRight, t.Surface1, t.Blue)).Width(width).Height(ph).Render(
 			lipgloss.JoinVertical(lipgloss.Left, titleStr, titleGap, content),
-		)
+		), height)
 	}
 	c := l.detailCommit
 
 	bgLine := func(s string) string {
-		return lipgloss.NewStyle().Background(t.Base).Width(iw).Render(s)
+		return lipgloss.NewStyle().Background(t.Base).MaxWidth(iw).Width(iw).Render(s)
 	}
 
 	// --- Section 1: Commit metadata header ---
 	var sections []string
-	sections = append(sections, bgLine(lipgloss.NewStyle().Foreground(t.Yellow).Background(t.Base).Bold(true).Render("commit "+c.Hash)))
-	sections = append(sections, bgLine(lipgloss.NewStyle().Foreground(t.Teal).Background(t.Base).Render("Author: "+c.Author+" <"+c.AuthorEmail+">")))
-	sections = append(sections, bgLine(lipgloss.NewStyle().Foreground(t.Overlay0).Background(t.Base).Render("Date:   "+c.Date.Format("Mon Jan 2 15:04:05 2006 -0700"))))
+
+	// Line 1: short hash (yellow, bold) + compact date (dimmed)
+	hashStr := lipgloss.NewStyle().Foreground(t.Yellow).Background(t.Base).Bold(true).Render(c.ShortHash)
+	dateStr := lipgloss.NewStyle().Foreground(t.Overlay0).Background(t.Base).Render("  " + c.Date.Format("Mon Jan 2 2006"))
+	sections = append(sections, bgLine(hashStr+dateStr))
+
+	// Line 2: author name
+	sections = append(sections, bgLine(lipgloss.NewStyle().Foreground(t.Teal).Background(t.Base).Render(c.Author)))
+
+	// Line 3: ref badges (only if refs exist)
 	if len(c.Refs) > 0 {
-		refsLabel := lipgloss.NewStyle().Foreground(t.Subtext0).Background(t.Base).Render("Refs:   ")
-		refsBadges := styles.RenderRefBadges(c.Refs, t.Base)
-		sections = append(sections, bgLine(refsLabel+refsBadges))
+		sections = append(sections, bgLine(styles.RenderRefBadges(c.Refs, t.Base)))
 	}
+
+	// Separator
+	sections = append(sections, bgLine(lipgloss.NewStyle().Foreground(t.Surface2).Background(t.Base).Render(strings.Repeat("─", iw))))
+
+	// Gap + subject (word-wrapped at word boundaries)
 	sections = append(sections, bgLine(""))
-	sections = append(sections, bgLine(lipgloss.NewStyle().Foreground(t.Text).Background(t.Base).Render("    "+c.Subject)))
+	subjectWrapped := ansi.Wordwrap(c.Subject, iw, "")
+	for _, wl := range strings.Split(subjectWrapped, "\n") {
+		sections = append(sections, bgLine(lipgloss.NewStyle().Foreground(t.Text).Background(t.Base).Render(wl)))
+	}
+
+	// Body (if any) — dimmed color for visual hierarchy
 	if c.Body != "" {
 		sections = append(sections, bgLine(""))
 		for _, line := range strings.Split(c.Body, "\n") {
-			sections = append(sections, bgLine(lipgloss.NewStyle().Foreground(t.Text).Background(t.Base).Render("    "+line)))
+			bodyWrapped := ansi.Wordwrap(line, iw, "")
+			for _, wl := range strings.Split(bodyWrapped, "\n") {
+				sections = append(sections, bgLine(lipgloss.NewStyle().Foreground(t.Subtext0).Background(t.Base).Render(wl)))
+			}
 		}
 	}
+
+	// Gap + separator before file list
 	sections = append(sections, bgLine(""))
 	sections = append(sections, bgLine(lipgloss.NewStyle().Foreground(t.Surface2).Background(t.Base).Render(strings.Repeat("─", iw))))
 
-	// --- Section 2: File list ---
+	// Count how many lines the metadata header occupies
+	metaContent := lipgloss.JoinVertical(lipgloss.Left, sections...)
+	metaLineCount := strings.Count(metaContent, "\n") + 1
+
+	// Hint line (separate from content, pinned to bottom)
+	hintText := "j/k:files  Enter:diff  Esc:back  y:copy"
+	if l.compareBase != nil {
+		hintText = "j/k:files  Enter:diff  W:exit compare  y:copy"
+	}
+	hints := lipgloss.NewStyle().Background(t.Base).Width(iw).Render(
+		styles.KeyHintStyle().Render(hintText),
+	)
+	hintHeight := strings.Count(hints, "\n") + 1
+	emptyLine := bgLine("")
+
+	// contentBudget = ph - title(1) - titleGap(1) - emptyLine(1) - hintHeight
+	contentBudget := ph - 3 - hintHeight
+	if contentBudget < 1 {
+		contentBudget = 1
+	}
+
+	// File area gets whatever remains after metadata + "Files changed" header (1 line)
+	fileHeaderLines := 1 // "Files changed (N)" header
+	fileVisibleCount := contentBudget - metaLineCount - fileHeaderLines
+	if fileVisibleCount < 1 {
+		fileVisibleCount = 1
+	}
+
+	// --- Section 2: File list with viewport windowing ---
 	if len(l.detailFiles) == 0 {
 		sections = append(sections, styles.DimStyle().Width(iw).Render("  No files changed"))
 	} else {
-		fileLabel := fmt.Sprintf("Files changed (%d)", len(l.detailFiles))
+		scrollInfo := ""
+		if len(l.detailFiles) > fileVisibleCount {
+			scrollInfo = fmt.Sprintf(" [%d/%d]", l.detailFileCursor+1, len(l.detailFiles))
+		}
+		fileLabel := fmt.Sprintf("Files changed (%d)%s", len(l.detailFiles), scrollInfo)
 		sections = append(sections, lipgloss.NewStyle().Foreground(t.Subtext0).Background(t.Base).Bold(true).Width(iw).Render(fileLabel))
-		for i, f := range l.detailFiles {
+
+		// Viewport windowing: follow the cursor
+		offset := 0
+		if l.detailFileCursor >= fileVisibleCount {
+			offset = l.detailFileCursor - fileVisibleCount + 1
+		}
+		if offset > len(l.detailFiles)-fileVisibleCount {
+			offset = len(l.detailFiles) - fileVisibleCount
+		}
+		if offset < 0 {
+			offset = 0
+		}
+
+		end := offset + fileVisibleCount
+		if end > len(l.detailFiles) {
+			end = len(l.detailFiles)
+		}
+
+		for i := offset; i < end; i++ {
+			f := l.detailFiles[i]
 			icon := styles.FileListIcon(f.Status)
 			color := styles.FileListColor(f.Status)
 			path := f.NewPath
@@ -2420,26 +2649,31 @@ func (l LogPage) renderCommitDetail(width, height int) string {
 				prefix = "▸ "
 			}
 
-			iconStr := lipgloss.NewStyle().Foreground(color).Background(bg).Render(icon)
-			pathStr := lipgloss.NewStyle().Foreground(t.Text).Background(bg).Render(" " + path)
-			lineContent := prefix + iconStr + pathStr
-			sections = append(sections, lipgloss.NewStyle().Background(bg).Width(iw).Render(lineContent))
+			// Only set Foreground on inner segments — the outer line style handles Background
+			iconStr := lipgloss.NewStyle().Foreground(color).Render(icon)
+			pathStr := lipgloss.NewStyle().Foreground(t.Text).Render(" " + path)
+
+			// Diff stats: +N -M
+			added, removed := f.Stats()
+			var statStr string
+			if added > 0 || removed > 0 {
+				var statParts []string
+				if added > 0 {
+					statParts = append(statParts, lipgloss.NewStyle().Foreground(t.Green).Render(fmt.Sprintf("+%d", added)))
+				}
+				if removed > 0 {
+					statParts = append(statParts, lipgloss.NewStyle().Foreground(t.Red).Render(fmt.Sprintf("-%d", removed)))
+				}
+				statStr = " " + strings.Join(statParts, " ")
+			}
+
+			lineContent := lipgloss.NewStyle().MaxWidth(iw).Render(prefix + iconStr + pathStr + statStr)
+			sections = append(sections, fillBg(lineContent, bg, iw))
 		}
 	}
-	// Build content from sections (without hints)
+
+	// Build content from sections (metadata + file list)
 	content := lipgloss.JoinVertical(lipgloss.Left, sections...)
-
-	// Hint line (separate from content, pinned to bottom)
-	hints := bgLine(styles.KeyHintStyle().Background(t.Base).Render(
-		"j/k:files  Enter:view diff  Esc:close diff",
-	))
-	emptyLine := bgLine("")
-
-	// contentBudget = ph - title(1) - titleGap(1) - emptyLine(1) - hints(1)
-	contentBudget := ph - 4
-	if contentBudget < 1 {
-		contentBudget = 1
-	}
 
 	// Pad content to exactly contentBudget lines so hints are pinned to the bottom
 	contentLines := strings.Split(content, "\n")
@@ -2456,7 +2690,7 @@ func (l LogPage) renderCommitDetail(width, height int) string {
 	if cl := strings.Split(full, "\n"); len(cl) > ph {
 		full = strings.Join(cl[:ph], "\n")
 	}
-	return styles.PanelStyle(focused).Width(width).Height(ph).Render(full)
+	return styles.ClipPanel(styles.PanelStyleColor(l.borderAnim.Color(anim.BorderRight, t.Surface1, t.Blue)).Width(width).Height(ph).Render(full), height)
 }
 
 func (l LogPage) renderWIPDetail(width, height int) string {
@@ -2466,7 +2700,7 @@ func (l LogPage) renderWIPDetail(width, height int) string {
 	t := theme.Active
 
 	bgLine := func(s string) string {
-		return lipgloss.NewStyle().Background(t.Base).Width(iw).Render(s)
+		return lipgloss.NewStyle().Background(t.Base).MaxWidth(iw).Width(iw).Render(s)
 	}
 
 	// ---------------------------------------------------------------
@@ -2521,15 +2755,29 @@ func (l LogPage) renderWIPDetail(width, height int) string {
 				prefix = "▸ "
 			}
 
-			text := prefix + icon + " " + f.Path
-			if len(text) > iw {
-				text = text[:iw]
-			}
-			style := lipgloss.NewStyle().Foreground(color).Background(bg).Width(iw)
+			// Build line with ANSI-safe segments (no .Background on segments)
+			iconStr := lipgloss.NewStyle().Foreground(color).Render(icon)
+			pathStr := lipgloss.NewStyle().Foreground(t.Text).Render(" " + f.Path)
 			if selected {
-				style = style.Bold(true)
+				iconStr = lipgloss.NewStyle().Foreground(color).Bold(true).Render(icon)
+				pathStr = lipgloss.NewStyle().Foreground(t.Text).Bold(true).Render(" " + f.Path)
 			}
-			fileSections = append(fileSections, style.Render(text))
+
+			// Diff stats: +N -M
+			var statStr string
+			if st, ok := l.wipUnstagedStats[f.Path]; ok && (st.Added > 0 || st.Removed > 0) {
+				var statParts []string
+				if st.Added > 0 {
+					statParts = append(statParts, lipgloss.NewStyle().Foreground(t.Green).Render(fmt.Sprintf("+%d", st.Added)))
+				}
+				if st.Removed > 0 {
+					statParts = append(statParts, lipgloss.NewStyle().Foreground(t.Red).Render(fmt.Sprintf("-%d", st.Removed)))
+				}
+				statStr = " " + strings.Join(statParts, " ")
+			}
+
+			lineContent := lipgloss.NewStyle().MaxWidth(iw).Render(prefix + iconStr + pathStr + statStr)
+			fileSections = append(fileSections, fillBg(lineContent, bg, iw))
 		}
 	}
 
@@ -2556,15 +2804,29 @@ func (l LogPage) renderWIPDetail(width, height int) string {
 				prefix = "▸ "
 			}
 
-			text := prefix + icon + " " + f.Path
-			if len(text) > iw {
-				text = text[:iw]
-			}
-			style := lipgloss.NewStyle().Foreground(color).Background(bg).Width(iw)
+			// Build line with ANSI-safe segments (no .Background on segments)
+			iconStr := lipgloss.NewStyle().Foreground(color).Render(icon)
+			pathStr := lipgloss.NewStyle().Foreground(t.Text).Render(" " + f.Path)
 			if selected {
-				style = style.Bold(true)
+				iconStr = lipgloss.NewStyle().Foreground(color).Bold(true).Render(icon)
+				pathStr = lipgloss.NewStyle().Foreground(t.Text).Bold(true).Render(" " + f.Path)
 			}
-			fileSections = append(fileSections, style.Render(text))
+
+			// Diff stats: +N -M
+			var statStr string
+			if st, ok := l.wipStagedStats[f.Path]; ok && (st.Added > 0 || st.Removed > 0) {
+				var statParts []string
+				if st.Added > 0 {
+					statParts = append(statParts, lipgloss.NewStyle().Foreground(t.Green).Render(fmt.Sprintf("+%d", st.Added)))
+				}
+				if st.Removed > 0 {
+					statParts = append(statParts, lipgloss.NewStyle().Foreground(t.Red).Render(fmt.Sprintf("-%d", st.Removed)))
+				}
+				statStr = " " + strings.Join(statParts, " ")
+			}
+
+			lineContent := lipgloss.NewStyle().MaxWidth(iw).Render(prefix + iconStr + pathStr + statStr)
+			fileSections = append(fileSections, fillBg(lineContent, bg, iw))
 		}
 	}
 
@@ -2624,10 +2886,7 @@ func (l LogPage) renderWIPDetail(width, height int) string {
 	}
 	l.commitSummary.Width = inputWidth
 
-	summaryBorder := t.Surface2
-	if commitFocused && l.commitEditing && l.commitField == 0 {
-		summaryBorder = t.Blue
-	}
+	summaryBorder := l.borderAnim.Color(anim.BorderCommitSummary, t.Surface2, t.Blue)
 	summaryView := fillBg(l.commitSummary.View(), t.Surface0, inputWidth)
 	summaryBox := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
@@ -2641,10 +2900,7 @@ func (l LogPage) renderWIPDetail(width, height int) string {
 	// Description textarea — multi-line
 	l.commitDesc.SetWidth(inputWidth)
 
-	descBorder := t.Surface2
-	if commitFocused && l.commitEditing && l.commitField == 1 {
-		descBorder = t.Blue
-	}
+	descBorder := l.borderAnim.Color(anim.BorderCommitDesc, t.Surface2, t.Blue)
 	descView := fillBg(l.commitDesc.View(), t.Surface0, inputWidth)
 	descBox := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
@@ -2656,10 +2912,7 @@ func (l LogPage) renderWIPDetail(width, height int) string {
 	commitInner = append(commitInner, cBgLine(descBox))
 
 	// Wrap commit area in a single outer container border
-	containerBorder := t.Surface2
-	if commitFocused {
-		containerBorder = t.Blue
-	}
+	containerBorder := l.borderAnim.Color(anim.BorderCommitOuter, t.Surface2, t.Blue)
 	innerContent := lipgloss.JoinVertical(lipgloss.Left, commitInner...)
 	commitContent := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
@@ -2670,9 +2923,10 @@ func (l LogPage) renderWIPDetail(width, height int) string {
 		Render(innerContent)
 
 	// ---------------------------------------------------------------
-	// Fixed commit box height: header(1) + margin(1) + summary(1+2border=3) + desc(3+2border=5) = 10 inner + 2 outer border = 12
+	// Measure actual commit box height (instead of hardcoding).
+	// The rendered commitContent may vary depending on widget output.
 	// ---------------------------------------------------------------
-	commitBoxHeight := 12
+	commitBoxHeight := strings.Count(commitContent, "\n") + 1
 
 	// ---------------------------------------------------------------
 	// Title
@@ -2695,15 +2949,18 @@ func (l LogPage) renderWIPDetail(width, height int) string {
 	} else if commitFocused {
 		hintText = "Enter:edit  A:amend  u:unstaged  s:staged"
 	} else {
-		hintText = "Enter:diff  space:stage/unstage  a:all  A:amend  d:discard"
+		hintText = "Enter:diff  spc:stage  a:all  A:amend  d:del"
 	}
-	hintsLine := bgLine(styles.KeyHintStyle().Background(t.Base).Render(hintText))
+	hintsLine := lipgloss.NewStyle().Background(t.Base).Width(iw).Render(
+		styles.KeyHintStyle().Render(hintText),
+	)
+	hintHeight := strings.Count(hintsLine, "\n") + 1
 
 	// ---------------------------------------------------------------
 	// Compute file area height and pad/clip to fill the gap
-	// fileAreaHeight = ph - title(1) - titleGap(1) - commitBoxHeight - hints(1)
+	// fileAreaHeight = ph - title(1) - titleGap(1) - commitBoxHeight - hintHeight
 	// ---------------------------------------------------------------
-	fileAreaHeight := ph - 2 - commitBoxHeight - 1
+	fileAreaHeight := ph - 2 - commitBoxHeight - hintHeight
 	if fileAreaHeight < 1 {
 		fileAreaHeight = 1
 	}
@@ -2711,10 +2968,45 @@ func (l LogPage) renderWIPDetail(width, height int) string {
 	fileContent := lipgloss.JoinVertical(lipgloss.Left, fileSections...)
 	fileLines := strings.Split(fileContent, "\n")
 
-	// Clip if file list is too tall
+	// Viewport windowing: compute cursor's line position and scroll to keep it visible
 	if len(fileLines) > fileAreaHeight {
-		fileLines = fileLines[:fileAreaHeight]
+		// Compute the cursor's line index within fileSections.
+		// Layout: unstaged header(1) + margin(1) + unstaged files/empty(N) + separator(1)
+		//         + staged header(1) + margin(1) + staged files/empty(M)
+		unstagedFileCount := len(l.wipUnstaged)
+		if unstagedFileCount == 0 {
+			unstagedFileCount = 1 // "Working tree clean" placeholder
+		}
+		stagedFileCount := len(l.wipStaged)
+		if stagedFileCount == 0 {
+			stagedFileCount = 1 // "No files staged" placeholder
+		}
+
+		cursorLine := 0
+		switch l.wipFocus {
+		case wipFocusUnstaged:
+			cursorLine = 2 + l.wipUnstagedCursor // header(1) + margin(1) + cursor offset
+		case wipFocusStaged:
+			cursorLine = 2 + unstagedFileCount + 1 + 2 + l.wipStagedCursor // unstaged section + separator(1) + staged header(1) + margin(1)
+		case wipFocusCommit:
+			// Commit box is below the file area — scroll to show end of files
+			cursorLine = 0
+		}
+
+		// Compute scroll offset
+		scrollOffset := 0
+		if cursorLine >= fileAreaHeight {
+			scrollOffset = cursorLine - fileAreaHeight + 1
+		}
+		if scrollOffset > len(fileLines)-fileAreaHeight {
+			scrollOffset = len(fileLines) - fileAreaHeight
+		}
+		if scrollOffset < 0 {
+			scrollOffset = 0
+		}
+		fileLines = fileLines[scrollOffset : scrollOffset+fileAreaHeight]
 	}
+
 	// Pad with empty bg lines if file list is shorter — this pushes commit area to the bottom
 	for len(fileLines) < fileAreaHeight {
 		fileLines = append(fileLines, lipgloss.NewStyle().Background(t.Base).Width(iw).Render(""))
@@ -2730,7 +3022,7 @@ func (l LogPage) renderWIPDetail(width, height int) string {
 	if cl := strings.Split(full, "\n"); len(cl) > ph {
 		full = strings.Join(cl[:ph], "\n")
 	}
-	return styles.PanelStyle(focused).Width(width).Height(ph).Render(full)
+	return styles.ClipPanel(styles.PanelStyleColor(l.borderAnim.Color(anim.BorderRight, t.Surface1, t.Blue)).Width(width).Height(ph).Render(full), height)
 }
 
 // ---------------------------------------------------------------------------
@@ -2802,9 +3094,14 @@ func (l LogPage) loadWIPDetail() tea.Cmd {
 		if err != nil {
 			return wipDetailMsg{err: err}
 		}
+		// Fetch diff stats for unstaged and staged files (non-fatal if they fail).
+		unstagedStats, _ := repo.DiffStat()
+		stagedStats, _ := repo.DiffStatStaged()
 		return wipDetailMsg{
-			unstaged: status.UnstagedFiles(),
-			staged:   status.StagedFiles(),
+			unstaged:      status.UnstagedFiles(),
+			staged:        status.StagedFiles(),
+			unstagedStats: unstagedStats,
+			stagedStats:   stagedStats,
 		}
 	}
 }
@@ -2931,6 +3228,375 @@ func (l LogPage) doCherryPick(hash string) tea.Cmd {
 			return RequestToastMsg{Message: "Cherry-pick failed: " + err.Error(), IsError: true}
 		}
 		return commitOpDoneMsg{op: "cherry-pick"}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Reset menu
+// ---------------------------------------------------------------------------
+
+func (l LogPage) showResetMenu(commit git.CommitInfo, short string) tea.Cmd {
+	return func() tea.Msg {
+		return RequestMenuMsg{
+			ID:    "reset-menu",
+			Title: "Reset to " + short,
+			Options: []MenuOption{
+				{Label: "Soft reset", Description: "Keep all changes staged", Key: "s"},
+				{Label: "Mixed reset", Description: "Keep changes as unstaged", Key: "m"},
+				{Label: "Hard reset", Description: "Discard all changes", Key: "h"},
+				{Label: "Nuke working tree", Description: "Hard reset HEAD + clean untracked", Key: "n"},
+			},
+		}
+	}
+}
+
+func (l LogPage) handleMenuResult(msg dialog.MenuResultMsg) (tea.Model, tea.Cmd) {
+	switch msg.ID {
+	case "reset-menu":
+		return l.handleResetMenuResult(msg.Index)
+	case "bisect-menu":
+		return l.handleBisectMenuResult(msg.Index)
+	}
+	return l, nil
+}
+
+func (l LogPage) handleResetMenuResult(idx int) (tea.Model, tea.Cmd) {
+	if !l.isWIPSelected() && l.cursor >= 0 && l.cursor < len(l.commits) {
+		commit := l.commits[l.cursor]
+		hash := commit.Hash
+		short := commit.ShortHash
+		if short == "" && len(hash) > 7 {
+			short = hash[:7]
+		}
+		switch idx {
+		case 0: // Soft reset
+			l.pendingOpHash = hash
+			l.pendingOpAction = "reset-soft"
+			return l, l.doResetOp(hash, "soft", short)
+		case 1: // Mixed reset
+			l.pendingOpHash = hash
+			l.pendingOpAction = "reset-mixed"
+			return l, l.doResetOp(hash, "mixed", short)
+		case 2: // Hard reset
+			l.pendingOpHash = hash
+			l.pendingOpAction = "reset-hard"
+			return l, func() tea.Msg {
+				return RequestConfirmMsg{
+					ID:      "reset-hard-confirm",
+					Title:   "Hard Reset?",
+					Message: "Hard reset to " + short + "?\n\nThis will discard all uncommitted changes.",
+				}
+			}
+		case 3: // Nuke
+			return l, func() tea.Msg {
+				return RequestConfirmMsg{
+					ID:      "nuke-working-tree",
+					Title:   "Nuke Working Tree?",
+					Message: "Reset --hard HEAD and remove ALL untracked files?\n\nThis cannot be undone.",
+				}
+			}
+		}
+	}
+	return l, nil
+}
+
+func (l LogPage) doResetOp(hash, mode, short string) tea.Cmd {
+	repo := l.repo
+	return func() tea.Msg {
+		var err error
+		switch mode {
+		case "soft":
+			err = repo.ResetSoft(hash)
+		case "mixed":
+			err = repo.ResetMixed(hash)
+		case "hard":
+			err = repo.ResetHard(hash)
+		}
+		if err != nil {
+			return RequestToastMsg{Message: "Reset failed: " + err.Error(), IsError: true}
+		}
+		return commitOpDoneMsg{op: "Reset (" + mode + ") to " + short}
+	}
+}
+
+func (l LogPage) doNukeWorkingTree() tea.Cmd {
+	repo := l.repo
+	return func() tea.Msg {
+		err := repo.NukeWorkingTree()
+		if err != nil {
+			return RequestToastMsg{Message: "Nuke failed: " + err.Error(), IsError: true}
+		}
+		return commitOpDoneMsg{op: "Nuke working tree"}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Interactive rebase (one-shot actions)
+// ---------------------------------------------------------------------------
+
+func (l LogPage) showRebaseConfirm(commit git.CommitInfo, short, action string) tea.Cmd {
+	subject := commit.Subject
+	actionTitle := strings.ToUpper(action[:1]) + action[1:]
+	return func() tea.Msg {
+		return RequestConfirmMsg{
+			ID:      "rebase-" + action,
+			Title:   actionTitle + " Commit?",
+			Message: actionTitle + " " + short + " " + subject + "?\n\nThis uses interactive rebase.",
+		}
+	}
+}
+
+func (l LogPage) doRebaseAction(hash, action string) tea.Cmd {
+	repo := l.repo
+	actionTitle := strings.ToUpper(action[:1]) + action[1:]
+	return func() tea.Msg {
+		err := repo.RebaseInteractiveAction(hash, action)
+		if err != nil {
+			return RequestToastMsg{Message: actionTitle + " failed: " + err.Error(), IsError: true}
+		}
+		return commitOpDoneMsg{op: actionTitle}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Compare two commits
+// ---------------------------------------------------------------------------
+
+func (l LogPage) handleCompareToggle() (tea.Model, tea.Cmd) {
+	if l.compareBase != nil {
+		// Exit compare mode
+		l.compareBase = nil
+		return l, tea.Batch(
+			func() tea.Msg { return RequestToastMsg{Message: "Compare mode off"} },
+			func() tea.Msg { return CompareStateMsg{Active: false} },
+		)
+	}
+	// Enter compare mode — mark current commit as base
+	if !l.isWIPSelected() && l.cursor >= 0 && l.cursor < len(l.commits) {
+		c := l.commits[l.cursor]
+		l.compareBase = &c
+		short := c.ShortHash
+		if short == "" && len(c.Hash) > 7 {
+			short = c.Hash[:7]
+		}
+		s := short
+		return l, tea.Batch(
+			func() tea.Msg {
+				return RequestToastMsg{Message: "Comparing from " + s + " — select another commit"}
+			},
+			func() tea.Msg { return CompareStateMsg{Active: true, Hash: s} },
+		)
+	}
+	return l, nil
+}
+
+// ---------------------------------------------------------------------------
+// Bisect
+// ---------------------------------------------------------------------------
+
+func (l LogPage) showBisectMenu() tea.Cmd {
+	bisecting := l.repo.IsBisecting()
+	var opts []MenuOption
+	if !bisecting {
+		opts = []MenuOption{
+			{Label: "Start bisect", Description: "Begin a bisect session", Key: "s"},
+		}
+	} else {
+		opts = []MenuOption{
+			{Label: "Mark as bad", Description: "Current commit introduces the bug", Key: "b"},
+			{Label: "Mark as good", Description: "Current commit is before the bug", Key: "g"},
+			{Label: "Skip", Description: "Skip this commit (untestable)", Key: "k"},
+			{Label: "Reset bisect", Description: "End bisect session", Key: "r"},
+		}
+	}
+	return func() tea.Msg {
+		return RequestMenuMsg{
+			ID:      "bisect-menu",
+			Title:   "Bisect",
+			Options: opts,
+		}
+	}
+}
+
+func (l LogPage) handleBisectMenuResult(idx int) (tea.Model, tea.Cmd) {
+	bisecting := l.repo.IsBisecting()
+	if !bisecting {
+		// Only option: start
+		if idx == 0 {
+			return l, l.doBisectStart()
+		}
+		return l, nil
+	}
+	switch idx {
+	case 0: // bad
+		return l, l.doBisectMark("bad")
+	case 1: // good
+		return l, l.doBisectMark("good")
+	case 2: // skip
+		return l, l.doBisectSkip()
+	case 3: // reset
+		return l, func() tea.Msg {
+			return RequestConfirmMsg{
+				ID:      "bisect-reset",
+				Title:   "End Bisect?",
+				Message: "Reset the bisect session and return to the original branch?",
+			}
+		}
+	}
+	return l, nil
+}
+
+func (l LogPage) doBisectStart() tea.Cmd {
+	repo := l.repo
+	return func() tea.Msg {
+		err := repo.BisectStart()
+		if err != nil {
+			return RequestToastMsg{Message: "Bisect start failed: " + err.Error(), IsError: true}
+		}
+		return commitOpDoneMsg{op: "Bisect started"}
+	}
+}
+
+func (l LogPage) doBisectMark(markType string) tea.Cmd {
+	repo := l.repo
+	return func() tea.Msg {
+		var out string
+		var err error
+		switch markType {
+		case "bad":
+			out, err = repo.BisectBad("")
+		case "good":
+			out, err = repo.BisectGood("")
+		}
+		if err != nil {
+			return RequestToastMsg{Message: "Bisect " + markType + " failed: " + err.Error(), IsError: true}
+		}
+		// Check if bisect found the culprit
+		msg := "Marked as " + markType
+		if strings.Contains(out, "is the first bad commit") {
+			msg = "Bisect complete! Found the culprit."
+		}
+		return commitOpDoneMsg{op: msg}
+	}
+}
+
+func (l LogPage) doBisectSkip() tea.Cmd {
+	repo := l.repo
+	return func() tea.Msg {
+		_, err := repo.BisectSkip()
+		if err != nil {
+			return RequestToastMsg{Message: "Bisect skip failed: " + err.Error(), IsError: true}
+		}
+		return commitOpDoneMsg{op: "Bisect: skipped commit"}
+	}
+}
+
+func (l LogPage) doBisectReset() tea.Cmd {
+	repo := l.repo
+	return func() tea.Msg {
+		err := repo.BisectReset()
+		if err != nil {
+			return RequestToastMsg{Message: "Bisect reset failed: " + err.Error(), IsError: true}
+		}
+		return commitOpDoneMsg{op: "Bisect ended"}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Undo / Redo via reflog
+// ---------------------------------------------------------------------------
+
+// undoTargetMsg carries the undo target hash back to the UI thread so it can
+// be stored in pendingUndoHash before showing the confirm dialog.
+type undoTargetMsg struct {
+	hash      string
+	shortHash string
+	message   string
+}
+
+func (l LogPage) doUndo() tea.Cmd {
+	repo := l.repo
+	return func() tea.Msg {
+		entries, err := repo.Reflog(20)
+		if err != nil || len(entries) < 2 {
+			return RequestToastMsg{Message: "Nothing to undo", IsError: true}
+		}
+		// entries[0] is the current state, entries[1] is the previous state
+		target := entries[1]
+		return undoTargetMsg{
+			hash:      target.Hash,
+			shortHash: target.ShortHash,
+			message:   target.Message,
+		}
+	}
+}
+
+func (l LogPage) doUndoConfirmed() tea.Cmd {
+	repo := l.repo
+	hash := l.pendingUndoHash
+	if hash == "" {
+		return func() tea.Msg {
+			return RequestToastMsg{Message: "Nothing to undo", IsError: true}
+		}
+	}
+	short := hash
+	if len(short) > 7 {
+		short = short[:7]
+	}
+	return func() tea.Msg {
+		err := repo.ResetHard(hash)
+		if err != nil {
+			return RequestToastMsg{Message: "Undo failed: " + err.Error(), IsError: true}
+		}
+		return commitOpDoneMsg{op: "Undo to " + short}
+	}
+}
+
+func (l LogPage) doRedo() tea.Cmd {
+	repo := l.repo
+	return func() tea.Msg {
+		// Redo by looking at reflog — after an undo (reset --hard), the
+		// reflog entry before the undo points to the state we want to redo to.
+		// The last entry (entries[0]) should be the undo's reset.
+		// The entry we undid from should still be in the reflog.
+		entries, err := repo.Reflog(30)
+		if err != nil || len(entries) < 2 {
+			return RequestToastMsg{Message: "Nothing to redo", IsError: true}
+		}
+		// Look for the first entry that was our undo reset
+		// entries[0] is current HEAD (the undo target)
+		// entries[1] is the reset itself
+		// If entries[1].Action == "reset" and there's a prior entry, redo to entries[0].Hash of the previous reflog
+		// Actually, simpler: redo just means go forward to what entries[0] was before the reset
+		// We need to find the entry just before the most recent "reset: moving to" entry
+		for i, e := range entries {
+			if i == 0 {
+				continue
+			}
+			if strings.HasPrefix(e.Action, "reset") && i > 0 {
+				// The entry right before this reset is the state before undo
+				// But entries[i-1] is the current state... need to find the target
+				// Actually entries[0] is already the undone state. We can't easily redo.
+				break
+			}
+		}
+		// Simple approach: reflog HEAD@{1} is always the state before the last operation
+		// For redo after undo: the undo did a reset to reflog[1], so reflog[0] is now at reflog[1]
+		// and reflog[1] is the reset operation itself. The "before undo" state is at
+		// what was previously reflog[0], which is now pushed to reflog[2] (since two new entries were added).
+		if len(entries) >= 3 {
+			// After undo: entries[0] = state after undo, entries[1] = the reset op,
+			// entries[2] = state before undo (what we want to redo to)
+			target := entries[2]
+			if strings.HasPrefix(entries[1].Action, "reset") {
+				err = repo.ResetHard(target.Hash)
+				if err != nil {
+					return RequestToastMsg{Message: "Redo failed: " + err.Error(), IsError: true}
+				}
+				return commitOpDoneMsg{op: "Redo to " + target.ShortHash}
+			}
+		}
+		return RequestToastMsg{Message: "Nothing to redo", IsError: true}
 	}
 }
 
@@ -3240,8 +3906,19 @@ func (l LogPage) loadAmendPrefill() tea.Cmd {
 
 func (l LogPage) loadCommitDetail(c git.CommitInfo) tea.Cmd {
 	repo := l.repo
+	compareBase := l.compareBase
 	return func() tea.Msg {
-		diff, err := repo.DiffCommit(c.Hash)
+		var diff *git.DiffResult
+		var err error
+		if compareBase != nil {
+			// Compare mode: diff between base and selected commit
+			diff, err = repo.DiffBranch(compareBase.Hash, c.Hash)
+		} else {
+			diff, err = repo.DiffCommit(c.Hash)
+		}
+		// Fetch the commit body separately (not included in bulk log format)
+		body, _ := repo.CommitBody(c.Hash)
+		c.Body = body
 		return commitDetailMsg{commit: c, diff: diff, err: err}
 	}
 }
@@ -3268,7 +3945,7 @@ func (l LogPage) renderStashDiff(width, height int) string {
 	var sections []string
 
 	bgLine := func(s string) string {
-		return lipgloss.NewStyle().Background(t.Base).Width(iw).Render(s)
+		return lipgloss.NewStyle().Background(t.Base).MaxWidth(iw).Width(iw).Render(s)
 	}
 
 	if l.stashDiffContent == "" {
@@ -3285,13 +3962,14 @@ func (l LogPage) renderStashDiff(width, height int) string {
 	content := lipgloss.JoinVertical(lipgloss.Left, sections...)
 
 	// Hint line (separate from content, pinned to bottom)
-	hints := bgLine(styles.KeyHintStyle().Background(t.Base).Render(
-		"Esc:back to graph  j/k:scroll diff",
-	))
+	hints := lipgloss.NewStyle().Background(t.Base).Width(iw).Render(
+		styles.KeyHintStyle().Render("Esc:back to graph  j/k:scroll diff"),
+	)
+	hintHeight := strings.Count(hints, "\n") + 1
 	emptyLine := bgLine("")
 
-	// contentBudget = ph - title(1) - titleGap(1) - emptyLine(1) - hints(1)
-	contentBudget := ph - 4
+	// contentBudget = ph - title(1) - titleGap(1) - emptyLine(1) - hintHeight
+	contentBudget := ph - 3 - hintHeight
 	if contentBudget < 1 {
 		contentBudget = 1
 	}
@@ -3311,12 +3989,30 @@ func (l LogPage) renderStashDiff(width, height int) string {
 	if cl := strings.Split(full, "\n"); len(cl) > ph {
 		full = strings.Join(cl[:ph], "\n")
 	}
-	return styles.PanelStyle(focused).Width(width).Height(ph).Render(full)
+	return styles.ClipPanel(styles.PanelStyleColor(l.borderAnim.Color(anim.BorderRight, t.Surface1, t.Blue)).Width(width).Height(ph).Render(full), height)
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+// stripHunkContext removes the trailing function context from a git hunk header.
+// Git outputs: "@@ -199,6 +200,9 @@ type LogPage struct {"
+// This returns: "@@ -199,6 +200,9 @@"
+func stripHunkContext(line string) string {
+	// Find the opening @@
+	idx := strings.Index(line, "@@")
+	if idx < 0 {
+		return line
+	}
+	// Find the closing @@ after the range info
+	rest := line[idx+2:]
+	idx2 := strings.Index(rest, "@@")
+	if idx2 < 0 {
+		return line
+	}
+	return line[:idx+2+idx2+2]
+}
 
 func truncate(s string, maxLen int) string {
 	if len(s) <= maxLen {

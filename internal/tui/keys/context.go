@@ -74,6 +74,10 @@ func ShortHelp(ctx Context) []key.Binding {
 			CommitOps.Revert,
 			CommitOps.CherryPick,
 			CommitOps.CopyHash,
+			CommitOps.ResetMenu,
+			CommitOps.BisectMenu,
+			CommitOps.CompareRef,
+			CommitOps.Undo,
 			Global.Search,
 		}, common...)
 
@@ -265,6 +269,14 @@ func FullHelp(ctx Context) [][]key.Binding {
 			CommitOps.Revert,
 			CommitOps.CherryPick,
 			CommitOps.CopyHash,
+			CommitOps.ResetMenu,
+			CommitOps.Squash,
+			CommitOps.Fixup,
+			CommitOps.Drop,
+			CommitOps.CompareRef,
+			CommitOps.BisectMenu,
+			CommitOps.Undo,
+			CommitOps.Redo,
 		})
 
 	case ContextPR:
