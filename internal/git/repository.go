@@ -57,7 +57,10 @@ func (r *Repository) run(args ...string) (string, error) {
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("git %s: %s: %w", strings.Join(args, " "), stderr.String(), err)
+		// Return stdout alongside the error so callers like FileDiffUntracked
+		// can inspect output even when the exit code is non-zero (e.g. git
+		// diff --no-index exits 1 when files differ).
+		return stdout.String(), fmt.Errorf("git %s: %s: %w", strings.Join(args, " "), stderr.String(), err)
 	}
 
 	return stdout.String(), nil

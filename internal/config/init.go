@@ -10,39 +10,58 @@ import (
 var cfg Config
 
 // Load reads configuration from multiple paths, merging them.
-// Later paths override earlier ones.
+// Supports both YAML (.opengit.yml / .opengit.yaml) and JSON (.opengit.json)
+// formats. Later paths override earlier ones.
 func Load() (Config, error) {
 	cfg = DefaultConfig()
 
-	v := viper.New()
-	v.SetConfigName(".opengit")
-	v.SetConfigType("json")
-
-	// Search paths (lowest to highest priority):
-	// 1. $HOME/.config/opengit/
+	// Build search paths (lowest to highest priority).
+	var searchPaths []string
 	if home, err := os.UserHomeDir(); err == nil {
-		v.AddConfigPath(filepath.Join(home, ".config", "opengit"))
+		searchPaths = append(searchPaths, filepath.Join(home, ".config", "opengit"))
 	}
-	// 2. XDG_CONFIG_HOME/opengit/
 	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
-		v.AddConfigPath(filepath.Join(xdg, "opengit"))
+		searchPaths = append(searchPaths, filepath.Join(xdg, "opengit"))
 	}
-	// 3. Current directory
-	v.AddConfigPath(".")
+	searchPaths = append(searchPaths, ".")
 
-	// Environment variable overrides
-	v.SetEnvPrefix("OPENGIT")
-	v.AutomaticEnv()
+	// Try config file names in priority order: YAML first, then JSON.
+	// Viper resolves the first file it finds across all search paths.
+	configNames := []struct {
+		name string
+		typ  string
+	}{
+		{"opengit", "yaml"},  // opengit.yaml / opengit.yml
+		{".opengit", "yaml"}, // .opengit.yaml / .opengit.yml
+		{".opengit", "json"}, // .opengit.json (legacy)
+	}
 
-	// Read config file (not an error if not found)
-	if err := v.ReadInConfig(); err != nil {
-		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
+	var loaded bool
+	for _, cn := range configNames {
+		v := viper.New()
+		v.SetConfigName(cn.name)
+		v.SetConfigType(cn.typ)
+		for _, p := range searchPaths {
+			v.AddConfigPath(p)
+		}
+		if err := v.ReadInConfig(); err != nil {
+			if _, ok := err.(viper.ConfigFileNotFoundError); ok {
+				continue // try next name
+			}
 			return cfg, err
 		}
+		if err := v.Unmarshal(&cfg); err != nil {
+			return cfg, err
+		}
+		loaded = true
+		break
 	}
 
-	if err := v.Unmarshal(&cfg); err != nil {
-		return cfg, err
+	// If no file found, use defaults — also set up env overrides.
+	if !loaded {
+		v := viper.New()
+		v.SetEnvPrefix("OPENGIT")
+		v.AutomaticEnv()
 	}
 
 	// Override AI API key from environment

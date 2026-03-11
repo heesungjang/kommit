@@ -5,6 +5,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	tuictx "github.com/nicholascross/opengit/internal/tui/context"
 	"github.com/nicholascross/opengit/internal/tui/keys"
 	"github.com/nicholascross/opengit/internal/tui/theme"
 )
@@ -23,15 +24,16 @@ type HelpCloseMsg struct{}
 // Help displays keybindings organised by context. The displayed bindings
 // change depending on the active page when the help dialog was opened.
 type Help struct {
-	ctx    keys.Context
-	scroll int
-	width  int
-	height int
+	Base Base
+	ctx  keys.Context
 }
 
-// NewHelp creates a new help overlay showing bindings relevant to ctx.
-func NewHelp(ctx keys.Context, width, height int) Help {
-	return Help{ctx: ctx, width: width, height: height}
+// NewHelp creates a new help overlay showing bindings relevant to kctx.
+func NewHelp(kctx keys.Context, pctx *tuictx.ProgramContext) Help {
+	return Help{
+		Base: NewBaseWithContext("Keyboard Shortcuts", "j/k: scroll  pgup/pgdn: page  ?: close", 70, 30, pctx),
+		ctx:  kctx,
+	}
 }
 
 func (h Help) Init() tea.Cmd { return nil }
@@ -39,25 +41,21 @@ func (h Help) Init() tea.Cmd { return nil }
 func (h Help) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		totalLines := len(h.buildContentLines())
+
 		switch {
 		case key.Matches(msg, key.NewBinding(key.WithKeys("?", "esc", "q"))):
 			return h, func() tea.Msg { return HelpCloseMsg{} }
 		case key.Matches(msg, key.NewBinding(key.WithKeys("j", "down"))):
-			h.scroll++
+			h.Base.ScrollDown(1, totalLines)
 			return h, nil
 		case key.Matches(msg, key.NewBinding(key.WithKeys("k", "up"))):
-			if h.scroll > 0 {
-				h.scroll--
-			}
+			h.Base.ScrollUp(1)
 			return h, nil
-		case key.Matches(msg, key.NewBinding(key.WithKeys("ctrl+d", "pgdown"))):
-			h.scroll += 10
-			return h, nil
-		case key.Matches(msg, key.NewBinding(key.WithKeys("ctrl+u", "pgup"))):
-			h.scroll -= 10
-			if h.scroll < 0 {
-				h.scroll = 0
-			}
+		}
+
+		// Let base handle pgup/pgdn/ctrl+d/ctrl+u.
+		if h.Base.HandleScrollKeys(msg, totalLines) {
 			return h, nil
 		}
 	}
@@ -100,31 +98,18 @@ func contextSectionName(ctx keys.Context) string {
 }
 
 func (h Help) View() string {
+	return h.Base.Render(h.buildContentLines())
+}
+
+// buildContentLines produces all keybinding lines for scrollable rendering.
+// Every returned entry is a single terminal line (no embedded newlines).
+func (h Help) buildContentLines() []string {
 	t := theme.Active
 
-	borderSize := 2
-	dialogWidth := 70
-	if dialogWidth+borderSize > h.width-2 {
-		dialogWidth = h.width - borderSize - 2
-	}
-	if dialogWidth < 30 {
-		dialogWidth = 30
-	}
-	dialogHeight := h.height - borderSize - 2
-	if dialogHeight < 10 {
-		dialogHeight = 10
-	}
-
-	title := lipgloss.NewStyle().
-		Foreground(t.Blue).
-		Background(t.Surface0).
-		Bold(true).
-		Padding(0, 0, 1, 0).
-		Render("Keyboard Shortcuts")
-
+	emptyLine := lipgloss.NewStyle().Background(t.Surface0).Render("")
 	keyStyle := lipgloss.NewStyle().Foreground(t.Mauve).Background(t.Surface0).Bold(true).Width(16)
 	descStyle := lipgloss.NewStyle().Foreground(t.Text).Background(t.Surface0)
-	sectionStyle := lipgloss.NewStyle().Foreground(t.Yellow).Background(t.Surface0).Bold(true).Padding(1, 0, 0, 0)
+	sectionStyle := lipgloss.NewStyle().Foreground(t.Yellow).Background(t.Surface0).Bold(true)
 
 	groups := keys.FullHelp(h.ctx)
 
@@ -144,7 +129,12 @@ func (h Help) View() string {
 			continue
 		}
 
+		// Blank line before each section (except the very first).
+		if len(allLines) > 0 {
+			allLines = append(allLines, emptyLine)
+		}
 		allLines = append(allLines, sectionStyle.Render(label))
+
 		for _, e := range entries {
 			line := lipgloss.JoinHorizontal(lipgloss.Top,
 				keyStyle.Render(e.Key),
@@ -154,44 +144,7 @@ func (h Help) View() string {
 		}
 	}
 
-	// Scrolling — visible lines = dialogHeight minus vertical padding (2) minus title (~2) minus footer (~2)
-	visibleCount := dialogHeight - 6
-	if visibleCount < 1 {
-		visibleCount = 1
-	}
-	maxScroll := len(allLines) - visibleCount
-	if maxScroll < 0 {
-		maxScroll = 0
-	}
-	scroll := h.scroll
-	if scroll > maxScroll {
-		scroll = maxScroll
-	}
-	end := scroll + visibleCount
-	if end > len(allLines) {
-		end = len(allLines)
-	}
-
-	visible := allLines[scroll:end]
-	content := lipgloss.JoinVertical(lipgloss.Left, visible...)
-
-	footer := lipgloss.NewStyle().
-		Foreground(t.Overlay0).
-		Background(t.Surface0).
-		Padding(1, 0, 0, 0).
-		Render("Press ? or esc to close")
-
-	body := lipgloss.JoinVertical(lipgloss.Left, title, content, footer)
-
-	return lipgloss.NewStyle().
-		Width(dialogWidth).
-		Height(dialogHeight).
-		Padding(1, 2).
-		Background(t.Surface0).
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(t.Blue).
-		BorderBackground(t.Surface0).
-		Render(body)
+	return allLines
 }
 
 var _ tea.Model = Help{}

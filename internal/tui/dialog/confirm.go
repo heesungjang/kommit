@@ -5,6 +5,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	tuictx "github.com/nicholascross/opengit/internal/tui/context"
 	"github.com/nicholascross/opengit/internal/tui/theme"
 )
 
@@ -24,24 +25,19 @@ type ConfirmResultMsg struct {
 
 // Confirm is a simple yes/no dialog that overlays the current view.
 type Confirm struct {
+	Base    Base
 	ID      string
-	Title   string
 	Message string
 	focused bool // true = "Yes" is focused, false = "No"
-
-	width  int
-	height int
 }
 
-// NewConfirm creates a new confirmation dialog.
-func NewConfirm(id, title, message string, width, height int) Confirm {
+// NewConfirm creates a new confirmation dialog using a shared ProgramContext.
+func NewConfirm(id, title, message string, ctx *tuictx.ProgramContext) Confirm {
 	return Confirm{
+		Base:    NewBaseWithContext(title, "y/n: answer  ←/→: switch  enter: confirm  esc: cancel", 50, 20, ctx),
 		ID:      id,
-		Title:   title,
 		Message: message,
 		focused: false, // default to "No" for safety
-		width:   width,
-		height:  height,
 	}
 }
 
@@ -50,6 +46,11 @@ func (c Confirm) Init() tea.Cmd { return nil }
 func (c Confirm) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		// Let base handle page-scroll keys first.
+		if c.Base.HandleScrollKeys(msg, len(c.buildContentLines())) {
+			return c, nil
+		}
+
 		switch {
 		case key.Matches(msg, key.NewBinding(key.WithKeys("left", "h", "tab"))):
 			c.focused = !c.focused
@@ -73,29 +74,22 @@ func (c Confirm) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (c Confirm) View() string {
+	return c.Base.Render(c.buildContentLines())
+}
+
+// buildContentLines produces the scrollable content lines for the confirm
+// dialog. Every entry is a single terminal line (no embedded newlines).
+func (c Confirm) buildContentLines() []string {
 	t := theme.Active
 
-	dialogWidth := 50
-	if dialogWidth+2 > c.width-2 { // +2 for border, -2 for centering margin
-		dialogWidth = c.width - 4
-	}
-	if dialogWidth < 20 {
-		dialogWidth = 20
-	}
-
-	title := lipgloss.NewStyle().
-		Foreground(t.Blue).
-		Background(t.Surface0).
-		Bold(true).
-		Padding(0, 0, 1, 0).
-		Render(c.Title)
-
+	// Render the message with word wrapping.
 	message := lipgloss.NewStyle().
 		Foreground(t.Text).
 		Background(t.Surface0).
-		Width(dialogWidth - 4).
+		Width(c.Base.InnerWidth()).
 		Render(c.Message)
 
+	// Build buttons.
 	yesStyle := lipgloss.NewStyle().
 		Foreground(t.Text).
 		Background(t.Surface0).
@@ -127,18 +121,16 @@ func (c Confirm) View() string {
 		btnSep,
 		noStyle.Render("No"),
 	)
-	buttons = lipgloss.NewStyle().Background(t.Surface0).Padding(1, 0, 0, 0).Render(buttons)
 
-	content := lipgloss.JoinVertical(lipgloss.Left, title, message, buttons)
+	// Flatten everything into individual lines. Add a blank line separator
+	// between the message and buttons.
+	emptyLine := lipgloss.NewStyle().Background(t.Surface0).Render("")
 
-	return lipgloss.NewStyle().
-		Width(dialogWidth).
-		Padding(1, 2).
-		Background(t.Surface0).
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(t.Blue).
-		BorderBackground(t.Surface0).
-		Render(content)
+	var lines []string
+	lines = append(lines, FlattenLines(message)...)
+	lines = append(lines, emptyLine)
+	lines = append(lines, FlattenLines(buttons)...)
+	return lines
 }
 
 func (c Confirm) confirm(yes bool) tea.Cmd {

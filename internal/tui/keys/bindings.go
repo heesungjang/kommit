@@ -482,3 +482,187 @@ func NewPRKeys() PRKeys {
 		),
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Rebindable keybinding overrides
+// ---------------------------------------------------------------------------
+
+// bindingRegistry maps canonical action names to pointers into the singleton
+// key binding sets. This allows users to override any binding via config.
+//
+// Action names follow the pattern: "context.action", e.g. "global.quit",
+// "nav.up", "status.stage", "commit.revert", "diff.nextHunk", etc.
+var bindingRegistry map[string]*key.Binding
+
+func init() {
+	bindingRegistry = map[string]*key.Binding{
+		// Global
+		"global.quit":           &Global.Quit,
+		"global.forceQuit":      &Global.ForceQuit,
+		"global.help":           &Global.Help,
+		"global.search":         &Global.Search,
+		"global.commandPalette": &Global.CommandPalette,
+		"global.nextPanel":      &Global.NextPanel,
+		"global.prevPanel":      &Global.PrevPanel,
+
+		// Navigation
+		"nav.up":       &Navigation.Up,
+		"nav.down":     &Navigation.Down,
+		"nav.left":     &Navigation.Left,
+		"nav.right":    &Navigation.Right,
+		"nav.pageUp":   &Navigation.PageUp,
+		"nav.pageDown": &Navigation.PageDown,
+		"nav.home":     &Navigation.Home,
+		"nav.end":      &Navigation.End,
+		"nav.select":   &Navigation.Select,
+
+		// Status / WIP
+		"status.stage":       &Status.Stage,
+		"status.unstage":     &Status.Unstage,
+		"status.stageAll":    &Status.StageAll,
+		"status.stageHunk":   &Status.StageHunk,
+		"status.commit":      &Status.Commit,
+		"status.commitAmend": &Status.CommitAmend,
+		"status.push":        &Status.Push,
+		"status.pull":        &Status.Pull,
+		"status.fetch":       &Status.Fetch,
+		"status.discard":     &Status.Discard,
+		"status.aiCommit":    &Status.AICommit,
+		"status.undo":        &Status.Undo,
+		"status.refresh":     &Status.Refresh,
+
+		// Branches
+		"branch.new":      &Branch.New,
+		"branch.delete":   &Branch.Delete,
+		"branch.rename":   &Branch.Rename,
+		"branch.checkout": &Branch.Checkout,
+		"branch.merge":    &Branch.Merge,
+		"branch.rebase":   &Branch.Rebase,
+
+		// Commit operations
+		"commit.revert":     &CommitOps.Revert,
+		"commit.cherryPick": &CommitOps.CherryPick,
+		"commit.copyHash":   &CommitOps.CopyHash,
+		"commit.resetMenu":  &CommitOps.ResetMenu,
+		"commit.squash":     &CommitOps.Squash,
+		"commit.fixup":      &CommitOps.Fixup,
+		"commit.drop":       &CommitOps.Drop,
+		"commit.compareRef": &CommitOps.CompareRef,
+		"commit.bisectMenu": &CommitOps.BisectMenu,
+		"commit.undo":       &CommitOps.Undo,
+		"commit.redo":       &CommitOps.Redo,
+
+		// Diff
+		"diff.nextHunk":   &Diff.NextHunk,
+		"diff.prevHunk":   &Diff.PrevHunk,
+		"diff.stageHunk":  &Diff.StageHunk,
+		"diff.toggleView": &Diff.ToggleView,
+
+		// Stash
+		"stash.save":  &Stash.Save,
+		"stash.pop":   &Stash.Pop,
+		"stash.apply": &Stash.Apply,
+		"stash.drop":  &Stash.Drop,
+
+		// Remote ops
+		"remote.push":      &RemoteOps.Push,
+		"remote.forcePush": &RemoteOps.ForcePush,
+		"remote.pull":      &RemoteOps.Pull,
+		"remote.fetch":     &RemoteOps.Fetch,
+
+		// Pull requests
+		"pr.create":        &PR.Create,
+		"pr.approve":       &PR.Approve,
+		"pr.merge":         &PR.Merge,
+		"pr.comment":       &PR.Comment,
+		"pr.aiDescription": &PR.AIDescription,
+	}
+}
+
+// ApplyOverrides applies user keybinding overrides from the config map.
+// The map keys are canonical action names (e.g. "nav.up", "status.stage")
+// and values are key strings (e.g. "k", "ctrl+s", "up k").
+// Multiple keys can be specified separated by spaces.
+func ApplyOverrides(custom map[string]string) {
+	for action, keyStr := range custom {
+		binding, ok := bindingRegistry[action]
+		if !ok {
+			continue // unknown action, skip
+		}
+		// Split by space to support multiple keys (e.g. "up k").
+		keys := splitKeys(keyStr)
+		if len(keys) == 0 {
+			continue
+		}
+		// Preserve the help text but update the key and help key display.
+		helpText := binding.Help().Desc
+		helpKey := keyStr
+		*binding = key.NewBinding(
+			key.WithKeys(keys...),
+			key.WithHelp(helpKey, helpText),
+		)
+	}
+}
+
+// splitKeys splits a key string by spaces, handling special cases like
+// "ctrl+c" (which should not be split on the +).
+func splitKeys(s string) []string {
+	if s == "" {
+		return nil
+	}
+	var result []string
+	for _, part := range splitOnSpaces(s) {
+		part = trimSpace(part)
+		if part != "" {
+			result = append(result, part)
+		}
+	}
+	return result
+}
+
+func splitOnSpaces(s string) []string {
+	var parts []string
+	start := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] == ' ' {
+			if i > start {
+				parts = append(parts, s[start:i])
+			}
+			start = i + 1
+		}
+	}
+	if start < len(s) {
+		parts = append(parts, s[start:])
+	}
+	return parts
+}
+
+func trimSpace(s string) string {
+	i := 0
+	for i < len(s) && s[i] == ' ' {
+		i++
+	}
+	j := len(s)
+	for j > i && s[j-1] == ' ' {
+		j--
+	}
+	return s[i:j]
+}
+
+// ActionNames returns a sorted list of all available canonical action names.
+// Useful for documentation and validation.
+func ActionNames() []string {
+	names := make([]string, 0, len(bindingRegistry))
+	for name := range bindingRegistry {
+		names = append(names, name)
+	}
+	// Simple insertion sort (small list).
+	for i := 1; i < len(names); i++ {
+		j := i
+		for j > 0 && names[j-1] > names[j] {
+			names[j-1], names[j] = names[j], names[j-1]
+			j--
+		}
+	}
+	return names
+}

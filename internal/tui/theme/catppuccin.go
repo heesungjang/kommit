@@ -1,6 +1,9 @@
 package theme
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
+)
 
 // CatppuccinMocha returns the Catppuccin Mocha (dark) theme.
 func CatppuccinMocha() Theme {
@@ -118,7 +121,15 @@ var Themes = map[string]func() Theme{
 }
 
 // Get returns a theme by name, defaulting to Mocha.
+// The special name "auto" detects the terminal background color and selects
+// catppuccin-latte (light) or catppuccin-mocha (dark) accordingly.
 func Get(name string) Theme {
+	if name == "auto" {
+		if termenv.HasDarkBackground() {
+			return CatppuccinMocha()
+		}
+		return CatppuccinLatte()
+	}
 	if fn, ok := Themes[name]; ok {
 		return fn()
 	}

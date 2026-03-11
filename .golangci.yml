@@ -1,0 +1,80 @@
+# golangci-lint configuration for opengit
+# https://golangci-lint.run/usage/configuration/
+
+run:
+  timeout: 5m
+  modules-download-mode: readonly
+
+linters:
+  enable:
+    # Default linters
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+
+    # Additional quality linters
+    - bodyclose       # check HTTP response body is closed
+    - copyloopvar     # detect loop variable capture issues (Go 1.22+)
+    - durationcheck   # detect incorrect duration multiplication
+    - errname         # check error type naming conventions
+    - gocritic        # opinionated meta-linter with many checks
+    - gofmt           # enforce standard formatting
+    - goimports       # enforce import ordering
+    - misspell        # detect common typos
+    - nilerr          # detect returning nil after checking err != nil
+    - prealloc        # suggest slice pre-allocation
+    - unconvert       # detect unnecessary type conversions
+    - unparam         # detect unused function parameters
+    - wastedassign    # detect wasted assignments
+
+linters-settings:
+  gocritic:
+    enabled-tags:
+      - diagnostic
+      - style
+    disabled-checks:
+      - ifElseChain     # too noisy for switch-style if/else
+      - hugeParam       # Bubble Tea models are value types by design
+      - rangeValCopy    # acceptable for small structs
+
+  errcheck:
+    # Don't report unchecked errors for fmt.Fprint* (common in TUI rendering).
+    exclude-functions:
+      - fmt.Fprint
+      - fmt.Fprintf
+      - fmt.Fprintln
+
+  misspell:
+    locale: US
+
+  govet:
+    enable-all: true
+    disable:
+      - fieldalignment  # not worth the noise for readability-first code
+
+issues:
+  # Show all issues (don't collapse duplicates).
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+  exclude-rules:
+    # Test files can be more relaxed.
+    - path: _test\.go
+      linters:
+        - errcheck
+        - gocritic
+        - unparam
+
+    # The gh-dash reference code is not ours to lint.
+    - path: gh-dash/
+      linters:
+        - errcheck
+        - gocritic
+        - goimports
+        - misspell
+        - unparam
+        - unused
+        - wastedassign

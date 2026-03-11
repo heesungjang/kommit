@@ -1,10 +1,13 @@
 package dialog
 
 import (
+	"strings"
+
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	tuictx "github.com/nicholascross/opengit/internal/tui/context"
 	"github.com/nicholascross/opengit/internal/tui/theme"
 )
 
@@ -37,24 +40,19 @@ type MenuOption struct {
 
 // Menu is a multi-option selector dialog that overlays the current view.
 type Menu struct {
+	Base    Base
 	ID      string
-	Title   string
 	Options []MenuOption
 	cursor  int
-
-	width  int
-	height int
 }
 
-// NewMenu creates a new menu dialog.
-func NewMenu(id, title string, options []MenuOption, width, height int) Menu {
+// NewMenu creates a new menu dialog using a shared ProgramContext.
+func NewMenu(id, title string, options []MenuOption, ctx *tuictx.ProgramContext) Menu {
 	return Menu{
+		Base:    NewBaseWithContext(title, "j/k: navigate  enter: select  esc: cancel", 50, 20, ctx),
 		ID:      id,
-		Title:   title,
 		Options: options,
 		cursor:  0,
-		width:   width,
-		height:  height,
 	}
 }
 
@@ -63,17 +61,25 @@ func (m Menu) Init() tea.Cmd { return nil }
 func (m Menu) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		// Let base handle page-scroll keys first.
+		totalLines := len(m.buildContentLines())
+		if m.Base.HandleScrollKeys(msg, totalLines) {
+			return m, nil
+		}
+
 		switch {
 		case key.Matches(msg, key.NewBinding(key.WithKeys("up", "k"))):
 			if m.cursor > 0 {
 				m.cursor--
 			}
+			m.ensureCursorVisible()
 			return m, nil
 
 		case key.Matches(msg, key.NewBinding(key.WithKeys("down", "j"))):
 			if m.cursor < len(m.Options)-1 {
 				m.cursor++
 			}
+			m.ensureCursorVisible()
 			return m, nil
 
 		case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
@@ -83,7 +89,7 @@ func (m Menu) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.cancel()
 		}
 
-		// Check for shortcut keys
+		// Check for shortcut keys.
 		if len(msg.Runes) == 1 {
 			ch := string(msg.Runes[0])
 			for i, opt := range m.Options {
@@ -97,24 +103,16 @@ func (m Menu) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Menu) View() string {
+	return m.Base.Render(m.buildContentLines())
+}
+
+// buildContentLines produces the scrollable content lines for the menu dialog.
+// Every entry is a single terminal line (no embedded newlines).
+func (m Menu) buildContentLines() []string {
 	t := theme.Active
+	w := m.Base.InnerWidth()
 
-	dialogWidth := 50
-	if dialogWidth+2 > m.width-2 {
-		dialogWidth = m.width - 4
-	}
-	if dialogWidth < 20 {
-		dialogWidth = 20
-	}
-
-	title := lipgloss.NewStyle().
-		Foreground(t.Blue).
-		Background(t.Surface0).
-		Bold(true).
-		Padding(0, 0, 1, 0).
-		Render(m.Title)
-
-	var optLines []string
+	var lines []string
 	for i, opt := range m.Options {
 		selected := i == m.cursor
 		bg := t.Surface0
@@ -135,7 +133,7 @@ func (m Menu) View() string {
 		style := lipgloss.NewStyle().
 			Foreground(fg).
 			Background(bg).
-			Width(dialogWidth - 4).
+			Width(w).
 			Bold(selected)
 		line := style.Render(label)
 
@@ -143,32 +141,47 @@ func (m Menu) View() string {
 			descStyle := lipgloss.NewStyle().
 				Foreground(t.Subtext0).
 				Background(bg).
-				Width(dialogWidth-4).
+				Width(w).
 				Padding(0, 0, 0, 2)
 			line = lipgloss.JoinVertical(lipgloss.Left, line, descStyle.Render(opt.Description))
 		}
 
-		optLines = append(optLines, line)
+		// Flatten: each option may produce multiple rendered lines
+		// (if description is shown).
+		lines = append(lines, FlattenLines(line)...)
+	}
+	return lines
+}
+
+// ensureCursorVisible adjusts the scroll offset so the cursor option is visible.
+func (m *Menu) ensureCursorVisible() {
+	t := theme.Active
+	w := m.Base.InnerWidth()
+
+	lineIdx := 0
+	for i, opt := range m.Options {
+		if i == m.cursor {
+			break
+		}
+		// Count how many lines this option occupies.
+		label := "  " + opt.Label
+		if opt.Key != "" {
+			label += " [" + opt.Key + "]"
+		}
+		style := lipgloss.NewStyle().
+			Foreground(t.Text).
+			Background(t.Surface0).
+			Width(w)
+		rendered := style.Render(label)
+		lineIdx += strings.Count(rendered, "\n") + 1
+
+		// If this was the cursor position, description would be showing too.
+		// But since we break when i == m.cursor, non-cursor items never have
+		// descriptions expanded, so this is correct.
 	}
 
-	optContent := lipgloss.JoinVertical(lipgloss.Left, optLines...)
-
-	hint := lipgloss.NewStyle().
-		Foreground(t.Overlay0).
-		Background(t.Surface0).
-		Padding(1, 0, 0, 0).
-		Render("j/k:navigate  enter:select  esc:cancel")
-
-	content := lipgloss.JoinVertical(lipgloss.Left, title, optContent, hint)
-
-	return lipgloss.NewStyle().
-		Width(dialogWidth).
-		Padding(1, 2).
-		Background(t.Surface0).
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(t.Blue).
-		BorderBackground(t.Surface0).
-		Render(content)
+	totalLines := len(m.buildContentLines())
+	m.Base.EnsureVisible(lineIdx, totalLines)
 }
 
 func (m Menu) selectOption(idx int) tea.Cmd {

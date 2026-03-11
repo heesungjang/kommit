@@ -7,7 +7,6 @@ import (
 	"github.com/nicholascross/opengit/internal/config"
 	"github.com/nicholascross/opengit/internal/git"
 	"github.com/nicholascross/opengit/internal/tui"
-	"github.com/nicholascross/opengit/internal/tui/theme"
 )
 
 // Run is the main entry point for the application.
@@ -22,9 +21,6 @@ func Run(repoPath string, debug bool) error {
 		cfg.Debug = true
 	}
 
-	// Set theme
-	theme.Active = theme.Get(cfg.Theme)
-
 	// Resolve repo path
 	absPath, err := filepath.Abs(repoPath)
 	if err != nil {
@@ -38,5 +34,5 @@ func Run(repoPath string, debug bool) error {
 	}
 
 	// Launch TUI
-	return tui.Run(repo)
+	return tui.Run(repo, &cfg)
 }

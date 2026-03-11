@@ -111,3 +111,99 @@ func (t Theme) Dimmed() lipgloss.Color { return t.Surface2 }
 
 // Active is the current theme.
 var Active = CatppuccinMocha()
+
+// IsDark returns true if the theme has a dark background (luminance < 50%).
+func (t Theme) IsDark() bool {
+	hex := string(t.Base)
+	if len(hex) > 0 && hex[0] == '#' {
+		hex = hex[1:]
+	}
+	if len(hex) != 6 {
+		return true // assume dark
+	}
+	r := hexDigit(hex[0])<<4 | hexDigit(hex[1])
+	g := hexDigit(hex[2])<<4 | hexDigit(hex[3])
+	b := hexDigit(hex[4])<<4 | hexDigit(hex[5])
+	// Perceived luminance (ITU-R BT.601)
+	lum := 0.299*float64(r) + 0.587*float64(g) + 0.114*float64(b)
+	return lum < 128
+}
+
+func hexDigit(c byte) uint8 {
+	switch {
+	case c >= '0' && c <= '9':
+		return c - '0'
+	case c >= 'a' && c <= 'f':
+		return c - 'a' + 10
+	case c >= 'A' && c <= 'F':
+		return c - 'A' + 10
+	}
+	return 0
+}
+
+// ColorOverrides maps theme color field names to hex color strings.
+// Used by config to override individual theme colors.
+type ColorOverrides struct {
+	Base      string
+	Mantle    string
+	Crust     string
+	Surface0  string
+	Surface1  string
+	Surface2  string
+	Overlay0  string
+	Overlay1  string
+	Text      string
+	Subtext0  string
+	Subtext1  string
+	Red       string
+	Green     string
+	Yellow    string
+	Blue      string
+	Mauve     string
+	Pink      string
+	Teal      string
+	Sky       string
+	Peach     string
+	Maroon    string
+	Lavender  string
+	Flamingo  string
+	Rosewater string
+	Sapphire  string
+}
+
+// applyOverride sets the target to the hex color if non-empty.
+func applyOverride(target *lipgloss.Color, hex string) {
+	if hex != "" {
+		c := lipgloss.Color(hex)
+		*target = c
+	}
+}
+
+// ApplyOverrides applies non-empty color overrides to the theme.
+func (t *Theme) ApplyOverrides(o ColorOverrides) {
+	applyOverride(&t.Base, o.Base)
+	applyOverride(&t.Mantle, o.Mantle)
+	applyOverride(&t.Crust, o.Crust)
+	applyOverride(&t.Surface0, o.Surface0)
+	applyOverride(&t.Surface1, o.Surface1)
+	applyOverride(&t.Surface2, o.Surface2)
+	applyOverride(&t.Overlay0, o.Overlay0)
+	applyOverride(&t.Overlay1, o.Overlay1)
+	applyOverride(&t.Text, o.Text)
+	applyOverride(&t.Subtext0, o.Subtext0)
+	applyOverride(&t.Subtext1, o.Subtext1)
+	applyOverride(&t.Red, o.Red)
+	applyOverride(&t.Green, o.Green)
+	applyOverride(&t.Yellow, o.Yellow)
+	applyOverride(&t.Blue, o.Blue)
+	applyOverride(&t.Mauve, o.Mauve)
+	applyOverride(&t.Pink, o.Pink)
+	applyOverride(&t.Teal, o.Teal)
+	applyOverride(&t.Sky, o.Sky)
+	applyOverride(&t.Peach, o.Peach)
+	applyOverride(&t.Maroon, o.Maroon)
+	applyOverride(&t.Lavender, o.Lavender)
+	applyOverride(&t.Flamingo, o.Flamingo)
+	applyOverride(&t.Rosewater, o.Rosewater)
+	applyOverride(&t.Sapphire, o.Sapphire)
+}

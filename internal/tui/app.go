@@ -10,8 +10,10 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/nicholascross/opengit/internal/config"
 	"github.com/nicholascross/opengit/internal/git"
 	"github.com/nicholascross/opengit/internal/tui/components"
+	tuictx "github.com/nicholascross/opengit/internal/tui/context"
 	"github.com/nicholascross/opengit/internal/tui/dialog"
 	"github.com/nicholascross/opengit/internal/tui/keys"
 	"github.com/nicholascross/opengit/internal/tui/pages"
@@ -73,6 +75,7 @@ type pollResultMsg struct {
 // App is the root Bubble Tea model. It renders a single unified view
 // (sidebar | commit graph | context detail) plus a status bar and overlays.
 type App struct {
+	ctx       *tuictx.ProgramContext // shared context (dimensions, theme, config, repo)
 	repo      *git.Repository
 	mainView  tea.Model // the LogPage — our single unified view
 	toolbar   components.Toolbar
@@ -93,11 +96,22 @@ type App struct {
 }
 
 // NewApp creates a new App rooted at the given repository.
-func NewApp(repo *git.Repository) App {
+func NewApp(repo *git.Repository, cfg *config.Config) App {
+	ctx := tuictx.New(cfg, repo)
+	// Set the package-level Active theme so existing code that reads
+	// theme.Active directly continues to work during the migration.
+	theme.Active = ctx.Theme
+
+	// Apply user keybinding overrides from config.
+	if len(cfg.Keybinds.Custom) > 0 {
+		keys.ApplyOverrides(cfg.Keybinds.Custom)
+	}
+
 	keys.ActiveContext = keys.ContextLog
 	return App{
+		ctx:       ctx,
 		repo:      repo,
-		mainView:  pages.NewLogPage(repo, 80, 24), // initial size; updated on WindowSizeMsg
+		mainView:  pages.NewLogPage(ctx, 80, 24), // initial size; updated on WindowSizeMsg
 		toolbar:   components.NewToolbar(),
 		statusBar: components.NewStatusBar(),
 		keys:      keys.NewGlobalKeys(),
@@ -124,6 +138,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		a.width = msg.Width
 		a.height = msg.Height
+		// Update the shared context so all components see the new size.
+		a.ctx.SetScreenSize(msg.Width, msg.Height, 2) // 2 = toolbar + statusbar
 		a.toolbar = a.toolbar.SetWidth(msg.Width)
 		a.statusBar = a.statusBar.SetSize(msg.Width)
 		a.toast = a.toast.SetWidth(msg.Width)
@@ -163,6 +179,13 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case dialog.ConfirmResultMsg:
 		a.showDialog = false
 		a.dialog = nil
+		// Handle quit confirmation.
+		if msg.ID == "quit" {
+			if msg.Confirmed {
+				return a, tea.Quit
+			}
+			return a, nil
+		}
 		// Handle git op confirmations (push/pull/force-push)
 		if msg.Confirmed && strings.HasPrefix(msg.ID, "gitop-") {
 			suffix := strings.TrimPrefix(msg.ID, "gitop-")
@@ -215,14 +238,14 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// -- Commit dialog request -----------------------------------------------
 	case pages.RequestCommitDialogMsg:
-		dlg := dialog.NewCommitMsg(msg.StagedCount, a.width, a.height)
+		dlg := dialog.NewCommitMsg(msg.StagedCount, a.ctx)
 		a.dialog = dlg
 		a.showDialog = true
 		return a, dlg.Init()
 
 	// -- Confirm dialog request ----------------------------------------------
 	case pages.RequestConfirmMsg:
-		dlg := dialog.NewConfirm(msg.ID, msg.Title, msg.Message, a.width, a.height)
+		dlg := dialog.NewConfirm(msg.ID, msg.Title, msg.Message, a.ctx)
 		a.dialog = dlg
 		a.showDialog = true
 		return a, dlg.Init()
@@ -233,7 +256,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for _, o := range msg.Options {
 			menuOpts = append(menuOpts, dialog.MenuOption{Label: o.Label, Description: o.Description, Key: o.Key})
 		}
-		dlg := dialog.NewMenu(msg.ID, msg.Title, menuOpts, a.width, a.height)
+		dlg := dialog.NewMenu(msg.ID, msg.Title, menuOpts, a.ctx)
 		a.dialog = dlg
 		a.showDialog = true
 		return a, dlg.Init()
@@ -256,17 +279,17 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case pages.RequestAmendDialogMsg:
 		repo := a.repo
 		stagedCount := msg.StagedCount
-		w, h := a.width, a.height
+		ctx := a.ctx
 		return a, func() tea.Msg {
 			info, err := repo.LastCommit()
 			if err != nil || info == nil {
-				return showDialogMsg{model: dialog.NewCommitMsg(stagedCount, w, h)}
+				return showDialogMsg{model: dialog.NewCommitMsg(stagedCount, ctx)}
 			}
 			prevMsg := info.Subject
 			if info.Body != "" {
 				prevMsg = info.Subject + "\n\n" + info.Body
 			}
-			return showDialogMsg{model: dialog.NewCommitMsgAmend(stagedCount, prevMsg, w, h)}
+			return showDialogMsg{model: dialog.NewCommitMsgAmend(stagedCount, prevMsg, ctx)}
 		}
 
 	// -- Git push/pull/fetch request -----------------------------------------
@@ -281,7 +304,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				title = "Force Push?"
 				body = "Force push with --force-with-lease?\nThis will overwrite remote history."
 			}
-			dlg := dialog.NewConfirm(id, title, body, a.width, a.height)
+			dlg := dialog.NewConfirm(id, title, body, a.ctx)
 			a.dialog = dlg
 			a.showDialog = true
 			return a, dlg.Init()
@@ -305,7 +328,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// -- Text input dialog request -------------------------------------------
 	case pages.RequestTextInputMsg:
-		dlg := dialog.NewTextInput(msg.ID, msg.Title, msg.Placeholder, msg.InitialValue, a.width, a.height)
+		dlg := dialog.NewTextInput(msg.ID, msg.Title, msg.Placeholder, msg.InitialValue, a.ctx)
 		a.dialog = dlg
 		a.showDialog = true
 		return a, dlg.Init()
@@ -418,11 +441,15 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Global shortcuts.
 			switch {
 			case key.Matches(msg, a.keys.Quit):
-				return a, tea.Quit
+				dlg := dialog.NewConfirm("quit", "Quit?", "Are you sure you want to quit?", a.ctx)
+				a.dialog = dlg
+				a.showDialog = true
+				return a, dlg.Init()
 			case key.Matches(msg, a.keys.Help):
-				ctx := keys.ActiveContext
+				kctx := keys.ActiveContext
+				pctx := a.ctx
 				return a, func() tea.Msg {
-					return showDialogMsg{model: dialog.NewHelp(ctx, a.width, a.height)}
+					return showDialogMsg{model: dialog.NewHelp(kctx, pctx)}
 				}
 			}
 		}
@@ -493,16 +520,21 @@ func (a App) View() string {
 		Background(t.Base).
 		Render(lipgloss.JoinVertical(lipgloss.Left, pageView, toolBar, statusBar))
 
-	// Overlay dialog if active.
+	// Overlay dialog if active — composite on top of the layout so the app
+	// remains visible behind the dialog (same technique used by toasts).
 	if a.showDialog && a.dialog != nil {
 		dlg := a.dialog.View()
-		layout = lipgloss.Place(
-			a.width, a.height,
-			lipgloss.Center, lipgloss.Center,
-			dlg,
-			lipgloss.WithWhitespaceChars(" "),
-			lipgloss.WithWhitespaceBackground(t.Base),
-		)
+		dlgW := lipgloss.Width(dlg)
+		dlgH := lipgloss.Height(dlg)
+		posX := (a.width - dlgW) / 2
+		posY := (a.height - dlgH) / 2
+		if posX < 0 {
+			posX = 0
+		}
+		if posY < 0 {
+			posY = 0
+		}
+		layout = overlayAt(layout, dlg, posX, posY, a.width)
 	}
 
 	// Overlay toast if visible.

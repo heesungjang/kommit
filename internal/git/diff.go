@@ -1,7 +1,10 @@
 package git
 
 import (
+	"bytes"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -301,6 +304,25 @@ func parseDiffStat(out string) []DiffStatEntry {
 		})
 	}
 	return entries
+}
+
+// CountFileLines returns the number of lines in a file relative to the repo root.
+// This is used to generate diff stats for untracked files, where all lines are "added".
+func (r *Repository) CountFileLines(relPath string) (int, error) {
+	fullPath := filepath.Join(r.path, relPath)
+	data, err := os.ReadFile(fullPath)
+	if err != nil {
+		return 0, err
+	}
+	if len(data) == 0 {
+		return 0, nil
+	}
+	count := bytes.Count(data, []byte{'\n'})
+	// If the file doesn't end with a newline, count the last line too
+	if data[len(data)-1] != '\n' {
+		count++
+	}
+	return count, nil
 }
 
 // FileDiff returns the diff for a file, handling both staged and unstaged context.

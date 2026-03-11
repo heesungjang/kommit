@@ -598,9 +598,17 @@ func (s Sidebar) View(focused bool, borderColor lipgloss.Color) string {
 		return styles.ClipPanel(styles.PanelStyleColor(borderColor).Width(s.width).Height(ph).Render(content), s.height)
 	}
 
-	// Build hints early so we can measure their height for viewport windowing
+	// Build hints with scroll position indicator
+	hintKeys := "enter:act  n:new  D:del"
+	scrollInfo := ""
+	if len(items) > 0 {
+		scrollInfo = fmt.Sprintf(" %d/%d", s.cursor+1, len(items))
+	}
 	hintRendered := lipgloss.NewStyle().Background(t.Base).Width(iw).Render(
-		styles.KeyHintStyle().Render("enter:act  n:new  D:del"),
+		lipgloss.JoinHorizontal(lipgloss.Top,
+			styles.KeyHintStyle().Render(hintKeys),
+			lipgloss.NewStyle().Foreground(t.Overlay0).Background(t.Base).Render(scrollInfo),
+		),
 	)
 	hintHeight := strings.Count(hintRendered, "\n") + 1
 

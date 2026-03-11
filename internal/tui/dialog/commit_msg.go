@@ -8,6 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	tuictx "github.com/nicholascross/opengit/internal/tui/context"
 	"github.com/nicholascross/opengit/internal/tui/theme"
 )
 
@@ -30,15 +31,14 @@ type CommitCancelMsg struct{}
 
 // CommitMsg is a dialog for entering a commit message with a textarea.
 type CommitMsg struct {
+	Base        Base
 	textarea    textarea.Model
 	stagedCount int
 	amend       bool
-	width       int
-	height      int
 }
 
-// NewCommitMsg creates a new commit message dialog.
-func NewCommitMsg(stagedCount, width, height int) CommitMsg {
+// NewCommitMsg creates a new commit message dialog using a shared ProgramContext.
+func NewCommitMsg(stagedCount int, ctx *tuictx.ProgramContext) CommitMsg {
 	ta := textarea.New()
 	ta.Placeholder = "Enter commit message..."
 	ta.Focus()
@@ -48,16 +48,15 @@ func NewCommitMsg(stagedCount, width, height int) CommitMsg {
 	ta.ShowLineNumbers = false
 
 	return CommitMsg{
+		Base:        NewBaseWithContext("Commit", "ctrl+s: commit  esc: cancel", 60, 20, ctx),
 		textarea:    ta,
 		stagedCount: stagedCount,
-		width:       width,
-		height:      height,
 	}
 }
 
 // NewCommitMsgAmend creates a commit dialog in amend mode, pre-filled with the
 // previous commit message.
-func NewCommitMsgAmend(stagedCount int, prevMessage string, width, height int) CommitMsg {
+func NewCommitMsgAmend(stagedCount int, prevMessage string, ctx *tuictx.ProgramContext) CommitMsg {
 	ta := textarea.New()
 	ta.Placeholder = "Enter commit message..."
 	ta.Focus()
@@ -68,11 +67,10 @@ func NewCommitMsgAmend(stagedCount int, prevMessage string, width, height int) C
 	ta.SetValue(prevMessage)
 
 	return CommitMsg{
+		Base:        NewBaseWithContext("Amend Commit", "ctrl+s: commit  esc: cancel", 60, 20, ctx),
 		textarea:    ta,
 		stagedCount: stagedCount,
 		amend:       true,
-		width:       width,
-		height:      height,
 	}
 }
 
@@ -105,53 +103,25 @@ func (c CommitMsg) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (c CommitMsg) View() string {
+	return c.Base.Render(c.buildContentLines())
+}
+
+// buildContentLines produces the scrollable content lines for the commit
+// dialog. Every entry is a single terminal line.
+func (c CommitMsg) buildContentLines() []string {
 	t := theme.Active
-
-	dialogWidth := 60
-	if dialogWidth+2 > c.width-2 {
-		dialogWidth = c.width - 4
-	}
-	if dialogWidth < 20 {
-		dialogWidth = 20
-	}
-
-	titleText := "Commit"
-	if c.amend {
-		titleText = "Amend Commit"
-	}
-	title := lipgloss.NewStyle().
-		Foreground(t.Blue).
-		Background(t.Surface0).
-		Bold(true).
-		Render(titleText)
+	emptyLine := lipgloss.NewStyle().Background(t.Surface0).Render("")
 
 	info := lipgloss.NewStyle().
 		Foreground(t.Subtext0).
 		Background(t.Surface0).
 		Render(fmt.Sprintf("%d file(s) staged", c.stagedCount))
 
-	headerSep := lipgloss.NewStyle().Background(t.Surface0).Render("  ")
-	header := lipgloss.JoinHorizontal(lipgloss.Top, title, headerSep, info)
-
-	ta := c.textarea.View()
-
-	hints := lipgloss.NewStyle().
-		Foreground(t.Overlay0).
-		Background(t.Surface0).
-		Padding(1, 0, 0, 0).
-		Render("ctrl+s: commit  esc: cancel")
-
-	emptyLine := lipgloss.NewStyle().Background(t.Surface0).Render("")
-	content := lipgloss.JoinVertical(lipgloss.Left, header, emptyLine, ta, hints)
-
-	return lipgloss.NewStyle().
-		Width(dialogWidth).
-		Padding(1, 2).
-		Background(t.Surface0).
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(t.Blue).
-		BorderBackground(t.Surface0).
-		Render(content)
+	var lines []string
+	lines = append(lines, info)
+	lines = append(lines, emptyLine)
+	lines = append(lines, FlattenLines(c.textarea.View())...)
+	return lines
 }
 
 var _ tea.Model = CommitMsg{}

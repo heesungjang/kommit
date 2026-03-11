@@ -6,6 +6,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	tuictx "github.com/nicholascross/opengit/internal/tui/context"
 	"github.com/nicholascross/opengit/internal/tui/theme"
 )
 
@@ -30,30 +31,27 @@ type TextInputCancelMsg struct {
 
 // TextInput is a single-line text input dialog.
 type TextInput struct {
-	ID     string
-	title  string
-	input  textinput.Model
-	width  int
-	height int
+	Base  Base
+	ID    string
+	input textinput.Model
 }
 
-// NewTextInput creates a new text input dialog.
-func NewTextInput(id, title, placeholder, initialValue string, width, height int) TextInput {
+// NewTextInput creates a new text input dialog using a shared ProgramContext.
+func NewTextInput(id, title, placeholder, initialValue string, ctx *tuictx.ProgramContext) TextInput {
 	ti := textinput.New()
 	ti.Placeholder = placeholder
 	ti.Focus()
 	ti.CharLimit = 256
 	ti.Width = 40
+
 	if initialValue != "" {
 		ti.SetValue(initialValue)
 	}
 
 	return TextInput{
-		ID:     id,
-		title:  title,
-		input:  ti,
-		width:  width,
-		height: height,
+		Base:  NewBaseWithContext(title, "enter: confirm  esc: cancel", 50, 20, ctx),
+		ID:    id,
+		input: ti,
 	}
 }
 
@@ -87,42 +85,19 @@ func (t TextInput) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (t TextInput) View() string {
+	return t.Base.Render(t.buildContentLines())
+}
+
+// buildContentLines produces the scrollable content lines for the text input
+// dialog. Every entry is a single terminal line.
+func (t TextInput) buildContentLines() []string {
 	th := theme.Active
-
-	dialogWidth := 50
-	if dialogWidth+2 > t.width-2 {
-		dialogWidth = t.width - 4
-	}
-	if dialogWidth < 20 {
-		dialogWidth = 20
-	}
-
-	title := lipgloss.NewStyle().
-		Foreground(th.Blue).
-		Background(th.Surface0).
-		Bold(true).
-		Padding(0, 0, 1, 0).
-		Render(t.title)
-
-	input := t.input.View()
-
-	hints := lipgloss.NewStyle().
-		Foreground(th.Overlay0).
-		Background(th.Surface0).
-		Padding(1, 0, 0, 0).
-		Render("enter: confirm  esc: cancel")
-
 	emptyLine := lipgloss.NewStyle().Background(th.Surface0).Render("")
-	content := lipgloss.JoinVertical(lipgloss.Left, title, input, emptyLine, hints)
 
-	return lipgloss.NewStyle().
-		Width(dialogWidth).
-		Padding(1, 2).
-		Background(th.Surface0).
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(th.Blue).
-		BorderBackground(th.Surface0).
-		Render(content)
+	var lines []string
+	lines = append(lines, FlattenLines(t.input.View())...)
+	lines = append(lines, emptyLine)
+	return lines
 }
 
 var _ tea.Model = TextInput{}
