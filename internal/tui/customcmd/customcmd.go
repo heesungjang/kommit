@@ -8,7 +8,7 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/nicholascross/opengit/internal/config"
+	"github.com/heesungjang/kommit/internal/config"
 )
 
 // TemplateVars holds the variables available for template substitution
@@ -43,7 +43,7 @@ func Expand(cmdStr string, vars TemplateVars) (string, error) {
 
 // Run executes a shell command and returns its combined output.
 // The command is run via /bin/sh -c for shell expansion support.
-func Run(cmdStr string, repoDir string) (string, error) {
+func Run(cmdStr, repoDir string) (string, error) {
 	cmd := exec.Command("sh", "-c", cmdStr)
 	cmd.Dir = repoDir
 	out, err := cmd.CombinedOutput()
@@ -52,7 +52,7 @@ func Run(cmdStr string, repoDir string) (string, error) {
 
 // RunInteractive returns an *exec.Cmd suitable for tea.ExecProcess,
 // allowing the command to take over the terminal (for interactive commands).
-func RunInteractive(cmdStr string, repoDir string) *exec.Cmd {
+func RunInteractive(cmdStr, repoDir string) *exec.Cmd {
 	cmd := exec.Command("sh", "-c", cmdStr)
 	cmd.Dir = repoDir
 	return cmd

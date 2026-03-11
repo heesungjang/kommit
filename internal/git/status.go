@@ -135,8 +135,8 @@ func (r *Repository) Status() (*StatusResult, error) {
 			ab := strings.TrimPrefix(line, "# branch.ab ")
 			parts := strings.Fields(ab)
 			if len(parts) >= 2 {
-				fmt.Sscanf(parts[0], "+%d", &result.Ahead)
-				fmt.Sscanf(parts[1], "-%d", &result.Behind)
+				_, _ = fmt.Sscanf(parts[0], "+%d", &result.Ahead)
+				_, _ = fmt.Sscanf(parts[1], "-%d", &result.Behind)
 			}
 		case strings.HasPrefix(line, "1 "):
 			// Ordinary changed entry: 1 XY sub mH mI mW hH hI path

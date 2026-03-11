@@ -9,11 +9,11 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/nicholascross/opengit/internal/git"
-	"github.com/nicholascross/opengit/internal/tui/anim"
-	"github.com/nicholascross/opengit/internal/tui/keys"
-	"github.com/nicholascross/opengit/internal/tui/styles"
-	"github.com/nicholascross/opengit/internal/tui/theme"
+	"github.com/heesungjang/kommit/internal/git"
+	"github.com/heesungjang/kommit/internal/tui/anim"
+	"github.com/heesungjang/kommit/internal/tui/keys"
+	"github.com/heesungjang/kommit/internal/tui/styles"
+	"github.com/heesungjang/kommit/internal/tui/theme"
 )
 
 // DiffViewer manages the center diff panel state: scrollable diff content,
@@ -43,7 +43,8 @@ type DiffViewer struct {
 	VisualAnchor int  // anchor point where selection started
 
 	// Active state
-	Active bool // true when center panel is showing diff instead of graph
+	Active     bool // true when center panel is showing diff instead of graph
+	SideBySide bool // true to render side-by-side instead of inline
 }
 
 // Reset clears all diff viewer state, returning to inactive.
@@ -88,40 +89,41 @@ func (d *DiffViewer) SetContent(path, diff string, isWIP, isStaged bool) {
 	d.HunkStarts = nil
 	d.Hunks = nil
 	for i, line := range d.Lines {
-		if strings.HasPrefix(line, "@@") {
-			d.HunkStarts = append(d.HunkStarts, i)
-			oldStart, newStart := parseDiffHunkNums(line)
-			hunk := git.Hunk{
-				StartOld: oldStart,
-				StartNew: newStart,
+		if !strings.HasPrefix(line, "@@") {
+			continue
+		}
+		d.HunkStarts = append(d.HunkStarts, i)
+		oldStart, newStart := parseDiffHunkNums(line)
+		hunk := git.Hunk{
+			StartOld: oldStart,
+			StartNew: newStart,
+		}
+		// Collect hunk lines until next hunk header or end.
+		for j := i + 1; j < len(d.Lines); j++ {
+			nextLine := d.Lines[j]
+			if strings.HasPrefix(nextLine, "@@") || strings.HasPrefix(nextLine, "diff --git") {
+				break
 			}
-			// Collect hunk lines until next hunk header or end.
-			for j := i + 1; j < len(d.Lines); j++ {
-				nextLine := d.Lines[j]
-				if strings.HasPrefix(nextLine, "@@") || strings.HasPrefix(nextLine, "diff --git") {
-					break
-				}
-				hunk.Lines = append(hunk.Lines, nextLine)
-			}
-			// Compute CountOld / CountNew from the lines.
-			for _, hl := range hunk.Lines {
-				if len(hl) > 0 {
-					switch hl[0] {
-					case '-':
-						hunk.CountOld++
-					case '+':
-						hunk.CountNew++
-					default:
-						hunk.CountOld++
-						hunk.CountNew++
-					}
-				} else {
+			hunk.Lines = append(hunk.Lines, nextLine)
+		}
+		// Compute CountOld / CountNew from the lines.
+		for _, hl := range hunk.Lines {
+			if hl != "" {
+				switch hl[0] {
+				case '-':
+					hunk.CountOld++
+				case '+':
+					hunk.CountNew++
+				default:
 					hunk.CountOld++
 					hunk.CountNew++
 				}
+			} else {
+				hunk.CountOld++
+				hunk.CountNew++
 			}
-			d.Hunks = append(d.Hunks, hunk)
 		}
+		d.Hunks = append(d.Hunks, hunk)
 	}
 }
 
@@ -201,6 +203,11 @@ func (d *DiffViewer) HandleKeys(msg tea.KeyMsg, navKeys keys.NavigationKeys, rep
 			d.VisualCursor = d.ScrollY
 			d.VisualAnchor = d.ScrollY
 		}
+		return true, nil
+
+	// Toggle side-by-side / inline diff view
+	case key.Matches(msg, key.NewBinding(key.WithKeys("V"))):
+		d.SideBySide = !d.SideBySide
 		return true, nil
 
 	// Hunk navigation
@@ -306,8 +313,8 @@ func (d *DiffViewer) ScrollMouseWheel(delta int) {
 }
 
 // VisualSelectionRange returns the ordered (lo, hi) range of the visual selection.
-func (d *DiffViewer) VisualSelectionRange() (int, int) {
-	lo, hi := d.VisualAnchor, d.VisualCursor
+func (d *DiffViewer) VisualSelectionRange() (lo, hi int) {
+	lo, hi = d.VisualAnchor, d.VisualCursor
 	if lo > hi {
 		lo, hi = hi, lo
 	}
@@ -412,6 +419,281 @@ func (d *DiffViewer) unstageSelectedLines(repo *git.Repository) tea.Cmd {
 	}
 }
 
+// sideBySideRow represents one visual row in side-by-side mode.
+// Each row has an optional old (left) and new (right) entry.
+type sideBySideRow struct {
+	oldLine string // text content (empty string means blank filler)
+	newLine string
+	oldNum  int // line number (0 means no number to show)
+	newNum  int
+	oldType byte // '+', '-', ' ', '@', or 0 for blank
+	newType byte
+	isMeta  bool // similarity/rename metadata line
+	isHunk  bool // hunk header
+}
+
+// buildSideBySideRows pairs diff lines into left/right rows for side-by-side rendering.
+// Context lines appear on both sides, consecutive -/+ blocks are paired, and
+// any unpaired lines get a blank filler on the opposite side.
+func (d *DiffViewer) buildSideBySideRows() []sideBySideRow {
+	var rows []sideBySideRow
+	oldNum := 0
+	newNum := 0
+	inHunk := false
+
+	i := 0
+	for i < len(d.Lines) {
+		line := d.Lines[i]
+
+		// Skip file-level headers entirely
+		if strings.HasPrefix(line, "diff --git") || strings.HasPrefix(line, "--- ") ||
+			strings.HasPrefix(line, "+++ ") || strings.HasPrefix(line, "index ") {
+			i++
+			continue
+		}
+
+		// Metadata lines (similarity, rename, new file, etc.)
+		if strings.HasPrefix(line, "similarity ") || strings.HasPrefix(line, "rename ") ||
+			strings.HasPrefix(line, "new file") || strings.HasPrefix(line, "deleted file") ||
+			strings.HasPrefix(line, "old mode") || strings.HasPrefix(line, "new mode") {
+			rows = append(rows, sideBySideRow{
+				oldLine: line, newLine: line,
+				oldType: ' ', newType: ' ',
+				isMeta: true,
+			})
+			i++
+			continue
+		}
+
+		// Hunk header
+		if strings.HasPrefix(line, "@@") {
+			inHunk = true
+			oldNum, newNum = parseDiffHunkNums(line)
+			rows = append(rows, sideBySideRow{
+				oldLine: stripHunkContext(line),
+				newLine: stripHunkContext(line),
+				oldType: '@', newType: '@',
+				isHunk: true,
+			})
+			i++
+			continue
+		}
+
+		if !inHunk {
+			rows = append(rows, sideBySideRow{
+				oldLine: line, newLine: line,
+				oldType: ' ', newType: ' ',
+			})
+			i++
+			continue
+		}
+
+		// Inside a hunk — collect consecutive -/+ blocks and pair them
+		lineType := byte(' ')
+		if line != "" {
+			lineType = line[0]
+		}
+
+		if lineType == '-' {
+			// Collect all consecutive '-' lines
+			var removed []struct {
+				text string
+				num  int
+			}
+			for i < len(d.Lines) {
+				l := d.Lines[i]
+				if l == "" || l[0] != '-' {
+					break
+				}
+				oldNum++
+				removed = append(removed, struct {
+					text string
+					num  int
+				}{l, oldNum - 1 + 1}) // 1-indexed, but oldNum already incremented
+				i++
+			}
+			// Fix numbering: oldNum was incremented, the stored number should be the value before increment
+			for idx := range removed {
+				removed[idx].num = oldNum - len(removed) + idx
+			}
+
+			// Now collect any immediately following '+' lines
+			var added []struct {
+				text string
+				num  int
+			}
+			for i < len(d.Lines) {
+				l := d.Lines[i]
+				if l == "" || l[0] != '+' {
+					break
+				}
+				newNum++
+				added = append(added, struct {
+					text string
+					num  int
+				}{l, newNum})
+				i++
+			}
+
+			// Pair them up
+			maxLen := len(removed)
+			if len(added) > maxLen {
+				maxLen = len(added)
+			}
+			for j := 0; j < maxLen; j++ {
+				row := sideBySideRow{}
+				if j < len(removed) {
+					row.oldLine = removed[j].text
+					row.oldNum = removed[j].num
+					row.oldType = '-'
+				}
+				if j < len(added) {
+					row.newLine = added[j].text
+					row.newNum = added[j].num
+					row.newType = '+'
+				}
+				rows = append(rows, row)
+			}
+			continue
+		}
+
+		if lineType == '+' {
+			// Standalone '+' line (not preceded by '-')
+			newNum++
+			rows = append(rows, sideBySideRow{
+				newLine: line, newNum: newNum, newType: '+',
+			})
+			i++
+			continue
+		}
+
+		// Context line
+		oldNum++
+		newNum++
+		rows = append(rows, sideBySideRow{
+			oldLine: line, newLine: line,
+			oldNum: oldNum, newNum: newNum,
+			oldType: ' ', newType: ' ',
+		})
+		i++
+	}
+
+	return rows
+}
+
+// renderSideBySide renders the diff content in a side-by-side two-column layout.
+func (d *DiffViewer) renderSideBySide(iw, contentHeight int) string {
+	t := theme.Active
+
+	rows := d.buildSideBySideRows()
+
+	// Each half: "NNNN │ <content>"
+	const sideGutter = 6 // 4-digit number + space + separator
+	const dividerWidth = 1
+	halfWidth := (iw - dividerWidth) / 2
+	if halfWidth < sideGutter+5 {
+		halfWidth = sideGutter + 5
+	}
+	sideContentWidth := halfWidth - sideGutter
+	if sideContentWidth < 4 {
+		sideContentWidth = 4
+	}
+
+	// Map scroll offset: d.ScrollY is in terms of original diff lines.
+	// For side-by-side, we use it as a row index into our paired rows.
+	startRow := d.ScrollY
+	if startRow < 0 {
+		startRow = 0
+	}
+	if startRow > len(rows) {
+		startRow = len(rows)
+	}
+
+	endRow := startRow + contentHeight
+	if endRow > len(rows) {
+		endRow = len(rows)
+	}
+
+	divStyle := lipgloss.NewStyle().Foreground(t.Surface1).Background(t.Base)
+	scrollX := d.ScrollX
+
+	var sections []string
+	for ri := startRow; ri < endRow; ri++ {
+		row := rows[ri]
+
+		var leftStr, rightStr string
+
+		if row.isHunk {
+			// Hunk header spans both sides
+			hunkGutter := styles.DiffGutterSepStyle('@').Render(strings.Repeat("─", sideGutter-1) + "┤")
+			rendered := expandTabs(row.oldLine, 4)
+			rendered = horizontalSlice(rendered, scrollX, sideContentWidth)
+			hunkContent := styles.DiffLineStyle('@').Width(sideContentWidth).Render(rendered)
+			leftStr = lipgloss.JoinHorizontal(lipgloss.Top, hunkGutter, hunkContent)
+			rightStr = lipgloss.JoinHorizontal(lipgloss.Top, hunkGutter, hunkContent)
+		} else if row.isMeta {
+			gutter := styles.DiffGutterSepStyle(' ').Render(strings.Repeat(" ", sideGutter))
+			rendered := expandTabs(row.oldLine, 4)
+			rendered = horizontalSlice(rendered, scrollX, sideContentWidth)
+			metaContent := styles.DiffMetaStyle().Width(sideContentWidth).Render(rendered)
+			leftStr = lipgloss.JoinHorizontal(lipgloss.Top, gutter, metaContent)
+			rightStr = lipgloss.JoinHorizontal(lipgloss.Top, gutter, metaContent)
+		} else {
+			leftStr = d.renderSideBySideHalf(row.oldLine, row.oldNum, row.oldType, sideGutter, sideContentWidth, scrollX)
+			rightStr = d.renderSideBySideHalf(row.newLine, row.newNum, row.newType, sideGutter, sideContentWidth, scrollX)
+		}
+
+		divider := divStyle.Render("│")
+		fullLine := lipgloss.JoinHorizontal(lipgloss.Top, leftStr, divider, rightStr)
+		sections = append(sections, fullLine)
+	}
+
+	if len(sections) == 0 {
+		return ""
+	}
+	content := lipgloss.JoinVertical(lipgloss.Left, sections...)
+
+	// Pad to contentHeight
+	contentLines := strings.Split(content, "\n")
+	if len(contentLines) > contentHeight {
+		contentLines = contentLines[:contentHeight]
+	}
+	bgEmpty := lipgloss.NewStyle().Background(t.Base).Width(iw).Render("")
+	for len(contentLines) < contentHeight {
+		contentLines = append(contentLines, bgEmpty)
+	}
+	return strings.Join(contentLines, "\n")
+}
+
+// renderSideBySideHalf renders one half (left or right) of a side-by-side row.
+func (d *DiffViewer) renderSideBySideHalf(text string, lineNum int, lineType byte, gutterW, contentW, scrollX int) string {
+	t := theme.Active
+
+	// Blank filler row (when one side has no corresponding line)
+	if lineType == 0 {
+		bg := lipgloss.NewStyle().Background(t.Surface0).Foreground(t.Surface0)
+		gutter := bg.Render(strings.Repeat(" ", gutterW))
+		fill := bg.Width(contentW).Render("")
+		return lipgloss.JoinHorizontal(lipgloss.Top, gutter, fill)
+	}
+
+	// Line number
+	numStr := "    "
+	if lineNum > 0 {
+		numStr = fmt.Sprintf("%4d", lineNum)
+	}
+	numStyled := styles.DiffLineNumStyle(lineType).Render(numStr)
+	sep := styles.DiffGutterSepStyle(lineType).Render(" │")
+	gutter := lipgloss.JoinHorizontal(lipgloss.Top, numStyled, sep)
+
+	// Content
+	rendered := expandTabs(text, 4)
+	rendered = horizontalSlice(rendered, scrollX, contentW)
+	contentStr := styles.DiffLineStyle(lineType).Width(contentW).Render(rendered)
+
+	return lipgloss.JoinHorizontal(lipgloss.Top, gutter, contentStr)
+}
+
 // Render renders the diff viewer panel.
 func (d *DiffViewer) Render(width, height int, focused bool, borderAnim anim.BorderAnim) string {
 	t := theme.Active
@@ -420,8 +702,11 @@ func (d *DiffViewer) Render(width, height int, focused bool, borderAnim anim.Bor
 
 	// Title
 	titleLabel := "Diff"
+	if d.SideBySide {
+		titleLabel = "Diff (split)"
+	}
 	if d.Path != "" {
-		titleLabel = "Diff: " + d.Path
+		titleLabel += ": " + d.Path
 	}
 	maxLabel := iw - 5
 	if maxLabel > 0 && len(titleLabel) > maxLabel {
@@ -439,6 +724,38 @@ func (d *DiffViewer) Render(width, height int, focused bool, borderAnim anim.Bor
 		return styles.ClipPanel(styles.PanelStyleColor(borderAnim.Color(anim.BorderCenter, t.Surface1, t.Blue)).Width(width).Height(ph).Render(full), height)
 	}
 
+	contentHeight := ph - 4
+	if contentHeight < 1 {
+		contentHeight = 1
+	}
+
+	// Side-by-side mode
+	if d.SideBySide {
+		content := d.renderSideBySide(iw, contentHeight)
+
+		// Compact status line (key hints are shown in the global hint bar)
+		statusParts := ""
+		if len(d.HunkStarts) > 0 {
+			statusParts = fmt.Sprintf("hunk %d/%d", d.CurrentHunkIdx+1, len(d.HunkStarts))
+		}
+		if len(d.Lines) > contentHeight {
+			if statusParts != "" {
+				statusParts += "  "
+			}
+			statusParts += fmt.Sprintf("row %d/%d", d.ScrollY+1, len(d.Lines))
+		}
+		emptyLine := lipgloss.NewStyle().Background(t.Base).Width(iw).Render("")
+		statusLine := lipgloss.NewStyle().Background(t.Base).Width(iw).Render(
+			styles.KeyHintStyle().Render(statusParts),
+		)
+
+		full := lipgloss.JoinVertical(lipgloss.Left, titleStr, titleGap, content, emptyLine, statusLine)
+		if cl := strings.Split(full, "\n"); len(cl) > ph {
+			full = strings.Join(cl[:ph], "\n")
+		}
+		return styles.ClipPanel(styles.PanelStyleColor(borderAnim.Color(anim.BorderCenter, t.Surface1, t.Blue)).Width(width).Height(ph).Render(full), height)
+	}
+
 	// Apply scroll offset
 	startLine := d.ScrollY
 	if startLine > len(d.Lines) {
@@ -446,11 +763,6 @@ func (d *DiffViewer) Render(width, height int, focused bool, borderAnim anim.Bor
 	}
 	if startLine < 0 {
 		startLine = 0
-	}
-
-	contentHeight := ph - 4
-	if contentHeight < 1 {
-		contentHeight = 1
 	}
 
 	endLine := startLine + contentHeight
@@ -478,7 +790,7 @@ func (d *DiffViewer) Render(width, height int, focused bool, borderAnim anim.Bor
 		}
 
 		lineType := byte(' ')
-		if len(line) > 0 {
+		if line != "" {
 			lineType = line[0]
 		}
 
@@ -602,45 +914,35 @@ func (d *DiffViewer) Render(width, height int, focused bool, borderAnim anim.Bor
 	}
 	content = strings.Join(diffContentLines, "\n")
 
-	// Scroll and hint line
-	scrollInfo := ""
-	if len(d.Lines) > contentHeight {
-		scrollInfo = fmt.Sprintf("  [%d/%d lines]", startLine+1, len(d.Lines))
-	}
+	// Compact status line (key hints shown in global hint bar)
 	emptyLine := lipgloss.NewStyle().Background(t.Base).Width(iw).Render("")
 
-	var hintParts string
+	var statusParts string
 	if d.VisualMode {
 		vLo, vHi := d.VisualSelectionRange()
 		sel := vHi - vLo + 1
-		hintParts = fmt.Sprintf("VISUAL  j/k:extend  %d lines", sel)
+		statusParts = fmt.Sprintf("VISUAL  %d lines selected", sel)
 		if d.IsStaged {
-			hintParts += "  u:unstage lines"
+			statusParts += "  u:unstage  Esc:cancel"
 		} else {
-			hintParts += "  s:stage lines"
+			statusParts += "  s:stage  Esc:cancel"
 		}
-		hintParts += "  Esc/v:cancel"
 	} else {
-		hintParts = "j/k:scroll  h/l:pan  Esc:back  g/G:top/bottom"
 		if len(d.HunkStarts) > 0 {
-			hunkInfo := fmt.Sprintf("  n/N:hunk [%d/%d]", d.CurrentHunkIdx+1, len(d.HunkStarts))
-			hintParts += hunkInfo
+			statusParts = fmt.Sprintf("hunk %d/%d", d.CurrentHunkIdx+1, len(d.HunkStarts))
 		}
-		if d.IsWIP {
-			if d.IsStaged {
-				hintParts += "  u:unstage hunk"
-			} else {
-				hintParts += "  s:stage hunk"
+		if len(d.Lines) > contentHeight {
+			if statusParts != "" {
+				statusParts += "  "
 			}
-			hintParts += "  v:select lines"
+			statusParts += fmt.Sprintf("line %d/%d", startLine+1, len(d.Lines))
 		}
-		hintParts += scrollInfo
 	}
-	hints := lipgloss.NewStyle().Background(t.Base).Width(iw).Render(
-		styles.KeyHintStyle().Render(hintParts),
+	statusLine := lipgloss.NewStyle().Background(t.Base).Width(iw).Render(
+		styles.KeyHintStyle().Render(statusParts),
 	)
 
-	full := lipgloss.JoinVertical(lipgloss.Left, titleStr, titleGap, content, emptyLine, hints)
+	full := lipgloss.JoinVertical(lipgloss.Left, titleStr, titleGap, content, emptyLine, statusLine)
 	if cl := strings.Split(full, "\n"); len(cl) > ph {
 		full = strings.Join(cl[:ph], "\n")
 	}
@@ -732,7 +1034,8 @@ func stripHunkContext(line string) string {
 }
 
 // expandTabs replaces tab characters with spaces.
-func expandTabs(s string, tabWidth int) string {
+func expandTabs(s string, _ int) string {
+	const tabWidth = 4
 	var result strings.Builder
 	col := 0
 	for _, r := range s {

@@ -122,7 +122,7 @@ func parseHex(s string) (r, g, b float64) {
 		return 0, 0, 0
 	}
 	var ri, gi, bi int
-	fmt.Sscanf(s[1:], "%02x%02x%02x", &ri, &gi, &bi)
+	_, _ = fmt.Sscanf(s[1:], "%02x%02x%02x", &ri, &gi, &bi)
 	return float64(ri), float64(gi), float64(bi)
 }
 

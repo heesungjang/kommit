@@ -33,17 +33,18 @@ func (r *Repository) RemoteBranches() ([]BranchInfo, error) {
 }
 
 func parseBranches(out string, remote bool) []BranchInfo {
-	var branches []BranchInfo
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	branches := make([]BranchInfo, 0, len(lines))
+	for _, line := range lines {
 		if line == "" {
 			continue
 		}
 
 		isCurrent := false
-		if !remote && len(line) > 0 && line[0] == '*' {
+		if !remote && line != "" && line[0] == '*' {
 			isCurrent = true
 			line = line[1:]
-		} else if !remote && len(line) > 0 {
+		} else if !remote && line != "" {
 			line = line[1:]
 		}
 

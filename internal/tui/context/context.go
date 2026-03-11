@@ -4,9 +4,9 @@
 package context
 
 import (
-	"github.com/nicholascross/opengit/internal/config"
-	"github.com/nicholascross/opengit/internal/git"
-	"github.com/nicholascross/opengit/internal/tui/theme"
+	"github.com/heesungjang/kommit/internal/config"
+	"github.com/heesungjang/kommit/internal/git"
+	"github.com/heesungjang/kommit/internal/tui/theme"
 )
 
 // ProgramContext holds shared state that every TUI component needs. It is

@@ -4,7 +4,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/nicholascross/opengit/internal/tui/theme"
+	"github.com/heesungjang/kommit/internal/tui/theme"
 )
 
 // Shared style helpers that reference the active theme.
@@ -75,7 +75,7 @@ func TitleStyle(focused bool) lipgloss.Style {
 
 // PanelTitle renders a panel title with a right-aligned shortcut key indicator.
 // The shortcutKey is shown as e.g. "[1]" in the top-right area of the title.
-func PanelTitle(label string, shortcutKey string, focused bool, width int) string {
+func PanelTitle(label, shortcutKey string, focused bool, width int) string {
 	t := theme.Active
 	fg := t.Subtext0
 	if focused {
@@ -83,7 +83,11 @@ func PanelTitle(label string, shortcutKey string, focused bool, width int) strin
 	}
 
 	keyTag := "[" + shortcutKey + "]"
-	keyStyle := lipgloss.NewStyle().Foreground(t.Overlay0).Background(t.Base)
+	keyFg := t.Overlay0
+	if focused {
+		keyFg = t.Blue
+	}
+	keyStyle := lipgloss.NewStyle().Foreground(keyFg).Background(t.Base)
 
 	titleStyle := lipgloss.NewStyle().
 		Foreground(fg).
@@ -360,7 +364,7 @@ func RenderRefBadges(refs []string, bg lipgloss.Color) string {
 	if len(refs) == 0 {
 		return ""
 	}
-	var parts []string
+	parts := make([]string, 0, len(refs))
 	for _, r := range refs {
 		parsed := ParseRef(r)
 		parts = append(parts, RenderRefBadge(parsed, bg))

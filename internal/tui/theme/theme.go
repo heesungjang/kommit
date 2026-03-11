@@ -115,7 +115,7 @@ var Active = CatppuccinMocha()
 // IsDark returns true if the theme has a dark background (luminance < 50%).
 func (t Theme) IsDark() bool {
 	hex := string(t.Base)
-	if len(hex) > 0 && hex[0] == '#' {
+	if hex != "" && hex[0] == '#' {
 		hex = hex[1:]
 	}
 	if len(hex) != 6 {

@@ -2,7 +2,7 @@ package context
 
 import (
 	"github.com/charmbracelet/lipgloss"
-	"github.com/nicholascross/opengit/internal/tui/theme"
+	"github.com/heesungjang/kommit/internal/tui/theme"
 )
 
 // Styles holds pre-computed lipgloss styles derived from the active theme.

@@ -22,7 +22,7 @@ type DiffFile struct {
 func (f DiffFile) Stats() (added, removed int) {
 	for _, h := range f.Hunks {
 		for _, line := range h.Lines {
-			if len(line) == 0 {
+			if line == "" {
 				continue
 			}
 			switch line[0] {
@@ -286,8 +286,9 @@ func (r *Repository) DiffStatStaged() ([]DiffStatEntry, error) {
 }
 
 func parseDiffStat(out string) []DiffStatEntry {
-	var entries []DiffStatEntry
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	entries := make([]DiffStatEntry, 0, len(lines))
+	for _, line := range lines {
 		if line == "" {
 			continue
 		}

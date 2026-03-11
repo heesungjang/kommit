@@ -3,7 +3,7 @@ package customcmd
 import (
 	"testing"
 
-	"github.com/nicholascross/opengit/internal/config"
+	"github.com/heesungjang/kommit/internal/config"
 )
 
 func TestExpand_NoTemplate(t *testing.T) {

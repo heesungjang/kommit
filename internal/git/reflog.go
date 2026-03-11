@@ -14,11 +14,11 @@ type ReflogEntry struct {
 }
 
 // Reflog returns the most recent reflog entries.
-func (r *Repository) Reflog(max int) ([]ReflogEntry, error) {
-	if max <= 0 {
-		max = 100
+func (r *Repository) Reflog(limit int) ([]ReflogEntry, error) {
+	if limit <= 0 {
+		limit = 100
 	}
-	out, err := r.run("reflog", "--format=%H\x1f%h\x1f%gs", "-n", strconv.Itoa(max))
+	out, err := r.run("reflog", "--format=%H\x1f%h\x1f%gs", "-n", strconv.Itoa(limit))
 	if err != nil {
 		return nil, err
 	}
@@ -26,8 +26,9 @@ func (r *Repository) Reflog(max int) ([]ReflogEntry, error) {
 }
 
 func parseReflog(out string) []ReflogEntry {
-	var entries []ReflogEntry
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	entries := make([]ReflogEntry, 0, len(lines))
+	for _, line := range lines {
 		if line == "" {
 			continue
 		}
@@ -35,13 +36,11 @@ func parseReflog(out string) []ReflogEntry {
 		if len(parts) < 3 {
 			continue
 		}
-		action := ""
 		message := parts[2]
+		action := message
 		// Extract the action keyword before the first colon
 		if idx := strings.Index(message, ":"); idx > 0 {
 			action = strings.TrimSpace(message[:idx])
-		} else {
-			action = message
 		}
 		entries = append(entries, ReflogEntry{
 			Hash:      parts[0],

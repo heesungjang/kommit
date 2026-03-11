@@ -10,14 +10,15 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/nicholascross/opengit/internal/config"
-	"github.com/nicholascross/opengit/internal/git"
-	"github.com/nicholascross/opengit/internal/tui/components"
-	tuictx "github.com/nicholascross/opengit/internal/tui/context"
-	"github.com/nicholascross/opengit/internal/tui/dialog"
-	"github.com/nicholascross/opengit/internal/tui/keys"
-	"github.com/nicholascross/opengit/internal/tui/pages"
-	"github.com/nicholascross/opengit/internal/tui/theme"
+	"github.com/heesungjang/kommit/internal/config"
+	"github.com/heesungjang/kommit/internal/git"
+	"github.com/heesungjang/kommit/internal/tui/components"
+	tuictx "github.com/heesungjang/kommit/internal/tui/context"
+	"github.com/heesungjang/kommit/internal/tui/customcmd"
+	"github.com/heesungjang/kommit/internal/tui/dialog"
+	"github.com/heesungjang/kommit/internal/tui/keys"
+	"github.com/heesungjang/kommit/internal/tui/pages"
+	"github.com/heesungjang/kommit/internal/tui/theme"
 )
 
 // Minimum terminal dimensions for a usable layout.
@@ -59,6 +60,14 @@ type gitOpDoneMsg struct {
 	err error
 }
 
+// customCmdDoneMsg is sent when a custom command finishes execution.
+type customCmdDoneMsg struct {
+	name   string
+	output string
+	err    error
+	show   bool // whether to show output in a toast
+}
+
 // pollTickMsg is sent periodically to check for external git changes.
 type pollTickMsg struct{}
 
@@ -78,7 +87,7 @@ type App struct {
 	ctx       *tuictx.ProgramContext // shared context (dimensions, theme, config, repo)
 	repo      *git.Repository
 	mainView  tea.Model // the LogPage — our single unified view
-	toolbar   components.Toolbar
+	hintBar   components.HintBar
 	statusBar components.StatusBar
 	keys      keys.GlobalKeys
 	width     int
@@ -93,6 +102,14 @@ type App struct {
 
 	// Auto-refresh polling — fingerprint of last known git status
 	lastFingerprint string
+
+	// Custom commands — filtered list of commands from the most recent menu.
+	// These are set when a custom commands menu is opened and read when a
+	// selection is made. They persist because both openCustomCommandsMenu
+	// and executeCustomCommand are called from the same Update cycle
+	// (the App value is copied at the start of Update and returned at the end).
+	customCmdList []config.CustomCommand
+	customCmdVars customcmd.TemplateVars
 }
 
 // NewApp creates a new App rooted at the given repository.
@@ -112,14 +129,14 @@ func NewApp(repo *git.Repository, cfg *config.Config) App {
 		ctx:       ctx,
 		repo:      repo,
 		mainView:  pages.NewLogPage(ctx, 80, 24), // initial size; updated on WindowSizeMsg
-		toolbar:   components.NewToolbar(),
+		hintBar:   components.NewHintBar(),
 		statusBar: components.NewStatusBar(),
 		keys:      keys.NewGlobalKeys(),
 		toast:     components.NewToast(),
 	}
 }
 
-// Init initialises the application.
+// Init initializes the application.
 func (a App) Init() tea.Cmd {
 	return tea.Batch(
 		a.mainView.Init(),
@@ -139,8 +156,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.width = msg.Width
 		a.height = msg.Height
 		// Update the shared context so all components see the new size.
-		a.ctx.SetScreenSize(msg.Width, msg.Height, 2) // 2 = toolbar + statusbar
-		a.toolbar = a.toolbar.SetWidth(msg.Width)
+		chromeHeight := 2 // hint bar + status bar
+		a.ctx.SetScreenSize(msg.Width, msg.Height, chromeHeight)
+		a.hintBar = a.hintBar.SetWidth(msg.Width)
 		a.statusBar = a.statusBar.SetSize(msg.Width)
 		a.toast = a.toast.SetWidth(msg.Width)
 		// Propagate to main view with adjusted height (minus status bar).
@@ -169,6 +187,17 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.dialog = nil
 		return a, nil
 
+	// -- Command palette result -----------------------------------------------
+	case dialog.CommandPaletteResultMsg:
+		a.showDialog = false
+		a.dialog = nil
+		return a, a.dispatchPaletteAction(msg.Action)
+
+	case dialog.CommandPaletteCloseMsg:
+		a.showDialog = false
+		a.dialog = nil
+		return a, nil
+
 	// -- Help dialog close ---------------------------------------------------
 	case dialog.HelpCloseMsg:
 		a.showDialog = false
@@ -183,6 +212,23 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.ID == "quit" {
 			if msg.Confirmed {
 				return a, tea.Quit
+			}
+			return a, nil
+		}
+		// Handle custom command confirmations
+		if strings.HasPrefix(msg.ID, "customcmd-") {
+			if msg.Confirmed {
+				// Find the command by name
+				name := strings.TrimPrefix(msg.ID, "customcmd-")
+				for i, cc := range a.customCmdList {
+					if cc.Name == name {
+						// Re-run executeCustomCommand but skip the confirm step.
+						// Copy the command and clear Confirm to avoid infinite loop.
+						cc.Confirm = false
+						a.customCmdList[i] = cc
+						return a, a.executeCustomCommand(i)
+					}
+				}
 			}
 			return a, nil
 		}
@@ -265,6 +311,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case dialog.MenuResultMsg:
 		a.showDialog = false
 		a.dialog = nil
+		if msg.ID == "custom-commands" {
+			return a, a.executeCustomCommand(msg.Index)
+		}
 		var cmd tea.Cmd
 		a.mainView, cmd = a.mainView.Update(msg)
 		cmds = append(cmds, cmd)
@@ -350,6 +399,38 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.mainView, cmd = a.mainView.Update(msg)
 		cmds = append(cmds, cmd)
 		return a, tea.Batch(cmds...)
+
+	// -- Custom command done --------------------------------------------------
+	case customCmdDoneMsg:
+		if msg.err != nil {
+			var cmd tea.Cmd
+			a.toast, cmd = a.toast.ShowError(msg.name + ": " + msg.err.Error())
+			cmds = append(cmds, cmd)
+		} else if msg.show && msg.output != "" {
+			var cmd tea.Cmd
+			a.toast, cmd = a.toast.ShowSuccess(msg.name + ": " + msg.output)
+			cmds = append(cmds, cmd)
+		} else {
+			var cmd tea.Cmd
+			a.toast, cmd = a.toast.ShowSuccess(msg.name + " completed")
+			cmds = append(cmds, cmd)
+		}
+		cmds = append(cmds, func() tea.Msg { return pages.RefreshStatusMsg{} })
+		return a, tea.Batch(cmds...)
+
+	// -- Custom command menu request from pages ------------------------------
+	case pages.RequestCustomCmdMenuMsg:
+		vars := customcmd.TemplateVars{
+			Hash:      msg.Hash,
+			ShortHash: msg.ShortHash,
+			Branch:    msg.Branch,
+			Path:      msg.Path,
+			Subject:   msg.Subject,
+			Author:    msg.Author,
+		}
+		if cmd := a.buildCustomCommandsMenu(msg.Context, vars); cmd != nil {
+			return a, cmd
+		}
 
 	// -- Compare state indicator ---------------------------------------------
 	case pages.CompareStateMsg:
@@ -451,6 +532,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return a, func() tea.Msg {
 					return showDialogMsg{model: dialog.NewHelp(kctx, pctx)}
 				}
+			case key.Matches(msg, a.keys.CommandPalette):
+				return a, a.openCommandPalette()
+			case key.Matches(msg, a.keys.CustomCommands):
+				if cmd := a.buildCustomCommandsMenu("global", customcmd.TemplateVars{}); cmd != nil {
+					return a, cmd
+				}
 			}
 		}
 
@@ -497,11 +584,21 @@ func (a App) View() string {
 		)
 	}
 
-	toolBar := a.toolbar.View()
-	statusBar := a.statusBar.View()
+	// Update status bar with current focus label
+	sb := a.statusBar.SetFocusLabel(keys.ContextLabel(keys.ActiveContext))
+
+	// Set contextual hint bar extra message for active workflows
+	hb := a.hintBar
+	if sb.IsBisecting() {
+		hb = hb.SetExtra("BISECTING  B:mark good/bad/skip")
+	} else if sb.IsComparing() {
+		hb = hb.SetExtra("Select a commit to compare")
+	}
+	hintBarView := hb.View()
+	statusBar := sb.View()
 
 	// Height available for the main view.
-	pageHeight := a.height - lipgloss.Height(toolBar) - lipgloss.Height(statusBar)
+	pageHeight := a.height - lipgloss.Height(hintBarView) - lipgloss.Height(statusBar)
 	if pageHeight < 0 {
 		pageHeight = 0
 	}
@@ -513,12 +610,12 @@ func (a App) View() string {
 		Background(t.Base).
 		Render(pageView)
 
-	// Compose the layout: main view + toolbar + status bar.
+	// Compose the layout: main view + hint bar + status bar.
 	layout := lipgloss.NewStyle().
 		Width(a.width).
 		Height(a.height).
 		Background(t.Base).
-		Render(lipgloss.JoinVertical(lipgloss.Left, pageView, toolBar, statusBar))
+		Render(lipgloss.JoinVertical(lipgloss.Left, pageView, hintBarView, statusBar))
 
 	// Overlay dialog if active — composite on top of the layout so the app
 	// remains visible behind the dialog (same technique used by toasts).
@@ -564,7 +661,7 @@ func (a App) View() string {
 
 // pageHeight returns the height available for the main view.
 func (a App) pageHeight() int {
-	h := a.height - 2 // toolbar (1 line) + status bar (1 line)
+	h := a.height - 2 // hint bar (1 line) + status bar (1 line)
 	if h < 0 {
 		return 0
 	}
@@ -588,7 +685,7 @@ func (a App) loadBranchInfo() tea.Cmd {
 }
 
 // overlayAt composites |overlay| on top of |base| at character position (x, y).
-func overlayAt(base, overlay string, x, y, totalWidth int) string {
+func overlayAt(base, overlay string, x, y, _ int) string {
 	baseLines := strings.Split(base, "\n")
 	overlayLines := strings.Split(overlay, "\n")
 
@@ -732,4 +829,255 @@ func friendlyGitError(op string, err error) string {
 		}
 	}
 	return msg
+}
+
+// ---------------------------------------------------------------------------
+// Command palette
+// ---------------------------------------------------------------------------
+
+// openCommandPalette builds and shows the command palette dialog.
+func (a App) openCommandPalette() tea.Cmd {
+	// Build entries from registered key bindings.
+	actionNames := keys.ActionNames()
+	entries := make([]dialog.PaletteEntry, 0, len(actionNames))
+	for _, name := range actionNames {
+		entry := dialog.PaletteEntry{
+			Action: name,
+			Label:  formatActionLabel(name),
+		}
+		// Look up the current key binding for this action.
+		if binding := keys.LookupBinding(name); binding != nil {
+			entry.Key = binding.Help().Key
+		}
+		entries = append(entries, entry)
+	}
+
+	// Add custom commands if configured.
+	if a.ctx.Config != nil {
+		for _, cc := range a.ctx.Config.CustomCommands {
+			entries = append(entries, dialog.PaletteEntry{
+				Action:      "custom:" + cc.Name,
+				Label:       cc.Name,
+				Description: cc.Description,
+				Key:         cc.Key,
+			})
+		}
+	}
+
+	pctx := a.ctx
+	return func() tea.Msg {
+		return showDialogMsg{model: dialog.NewCommandPalette(entries, pctx)}
+	}
+}
+
+// dispatchPaletteAction executes the action selected from the command palette.
+func (a App) dispatchPaletteAction(action string) tea.Cmd {
+	// Handle custom commands.
+	if strings.HasPrefix(action, "custom:") {
+		name := strings.TrimPrefix(action, "custom:")
+		if a.ctx.Config != nil {
+			for i, cc := range a.ctx.Config.CustomCommands {
+				if cc.Name == name {
+					a.customCmdList = a.ctx.Config.CustomCommands
+					a.customCmdVars = customcmd.TemplateVars{}
+					if a.repo != nil {
+						a.customCmdVars.RepoRoot = a.repo.Path()
+						if br, err := a.repo.Head(); err == nil {
+							a.customCmdVars.Branch = br
+						}
+					}
+					return a.executeCustomCommand(i)
+				}
+			}
+		}
+		return nil
+	}
+
+	// For key binding actions, we synthesize the key press.
+	binding := keys.LookupBinding(action)
+	if binding == nil {
+		return nil
+	}
+	// Get the first key from the binding and synthesize a KeyMsg.
+	bindKeys := binding.Keys()
+	if len(bindKeys) == 0 {
+		return nil
+	}
+	// Send a synthetic key press to the main view.
+	keyStr := bindKeys[0]
+	return func() tea.Msg {
+		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(keyStr)}
+	}
+}
+
+// formatActionLabel converts a canonical action name like "nav.pageDown" to
+// a human-readable label like "Navigation: Page Down".
+func formatActionLabel(action string) string {
+	parts := strings.SplitN(action, ".", 2)
+	if len(parts) != 2 {
+		return action
+	}
+
+	// Map context prefixes to human labels.
+	contextLabels := map[string]string{
+		"global": "Global",
+		"nav":    "Navigation",
+		"status": "Status",
+		"branch": "Branch",
+		"commit": "Commit",
+		"diff":   "Diff",
+		"stash":  "Stash",
+		"remote": "Remote",
+		"pr":     "Pull Request",
+	}
+
+	ctx := parts[0]
+	name := parts[1]
+	label, ok := contextLabels[ctx]
+	if !ok {
+		label = capitalize(ctx)
+	}
+
+	// Convert camelCase to Title Case.
+	var words []string
+	word := strings.Builder{}
+	for i, c := range name {
+		if i > 0 && c >= 'A' && c <= 'Z' {
+			words = append(words, word.String())
+			word.Reset()
+		}
+		if i == 0 {
+			word.WriteRune(c - 32 + 32) // keep as-is, capitalize below
+		} else {
+			word.WriteRune(c)
+		}
+	}
+	words = append(words, word.String())
+
+	// Capitalize first letter of each word.
+	for i, w := range words {
+		if w != "" {
+			words[i] = strings.ToUpper(w[:1]) + w[1:]
+		}
+	}
+
+	return label + ": " + strings.Join(words, " ")
+}
+
+// ---------------------------------------------------------------------------
+// Custom commands
+// ---------------------------------------------------------------------------
+
+// buildCustomCommandsMenu creates a tea.Cmd that opens the custom commands menu.
+// It also sets a.customCmdList and a.customCmdVars so that executeCustomCommand
+// can look up the selected command when the menu result arrives.
+// IMPORTANT: This must be called in the Update method so that the modified `a`
+// is returned to Bubble Tea (value receiver semantics).
+func (a *App) buildCustomCommandsMenu(ctxName string, vars customcmd.TemplateVars) tea.Cmd {
+	cfg := a.ctx.Config
+	if cfg == nil || len(cfg.CustomCommands) == 0 {
+		return func() tea.Msg {
+			return pages.RequestToastMsg{Message: "No custom commands configured", IsError: false}
+		}
+	}
+
+	if ctxName == "" {
+		ctxName = "global"
+	}
+	filtered := customcmd.FilterByContext(cfg.CustomCommands, ctxName)
+	if len(filtered) == 0 {
+		return func() tea.Msg {
+			return pages.RequestToastMsg{Message: "No custom commands for context: " + ctxName, IsError: false}
+		}
+	}
+
+	// Store the filtered list and vars for executeCustomCommand.
+	a.customCmdList = filtered
+	a.customCmdVars = vars
+	// Fill in branch if not provided.
+	if a.customCmdVars.Branch == "" && a.repo != nil {
+		if br, err := a.repo.Head(); err == nil {
+			a.customCmdVars.Branch = br
+		}
+	}
+	if a.customCmdVars.RepoRoot == "" && a.repo != nil {
+		a.customCmdVars.RepoRoot = a.repo.Path()
+	}
+
+	// Build menu options.
+	opts := make([]dialog.MenuOption, 0, len(filtered))
+	for i, c := range filtered {
+		desc := c.Description
+		if desc == "" {
+			desc = c.Command
+		}
+		shortKey := ""
+		if i < 9 {
+			shortKey = fmt.Sprintf("%d", i+1)
+		}
+		opts = append(opts, dialog.MenuOption{
+			Label:       c.Name,
+			Description: desc,
+			Key:         shortKey,
+		})
+	}
+
+	pctx := a.ctx
+	return func() tea.Msg {
+		return showDialogMsg{model: dialog.NewMenu("custom-commands", "Custom Commands", opts, pctx)}
+	}
+}
+
+// executeCustomCommand runs the selected custom command (by index into customCmdList).
+func (a App) executeCustomCommand(idx int) tea.Cmd {
+	if idx < 0 || idx >= len(a.customCmdList) {
+		return nil
+	}
+	cc := a.customCmdList[idx]
+	vars := a.customCmdVars
+	repoDir := ""
+	if a.repo != nil {
+		repoDir = a.repo.Path()
+	}
+
+	// Expand template variables.
+	expanded, err := customcmd.Expand(cc.Command, vars)
+	if err != nil {
+		name := cc.Name
+		return func() tea.Msg {
+			return customCmdDoneMsg{name: name, err: err}
+		}
+	}
+
+	// If the command requires confirmation, open a confirm dialog first.
+	if cc.Confirm {
+		pctx := a.ctx
+		name := cc.Name
+		return func() tea.Msg {
+			body := "Run command?\n\n" + expanded
+			return showDialogMsg{model: dialog.NewConfirm("customcmd-"+name, name, body, pctx)}
+		}
+	}
+
+	// If the command is interactive (suspend TUI), use tea.ExecProcess.
+	if cc.Suspend {
+		cmd := customcmd.RunInteractive(expanded, repoDir)
+		name := cc.Name
+		return tea.ExecProcess(cmd, func(err error) tea.Msg {
+			return customCmdDoneMsg{name: name, err: err}
+		})
+	}
+
+	// Run in background and capture output.
+	name := cc.Name
+	showOutput := cc.ShowOutput
+	return func() tea.Msg {
+		output, runErr := customcmd.Run(expanded, repoDir)
+		return customCmdDoneMsg{
+			name:   name,
+			output: output,
+			err:    runErr,
+			show:   showOutput,
+		}
+	}
 }

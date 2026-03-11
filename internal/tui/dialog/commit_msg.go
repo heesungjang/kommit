@@ -8,8 +8,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	tuictx "github.com/nicholascross/opengit/internal/tui/context"
-	"github.com/nicholascross/opengit/internal/tui/theme"
+	tuictx "github.com/heesungjang/kommit/internal/tui/context"
+	"github.com/heesungjang/kommit/internal/tui/theme"
 )
 
 // ---------------------------------------------------------------------------
@@ -79,13 +79,12 @@ func (c CommitMsg) Init() tea.Cmd {
 }
 
 func (c CommitMsg) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	if kmsg, ok := msg.(tea.KeyMsg); ok {
 		switch {
-		case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
+		case key.Matches(kmsg, key.NewBinding(key.WithKeys("esc"))):
 			return c, func() tea.Msg { return CommitCancelMsg{} }
 
-		case key.Matches(msg, key.NewBinding(key.WithKeys("ctrl+s"))):
+		case key.Matches(kmsg, key.NewBinding(key.WithKeys("ctrl+s"))):
 			message := c.textarea.Value()
 			if message == "" {
 				return c, nil

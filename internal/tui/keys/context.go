@@ -8,15 +8,16 @@ type Context int
 
 const (
 	ContextGlobal    Context = iota
-	ContextStatus            // Status / staging page
-	ContextLog               // Commit log page
-	ContextBranches          // Branches page
-	ContextDiff              // Diff viewer
-	ContextStash             // Stash page
-	ContextRemotes           // Remotes page
-	ContextPR                // Pull request page
-	ContextCI                // CI/CD page
-	ContextWorkspace         // Workspace / worktree page
+	ContextStatus            // WIP / staging panel (right panel when WIP selected)
+	ContextLog               // Commit log list (center panel)
+	ContextBranches          // Sidebar: branches section
+	ContextDiff              // Diff viewer (center panel in diff mode)
+	ContextStash             // Sidebar: stash section
+	ContextRemotes           // Sidebar: remotes section
+	ContextDetail            // Commit detail panel (right panel, non-WIP)
+	ContextPR                // Pull request page (future)
+	ContextCI                // CI/CD page (future)
+	ContextWorkspace         // Workspace / worktree page (future)
 	ContextDialog            // Modal dialog overlay
 )
 
@@ -24,8 +25,34 @@ const (
 // It is updated whenever the user switches pages or opens a dialog.
 var ActiveContext = ContextLog
 
+// ContextLabel returns a short human-readable label for the given context.
+func ContextLabel(ctx Context) string {
+	switch ctx {
+	case ContextStatus:
+		return "WIP"
+	case ContextLog:
+		return "Commits"
+	case ContextBranches:
+		return "Branches"
+	case ContextDiff:
+		return "Diff"
+	case ContextStash:
+		return "Stash"
+	case ContextRemotes:
+		return "Remotes"
+	case ContextDetail:
+		return "Detail"
+	case ContextPR:
+		return "Pull Requests"
+	case ContextDialog:
+		return "Dialog"
+	default:
+		return ""
+	}
+}
+
 // ---------------------------------------------------------------------------
-// Singleton key sets – initialised once, reused everywhere
+// Singleton key sets – initialized once, reused everywhere
 // ---------------------------------------------------------------------------
 
 var (
@@ -47,10 +74,9 @@ var (
 // ShortHelp returns a concise set of key bindings for the given context,
 // suitable for rendering in a single-line help bar.
 func ShortHelp(ctx Context) []key.Binding {
-	// Global keys that always appear in the short help.
 	common := []key.Binding{
 		Global.Help,
-		Global.Quit,
+		Global.CommandPalette,
 	}
 
 	switch ctx {
@@ -60,25 +86,31 @@ func ShortHelp(ctx Context) []key.Binding {
 			Navigation.Down,
 			Status.Stage,
 			Status.Unstage,
+			Status.StageAll,
 			Status.Commit,
-			RemoteOps.Push,
-			RemoteOps.ForcePush,
-			Status.AICommit,
+			Status.CommitAmend,
+			Status.Discard,
 		}, common...)
 
 	case ContextLog:
 		return append([]key.Binding{
 			Navigation.Up,
 			Navigation.Down,
-			Navigation.Select,
-			CommitOps.Revert,
-			CommitOps.CherryPick,
 			CommitOps.CopyHash,
 			CommitOps.ResetMenu,
 			CommitOps.BisectMenu,
 			CommitOps.CompareRef,
 			CommitOps.Undo,
 			Global.Search,
+		}, common...)
+
+	case ContextDetail:
+		return append([]key.Binding{
+			Navigation.Left,
+			Navigation.Right,
+			Navigation.Up,
+			Navigation.Down,
+			Navigation.Select,
 		}, common...)
 
 	case ContextBranches:
@@ -88,7 +120,9 @@ func ShortHelp(ctx Context) []key.Binding {
 			Branch.Checkout,
 			Branch.New,
 			Branch.Delete,
+			Branch.Rename,
 			Branch.Merge,
+			Branch.Rebase,
 		}, common...)
 
 	case ContextDiff:
@@ -98,6 +132,8 @@ func ShortHelp(ctx Context) []key.Binding {
 			Diff.NextHunk,
 			Diff.PrevHunk,
 			Diff.StageHunk,
+			Diff.UnstageHunk,
+			Diff.VisualMode,
 			Diff.ToggleView,
 		}, common...)
 
@@ -117,7 +153,6 @@ func ShortHelp(ctx Context) []key.Binding {
 			Navigation.Down,
 			RemoteOps.Fetch,
 			RemoteOps.Push,
-			RemoteOps.ForcePush,
 			RemoteOps.Pull,
 		}, common...)
 
@@ -129,22 +164,6 @@ func ShortHelp(ctx Context) []key.Binding {
 			PR.Approve,
 			PR.Merge,
 			PR.Comment,
-			PR.AIDescription,
-		}, common...)
-
-	case ContextCI:
-		return append([]key.Binding{
-			Navigation.Up,
-			Navigation.Down,
-			Navigation.Select,
-			Status.Refresh,
-		}, common...)
-
-	case ContextWorkspace:
-		return append([]key.Binding{
-			Navigation.Up,
-			Navigation.Down,
-			Navigation.Select,
 		}, common...)
 
 	case ContextDialog:
@@ -167,7 +186,7 @@ func ShortHelp(ctx Context) []key.Binding {
 // FullHelp – grouped bindings for the expanded help overlay
 // ---------------------------------------------------------------------------
 
-// FullHelp returns all key bindings organised into logical groups for the
+// FullHelp returns all key bindings organized into logical groups for the
 // given context, suitable for rendering in a multi-column help overlay.
 func FullHelp(ctx Context) [][]key.Binding {
 	globalGroup := []key.Binding{
@@ -176,20 +195,13 @@ func FullHelp(ctx Context) [][]key.Binding {
 		Global.Help,
 		Global.Search,
 		Global.CommandPalette,
-	}
-
-	tabGroup := []key.Binding{
-		Global.Tab1,
-		Global.Tab2,
-		Global.Tab3,
-		Global.Tab4,
-		Global.Tab5,
-		Global.Tab6,
-		Global.Tab7,
-		Global.Tab8,
+		Global.CustomCommands,
 	}
 
 	panelGroup := []key.Binding{
+		Global.Panel1,
+		Global.Panel2,
+		Global.Panel3,
 		Global.NextPanel,
 		Global.PrevPanel,
 	}
@@ -206,14 +218,7 @@ func FullHelp(ctx Context) [][]key.Binding {
 		Navigation.Select,
 	}
 
-	remoteGroup := []key.Binding{
-		RemoteOps.Push,
-		RemoteOps.ForcePush,
-		RemoteOps.Pull,
-		RemoteOps.Fetch,
-	}
-
-	base := [][]key.Binding{globalGroup, tabGroup, panelGroup, navGroup, remoteGroup}
+	base := [][]key.Binding{globalGroup, panelGroup, navGroup}
 
 	switch ctx {
 	case ContextStatus:
@@ -245,6 +250,8 @@ func FullHelp(ctx Context) [][]key.Binding {
 			Diff.NextHunk,
 			Diff.PrevHunk,
 			Diff.StageHunk,
+			Diff.UnstageHunk,
+			Diff.VisualMode,
 			Diff.ToggleView,
 		})
 
@@ -258,25 +265,39 @@ func FullHelp(ctx Context) [][]key.Binding {
 
 	case ContextRemotes:
 		return append(base, []key.Binding{
-			Status.Refresh,
+			RemoteOps.Push,
+			RemoteOps.ForcePush,
+			RemoteOps.Pull,
+			RemoteOps.Fetch,
 		})
 
 	case ContextLog:
+		return append(base,
+			[]key.Binding{
+				CommitOps.Revert,
+				CommitOps.CherryPick,
+				CommitOps.CopyHash,
+				CommitOps.ResetMenu,
+				CommitOps.Squash,
+				CommitOps.Fixup,
+				CommitOps.Drop,
+				CommitOps.CompareRef,
+				CommitOps.BisectMenu,
+				CommitOps.Undo,
+				CommitOps.Redo,
+			},
+			[]key.Binding{
+				RemoteOps.Push,
+				RemoteOps.Pull,
+				RemoteOps.Fetch,
+			},
+		)
+
+	case ContextDetail:
 		return append(base, []key.Binding{
+			Navigation.Left,
+			Navigation.Right,
 			Navigation.Select,
-			Navigation.PageUp,
-			Navigation.PageDown,
-			CommitOps.Revert,
-			CommitOps.CherryPick,
-			CommitOps.CopyHash,
-			CommitOps.ResetMenu,
-			CommitOps.Squash,
-			CommitOps.Fixup,
-			CommitOps.Drop,
-			CommitOps.CompareRef,
-			CommitOps.BisectMenu,
-			CommitOps.Undo,
-			CommitOps.Redo,
 		})
 
 	case ContextPR:

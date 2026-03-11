@@ -11,7 +11,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/nicholascross/opengit/internal/tui/theme"
+	"github.com/heesungjang/kommit/internal/tui/theme"
 )
 
 // ---------------------------------------------------------------------------
@@ -224,17 +224,18 @@ func (t Table) computeColumnWidths() []int {
 	if flexCount > 0 {
 		perFlex := remaining / flexCount
 		for i, col := range t.Columns {
-			if col.Width == 0 {
-				w := perFlex
-				minW := col.MinWidth
-				if minW <= 0 {
-					minW = 4
-				}
-				if w < minW {
-					w = minW
-				}
-				widths[i] = w
+			if col.Width != 0 {
+				continue
 			}
+			w := perFlex
+			minW := col.MinWidth
+			if minW <= 0 {
+				minW = 4
+			}
+			if w < minW {
+				w = minW
+			}
+			widths[i] = w
 		}
 	}
 
@@ -243,7 +244,7 @@ func (t Table) computeColumnWidths() []int {
 
 // renderHeader renders the column header row.
 func (t Table) renderHeader(colWidths []int, th theme.Theme) string {
-	var cells []string
+	cells := make([]string, 0, len(t.Columns))
 	for i, col := range t.Columns {
 		w := colWidths[i]
 		text := alignText(col.Title, w, col.Align)
@@ -276,7 +277,7 @@ func (t Table) renderRow(row Row, colWidths []int, selected bool, th theme.Theme
 		bg = th.Surface1
 	}
 
-	var cells []string
+	cells := make([]string, 0, len(t.Columns))
 	for i, col := range t.Columns {
 		w := colWidths[i]
 		text := ""

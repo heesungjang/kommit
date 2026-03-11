@@ -47,7 +47,7 @@ func (r *Repository) IsRebasing() bool {
 // RebaseInteractiveAction performs a one-shot interactive rebase action on a
 // single commit. The action can be "squash", "fixup", "drop", "edit", or "reword".
 // It uses a cross-platform temp script as GIT_SEQUENCE_EDITOR.
-func (r *Repository) RebaseInteractiveAction(hash string, action string) error {
+func (r *Repository) RebaseInteractiveAction(hash, action string) error {
 	// Validate action
 	switch action {
 	case "squash", "fixup", "drop", "edit", "reword":
@@ -98,7 +98,7 @@ func (r *Repository) RebaseInteractiveAction(hash string, action string) error {
 // makeSequenceEditor creates a temporary script that replaces "pick <hash>"
 // with "<action> <hash>" in the rebase TODO file. Returns the editor command
 // string and a cleanup function.
-func (r *Repository) makeSequenceEditor(shortHash, action string) (string, func(), error) {
+func (r *Repository) makeSequenceEditor(shortHash, action string) (editorCmd string, cleanup func(), err error) {
 	// Write a temp shell script that does the replacement.
 	// This avoids sed -i portability issues between macOS and Linux.
 	var ext string
@@ -113,14 +113,18 @@ func (r *Repository) makeSequenceEditor(shortHash, action string) (string, func(
 		return "", nil, err
 	}
 	tmpPath := tmpFile.Name()
-	cleanup := func() { os.Remove(tmpPath) }
+	cleanup = func() { os.Remove(tmpPath) }
 
 	if runtime.GOOS == "windows" {
 		// Windows batch script (basic; interactive rebase on Windows is rare)
 		script := fmt.Sprintf(`@echo off
 powershell -Command "(Get-Content '%%1') -replace '^pick %s', '%s %s' | Set-Content '%%1'"`,
 			shortHash, action, shortHash)
-		tmpFile.WriteString(script)
+		if _, wErr := tmpFile.WriteString(script); wErr != nil {
+			tmpFile.Close()
+			cleanup()
+			return "", nil, wErr
+		}
 	} else {
 		// Unix shell script — portable across macOS and Linux.
 		// Use a temp file for the replacement to avoid sed -i differences.
@@ -129,16 +133,23 @@ tmpf=$(mktemp)
 sed 's/^pick %s/%s %s/' "$1" > "$tmpf"
 mv "$tmpf" "$1"
 `, shortHash, action, shortHash)
-		tmpFile.WriteString(script)
+		if _, wErr := tmpFile.WriteString(script); wErr != nil {
+			tmpFile.Close()
+			cleanup()
+			return "", nil, wErr
+		}
 	}
 	tmpFile.Close()
-	os.Chmod(tmpPath, 0755)
+	if chErr := os.Chmod(tmpPath, 0o755); chErr != nil {
+		cleanup()
+		return "", nil, chErr
+	}
 
 	return tmpPath, cleanup, nil
 }
 
 // RebaseReword changes the message of a past commit using interactive rebase.
-func (r *Repository) RebaseReword(hash string, message string) error {
+func (r *Repository) RebaseReword(hash, message string) error {
 	shortHash := hash
 	if len(shortHash) > 7 {
 		shortHash = shortHash[:7]
@@ -163,9 +174,9 @@ func (r *Repository) RebaseReword(hash string, message string) error {
 		return err
 	}
 	defer os.Remove(msgFile.Name())
-	if _, err := msgFile.WriteString(message); err != nil {
+	if _, wErr := msgFile.WriteString(message); wErr != nil {
 		msgFile.Close()
-		return err
+		return wErr
 	}
 	msgFile.Close()
 
@@ -177,7 +188,9 @@ func (r *Repository) RebaseReword(hash string, message string) error {
 	defer os.Remove(editorScript.Name())
 	fmt.Fprintf(editorScript, "#!/bin/sh\ncp '%s' \"$1\"\n", msgFile.Name())
 	editorScript.Close()
-	os.Chmod(editorScript.Name(), 0755)
+	if chErr := os.Chmod(editorScript.Name(), 0o755); chErr != nil {
+		return chErr
+	}
 
 	var args []string
 	if isRoot {

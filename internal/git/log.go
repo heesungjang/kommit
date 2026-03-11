@@ -58,8 +58,8 @@ func (r *Repository) Log(opts LogOptions) ([]CommitInfo, error) {
 }
 
 func parseLog(out string) []CommitInfo {
-	var commits []CommitInfo
 	entries := strings.Split(out, "\x1e")
+	commits := make([]CommitInfo, 0, len(entries))
 
 	for _, entry := range entries {
 		entry = strings.TrimSpace(entry)

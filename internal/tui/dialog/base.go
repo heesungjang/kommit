@@ -8,8 +8,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/ansi"
 
-	tuictx "github.com/nicholascross/opengit/internal/tui/context"
-	"github.com/nicholascross/opengit/internal/tui/theme"
+	tuictx "github.com/heesungjang/kommit/internal/tui/context"
+	"github.com/heesungjang/kommit/internal/tui/theme"
 )
 
 // borderOverhead is the vertical space consumed by the lipgloss rounded border

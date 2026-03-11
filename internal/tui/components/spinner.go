@@ -4,10 +4,10 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/nicholascross/opengit/internal/tui/theme"
+	"github.com/heesungjang/kommit/internal/tui/theme"
 )
 
-//testing github.com/charmbracelet/bubbles/spinner
+// testing github.com/charmbracelet/bubbles/spinner
 // Spinner is a simple loading spinner wrapper around bubbles spinner.
 type Spinner struct {
 	spinner spinner.Model

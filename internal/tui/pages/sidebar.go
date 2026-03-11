@@ -8,10 +8,10 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/nicholascross/opengit/internal/git"
-	"github.com/nicholascross/opengit/internal/tui/keys"
-	"github.com/nicholascross/opengit/internal/tui/styles"
-	"github.com/nicholascross/opengit/internal/tui/theme"
+	"github.com/heesungjang/kommit/internal/git"
+	"github.com/heesungjang/kommit/internal/tui/keys"
+	"github.com/heesungjang/kommit/internal/tui/styles"
+	"github.com/heesungjang/kommit/internal/tui/theme"
 )
 
 // ---------------------------------------------------------------------------
@@ -580,7 +580,7 @@ func (s Sidebar) handleStashDrop() (Sidebar, tea.Cmd) {
 // View
 // ---------------------------------------------------------------------------
 
-func (s Sidebar) View(focused bool, borderColor lipgloss.Color) string {
+func (s Sidebar) View(focused bool, borderColor lipgloss.Color, searching bool, searchInputView string) string {
 	t := theme.Active
 	iw := s.width - styles.PanelPaddingWidth
 	ph := s.height - styles.PanelBorderHeight
@@ -598,22 +598,24 @@ func (s Sidebar) View(focused bool, borderColor lipgloss.Color) string {
 		return styles.ClipPanel(styles.PanelStyleColor(borderColor).Width(s.width).Height(ph).Render(content), s.height)
 	}
 
-	// Build hints with scroll position indicator
-	hintKeys := "enter:act  n:new  D:del"
+	// Compact status line (key hints shown in global hint bar)
 	scrollInfo := ""
 	if len(items) > 0 {
-		scrollInfo = fmt.Sprintf(" %d/%d", s.cursor+1, len(items))
+		scrollInfo = fmt.Sprintf("%d/%d", s.cursor+1, len(items))
 	}
 	hintRendered := lipgloss.NewStyle().Background(t.Base).Width(iw).Render(
-		lipgloss.JoinHorizontal(lipgloss.Top,
-			styles.KeyHintStyle().Render(hintKeys),
-			lipgloss.NewStyle().Foreground(t.Overlay0).Background(t.Base).Render(scrollInfo),
-		),
+		lipgloss.NewStyle().Foreground(t.Overlay0).Background(t.Base).Render(scrollInfo),
 	)
 	hintHeight := strings.Count(hintRendered, "\n") + 1
 
+	// Inline search bar takes 1 line when active
+	searchHeight := 0
+	if searching {
+		searchHeight = 1
+	}
+
 	// Viewport windowing
-	visibleCount := ph - 2 - hintHeight // title(1) + titleGap(1) + hintHeight
+	visibleCount := ph - 2 - hintHeight - searchHeight // title(1) + titleGap(1) + hintHeight + searchHeight
 	if visibleCount < 1 {
 		visibleCount = 1
 	}
@@ -631,8 +633,6 @@ func (s Sidebar) View(focused bool, borderColor lipgloss.Color) string {
 	if offset < 0 {
 		offset = 0
 	}
-	s.scroll = offset
-
 	end := offset + visibleCount
 	if end > len(items) {
 		end = len(items)
@@ -710,10 +710,24 @@ func (s Sidebar) View(focused bool, borderColor lipgloss.Color) string {
 
 	content := lipgloss.JoinVertical(lipgloss.Left, lines...)
 
-	// Title with panel shortcut indicator
-	titleStr := styles.PanelTitle("Sidebar", "1", focused, iw)
+	// Title with panel shortcut indicator — include filter query when active
+	titleLabel := "Sidebar"
+	if s.filter != "" && !searching {
+		titleLabel = fmt.Sprintf("Sidebar %q", s.filter)
+	}
+	titleStr := styles.PanelTitle(titleLabel, "1", focused, iw)
 
 	titleGap := lipgloss.NewStyle().Background(t.Base).Width(iw).Render("")
+
+	// Inline search bar
+	var searchBar string
+	if searching {
+		searchBar = lipgloss.NewStyle().
+			Foreground(t.Text).
+			Background(t.Surface0).
+			Width(iw).
+			Render(searchInputView)
+	}
 
 	// Pad content to exactly visibleCount lines so hints are pinned to the bottom
 	contentLines := strings.Split(content, "\n")
@@ -726,7 +740,12 @@ func (s Sidebar) View(focused bool, borderColor lipgloss.Color) string {
 	}
 	content = strings.Join(contentLines, "\n")
 
-	full := lipgloss.JoinVertical(lipgloss.Left, titleStr, titleGap, content, hintRendered)
+	var full string
+	if searching {
+		full = lipgloss.JoinVertical(lipgloss.Left, titleStr, titleGap, searchBar, content, hintRendered)
+	} else {
+		full = lipgloss.JoinVertical(lipgloss.Left, titleStr, titleGap, content, hintRendered)
+	}
 	// Clip to panel height so sidebar stays the same outer height as other panels.
 	if cl := strings.Split(full, "\n"); len(cl) > ph {
 		full = strings.Join(cl[:ph], "\n")
@@ -735,7 +754,7 @@ func (s Sidebar) View(focused bool, borderColor lipgloss.Color) string {
 }
 
 // Dimensions returns the current width/height.
-func (s Sidebar) Dimensions() (int, int) {
+func (s Sidebar) Dimensions() (w, h int) {
 	return s.width, s.height
 }
 
@@ -933,6 +952,11 @@ func (s Sidebar) HasStashes() bool {
 // StashCount returns the number of stash entries.
 func (s Sidebar) StashCount() int {
 	return len(s.stashes)
+}
+
+// Filter returns the current client-side filter string.
+func (s Sidebar) Filter() string {
+	return s.filter
 }
 
 // SetFilter sets a client-side filter string for sidebar items.

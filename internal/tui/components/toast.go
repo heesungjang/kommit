@@ -5,7 +5,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/nicholascross/opengit/internal/tui/theme"
+	"github.com/heesungjang/kommit/internal/tui/theme"
 )
 
 // ToastLevel indicates the severity of a toast notification.
@@ -90,8 +90,7 @@ func (t Toast) Init() tea.Cmd {
 
 // Update implements tea.Model.
 func (t Toast) Update(msg tea.Msg) (Toast, tea.Cmd) {
-	switch msg.(type) {
-	case ToastDismissMsg:
+	if _, ok := msg.(ToastDismissMsg); ok {
 		t.visible = false
 		t.message = ""
 	}

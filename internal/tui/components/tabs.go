@@ -7,8 +7,8 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/nicholascross/opengit/internal/tui/styles"
-	"github.com/nicholascross/opengit/internal/tui/theme"
+	"github.com/heesungjang/kommit/internal/tui/styles"
+	"github.com/heesungjang/kommit/internal/tui/theme"
 )
 
 // TabItem represents a single tab in the tab bar.
@@ -92,8 +92,7 @@ func (t Tabs) Init() tea.Cmd {
 
 // Update implements tea.Model.
 func (t Tabs) Update(msg tea.Msg) (Tabs, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	if msg, ok := msg.(tea.KeyMsg); ok {
 		switch {
 		case key.Matches(msg, tabKeys.Tab1):
 			if len(t.items) > 0 {
@@ -140,7 +139,7 @@ func (t Tabs) Update(msg tea.Msg) (Tabs, tea.Cmd) {
 func (t Tabs) View() string {
 	th := theme.Active
 
-	var tabParts []string
+	tabParts := make([]string, 0, len(t.items))
 	for i, item := range t.items {
 		isActive := i == t.active
 		label := fmt.Sprintf("[%s]%s", item.Key, item.Label)

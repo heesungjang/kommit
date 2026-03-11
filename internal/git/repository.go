@@ -67,20 +67,19 @@ func (r *Repository) run(args ...string) (string, error) {
 }
 
 // runWithStdin executes a git command with stdin input.
-func (r *Repository) runWithStdin(input string, args ...string) (string, error) {
+func (r *Repository) runWithStdin(input string, args ...string) error {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = r.path
 	cmd.Stdin = strings.NewReader(input)
 
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
+	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("git %s: %s: %w", strings.Join(args, " "), stderr.String(), err)
+		return fmt.Errorf("git %s: %s: %w", strings.Join(args, " "), stderr.String(), err)
 	}
 
-	return stdout.String(), nil
+	return nil
 }
 
 // Head returns the current HEAD reference (branch name or commit hash).
@@ -129,9 +128,9 @@ func (r *Repository) Remotes() ([]string, error) {
 
 // TrackingBranch returns the upstream tracking branch for the current branch.
 func (r *Repository) TrackingBranch() (string, error) {
-	out, err := r.run("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
-	if err != nil {
-		return "", nil // No tracking branch is not an error
+	out, runErr := r.run("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+	if runErr != nil {
+		return "", nil //nolint:nilerr // No tracking branch is not an error
 	}
 	return strings.TrimSpace(out), nil
 }
@@ -149,14 +148,14 @@ func (r *Repository) StatusFingerprint() string {
 
 // AheadBehind returns how many commits the current branch is ahead/behind its upstream.
 func (r *Repository) AheadBehind() (ahead, behind int, err error) {
-	out, err := r.run("rev-list", "--left-right", "--count", "HEAD...@{u}")
-	if err != nil {
-		return 0, 0, nil // No upstream is not an error
+	out, runErr := r.run("rev-list", "--left-right", "--count", "HEAD...@{u}")
+	if runErr != nil {
+		return 0, 0, nil //nolint:nilerr // No upstream is not an error
 	}
 	parts := strings.Fields(strings.TrimSpace(out))
 	if len(parts) == 2 {
-		fmt.Sscanf(parts[0], "%d", &ahead)
-		fmt.Sscanf(parts[1], "%d", &behind)
+		_, _ = fmt.Sscanf(parts[0], "%d", &ahead)
+		_, _ = fmt.Sscanf(parts[1], "%d", &behind)
 	}
 	return ahead, behind, nil
 }

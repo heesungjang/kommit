@@ -23,8 +23,9 @@ func (r *Repository) StashList() ([]StashEntry, error) {
 		return nil, nil
 	}
 
-	var entries []StashEntry
-	for i, line := range strings.Split(strings.TrimSpace(out), "\n") {
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	entries := make([]StashEntry, 0, len(lines))
+	for i, line := range lines {
 		if line == "" {
 			continue
 		}

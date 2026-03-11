@@ -6,8 +6,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	tuictx "github.com/nicholascross/opengit/internal/tui/context"
-	"github.com/nicholascross/opengit/internal/tui/theme"
+	tuictx "github.com/heesungjang/kommit/internal/tui/context"
+	"github.com/heesungjang/kommit/internal/tui/theme"
 )
 
 // ---------------------------------------------------------------------------
@@ -60,14 +60,13 @@ func (t TextInput) Init() tea.Cmd {
 }
 
 func (t TextInput) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	if kmsg, ok := msg.(tea.KeyMsg); ok {
 		switch {
-		case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
+		case key.Matches(kmsg, key.NewBinding(key.WithKeys("esc"))):
 			id := t.ID
 			return t, func() tea.Msg { return TextInputCancelMsg{ID: id} }
 
-		case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
+		case key.Matches(kmsg, key.NewBinding(key.WithKeys("enter"))):
 			value := t.input.Value()
 			if value == "" {
 				return t, nil

@@ -1,4 +1,4 @@
-module github.com/nicholascross/opengit
+module github.com/heesungjang/kommit
 
 go 1.25.5
 

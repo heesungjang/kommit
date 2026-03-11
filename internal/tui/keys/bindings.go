@@ -13,14 +13,10 @@ type GlobalKeys struct {
 	Help           key.Binding
 	Search         key.Binding
 	CommandPalette key.Binding
-	Tab1           key.Binding
-	Tab2           key.Binding
-	Tab3           key.Binding
-	Tab4           key.Binding
-	Tab5           key.Binding
-	Tab6           key.Binding
-	Tab7           key.Binding
-	Tab8           key.Binding
+	CustomCommands key.Binding
+	Panel1         key.Binding
+	Panel2         key.Binding
+	Panel3         key.Binding
 	NextPanel      key.Binding
 	PrevPanel      key.Binding
 }
@@ -48,37 +44,21 @@ func NewGlobalKeys() GlobalKeys {
 			key.WithKeys("ctrl+p"),
 			key.WithHelp("ctrl+p", "command palette"),
 		),
-		Tab1: key.NewBinding(
+		CustomCommands: key.NewBinding(
+			key.WithKeys(":"),
+			key.WithHelp(":", "custom commands"),
+		),
+		Panel1: key.NewBinding(
 			key.WithKeys("1"),
-			key.WithHelp("1", "status"),
+			key.WithHelp("1", "sidebar"),
 		),
-		Tab2: key.NewBinding(
+		Panel2: key.NewBinding(
 			key.WithKeys("2"),
-			key.WithHelp("2", "log"),
+			key.WithHelp("2", "commits"),
 		),
-		Tab3: key.NewBinding(
+		Panel3: key.NewBinding(
 			key.WithKeys("3"),
-			key.WithHelp("3", "branches"),
-		),
-		Tab4: key.NewBinding(
-			key.WithKeys("4"),
-			key.WithHelp("4", "remotes"),
-		),
-		Tab5: key.NewBinding(
-			key.WithKeys("5"),
-			key.WithHelp("5", "stash"),
-		),
-		Tab6: key.NewBinding(
-			key.WithKeys("6"),
-			key.WithHelp("6", "pull requests"),
-		),
-		Tab7: key.NewBinding(
-			key.WithKeys("7"),
-			key.WithHelp("7", "CI/CD"),
-		),
-		Tab8: key.NewBinding(
-			key.WithKeys("8"),
-			key.WithHelp("8", "workspace"),
+			key.WithHelp("3", "detail"),
 		),
 		NextPanel: key.NewBinding(
 			key.WithKeys("tab"),
@@ -219,8 +199,8 @@ func NewStatusKeys() StatusKeys {
 			key.WithHelp("ctrl+g", "AI commit message"),
 		),
 		Undo: key.NewBinding(
-			key.WithKeys("ctrl+z"),
-			key.WithHelp("ctrl+z", "undo"),
+			key.WithKeys("z"),
+			key.WithHelp("z", "undo"),
 		),
 		Refresh: key.NewBinding(
 			key.WithKeys("r"),
@@ -336,8 +316,8 @@ func NewCommitOpsKeys() CommitOpsKeys {
 			key.WithHelp("z", "undo"),
 		),
 		Redo: key.NewBinding(
-			key.WithKeys("ctrl+z"),
-			key.WithHelp("ctrl+z", "redo"),
+			key.WithKeys("Z"),
+			key.WithHelp("Z", "redo"),
 		),
 	}
 }
@@ -348,10 +328,12 @@ func NewCommitOpsKeys() CommitOpsKeys {
 
 // DiffKeys defines keybindings for the diff viewer.
 type DiffKeys struct {
-	NextHunk   key.Binding
-	PrevHunk   key.Binding
-	StageHunk  key.Binding
-	ToggleView key.Binding
+	NextHunk    key.Binding
+	PrevHunk    key.Binding
+	StageHunk   key.Binding
+	UnstageHunk key.Binding
+	VisualMode  key.Binding
+	ToggleView  key.Binding
 }
 
 // NewDiffKeys returns populated diff view keybindings.
@@ -369,9 +351,17 @@ func NewDiffKeys() DiffKeys {
 			key.WithKeys("s"),
 			key.WithHelp("s", "stage hunk"),
 		),
-		ToggleView: key.NewBinding(
+		UnstageHunk: key.NewBinding(
+			key.WithKeys("u"),
+			key.WithHelp("u", "unstage hunk"),
+		),
+		VisualMode: key.NewBinding(
 			key.WithKeys("v"),
-			key.WithHelp("v", "inline/side-by-side"),
+			key.WithHelp("v", "select lines"),
+		),
+		ToggleView: key.NewBinding(
+			key.WithKeys("V"),
+			key.WithHelp("V", "split/inline view"),
 		),
 	}
 }
@@ -502,6 +492,10 @@ func init() {
 		"global.help":           &Global.Help,
 		"global.search":         &Global.Search,
 		"global.commandPalette": &Global.CommandPalette,
+		"global.customCommands": &Global.CustomCommands,
+		"global.panel1":         &Global.Panel1,
+		"global.panel2":         &Global.Panel2,
+		"global.panel3":         &Global.Panel3,
 		"global.nextPanel":      &Global.NextPanel,
 		"global.prevPanel":      &Global.PrevPanel,
 
@@ -553,10 +547,12 @@ func init() {
 		"commit.redo":       &CommitOps.Redo,
 
 		// Diff
-		"diff.nextHunk":   &Diff.NextHunk,
-		"diff.prevHunk":   &Diff.PrevHunk,
-		"diff.stageHunk":  &Diff.StageHunk,
-		"diff.toggleView": &Diff.ToggleView,
+		"diff.nextHunk":    &Diff.NextHunk,
+		"diff.prevHunk":    &Diff.PrevHunk,
+		"diff.stageHunk":   &Diff.StageHunk,
+		"diff.unstageHunk": &Diff.UnstageHunk,
+		"diff.visualMode":  &Diff.VisualMode,
+		"diff.toggleView":  &Diff.ToggleView,
 
 		// Stash
 		"stash.save":  &Stash.Save,
@@ -647,6 +643,12 @@ func trimSpace(s string) string {
 		j--
 	}
 	return s[i:j]
+}
+
+// LookupBinding returns the key.Binding for the given canonical action name,
+// or nil if the action is not found.
+func LookupBinding(action string) *key.Binding {
+	return bindingRegistry[action]
 }
 
 // ActionNames returns a sorted list of all available canonical action names.

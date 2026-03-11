@@ -1,4 +1,4 @@
-# golangci-lint configuration for opengit
+# golangci-lint configuration for kommit
 # https://golangci-lint.run/usage/configuration/
 
 run:
@@ -37,8 +37,6 @@ linters-settings:
       - style
     disabled-checks:
       - ifElseChain     # too noisy for switch-style if/else
-      - hugeParam       # Bubble Tea models are value types by design
-      - rangeValCopy    # acceptable for small structs
 
   errcheck:
     # Don't report unchecked errors for fmt.Fprint* (common in TUI rendering).

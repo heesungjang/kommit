@@ -7,8 +7,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	tuictx "github.com/nicholascross/opengit/internal/tui/context"
-	"github.com/nicholascross/opengit/internal/tui/theme"
+	tuictx "github.com/heesungjang/kommit/internal/tui/context"
+	"github.com/heesungjang/kommit/internal/tui/theme"
 )
 
 // ---------------------------------------------------------------------------
@@ -59,8 +59,7 @@ func NewMenu(id, title string, options []MenuOption, ctx *tuictx.ProgramContext)
 func (m Menu) Init() tea.Cmd { return nil }
 
 func (m Menu) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	if msg, ok := msg.(tea.KeyMsg); ok {
 		// Let base handle page-scroll keys first.
 		totalLines := len(m.buildContentLines())
 		if m.Base.HandleScrollKeys(msg, totalLines) {

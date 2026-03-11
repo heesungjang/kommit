@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/nicholascross/opengit/internal/app"
-	"github.com/nicholascross/opengit/internal/version"
+	"github.com/heesungjang/kommit/internal/app"
+	"github.com/heesungjang/kommit/internal/version"
 	"github.com/spf13/cobra"
 )
 
@@ -15,9 +15,9 @@ var (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "opengit",
+	Use:   "kommit",
 	Short: "Terminal-native git client",
-	Long:  "opengit is a terminal-native git client that replaces GitKraken, SourceTree, and GitHub Desktop.",
+	Long:  "kommit is a beautiful terminal-native git client.",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return app.Run(repoPath, debug)
 	},
@@ -27,7 +27,7 @@ var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print version information",
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Printf("opengit %s (%s) built %s\n", version.Version, version.Commit, version.Date)
+		fmt.Printf("kommit %s (%s) built %s\n", version.Version, version.Commit, version.Date)
 	},
 }
 

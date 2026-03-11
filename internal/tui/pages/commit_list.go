@@ -11,11 +11,11 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/nicholascross/opengit/internal/git"
-	"github.com/nicholascross/opengit/internal/tui/anim"
-	"github.com/nicholascross/opengit/internal/tui/dialog"
-	"github.com/nicholascross/opengit/internal/tui/styles"
-	"github.com/nicholascross/opengit/internal/tui/theme"
+	"github.com/heesungjang/kommit/internal/git"
+	"github.com/heesungjang/kommit/internal/tui/anim"
+	"github.com/heesungjang/kommit/internal/tui/dialog"
+	"github.com/heesungjang/kommit/internal/tui/styles"
+	"github.com/heesungjang/kommit/internal/tui/theme"
 )
 
 // ---------------------------------------------------------------------------
@@ -70,6 +70,14 @@ type undoTargetMsg struct {
 	message   string
 }
 
+// redoTargetMsg carries the redo target hash back to the UI thread so it can
+// be stored in pendingRedoHash before showing the confirm dialog.
+type redoTargetMsg struct {
+	hash      string
+	shortHash string
+	message   string
+}
+
 // ---------------------------------------------------------------------------
 // Key handlers
 // ---------------------------------------------------------------------------
@@ -103,11 +111,6 @@ func (l *LogPage) loadDetailForCursorMaybeMore() tea.Cmd {
 func (l LogPage) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// When center is showing a diff, j/k scroll the diff and Esc exits.
 	if l.diffViewer.Active {
-		maxScroll := len(l.diffViewer.Lines) - 10
-		if maxScroll < 0 {
-			maxScroll = 0
-		}
-
 		// Delegate all diff-mode keys to the DiffViewer.
 		handled, cmd := l.diffViewer.HandleKeys(msg, l.navKeys, l.repo, l.height)
 		if handled {
@@ -125,12 +128,14 @@ func (l LogPage) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, l.navKeys.Down):
 		if l.cursor < len(l.commits)-1 {
 			l.cursor++
-			return l, l.loadDetailForCursorMaybeMore()
+			cmd := l.loadDetailForCursorMaybeMore()
+			return l, cmd
 		}
 	case key.Matches(msg, l.navKeys.Up):
 		if l.cursor > 0 {
 			l.cursor--
-			return l, l.loadDetailForCursor()
+			cmd := l.loadDetailForCursor()
+			return l, cmd
 		}
 	case key.Matches(msg, l.navKeys.PageDown):
 		l.cursor += 10
@@ -140,20 +145,24 @@ func (l LogPage) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if l.cursor < 0 {
 			l.cursor = 0
 		}
-		return l, l.loadDetailForCursorMaybeMore()
+		cmd := l.loadDetailForCursorMaybeMore()
+		return l, cmd
 	case key.Matches(msg, l.navKeys.PageUp):
 		l.cursor -= 10
 		if l.cursor < 0 {
 			l.cursor = 0
 		}
-		return l, l.loadDetailForCursor()
+		cmd := l.loadDetailForCursor()
+		return l, cmd
 	case key.Matches(msg, l.navKeys.Home):
 		l.cursor = 0
-		return l, l.loadDetailForCursor()
+		cmd := l.loadDetailForCursor()
+		return l, cmd
 	case key.Matches(msg, l.navKeys.End):
 		if len(l.commits) > 0 {
 			l.cursor = len(l.commits) - 1
-			return l, l.loadDetailForCursorMaybeMore()
+			cmd := l.loadDetailForCursorMaybeMore()
+			return l, cmd
 		}
 	case key.Matches(msg, key.NewBinding(key.WithKeys("r"))):
 		return l, l.loadLog()
@@ -267,14 +276,18 @@ func (l LogPage) handleDetailKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return l, nil
 	}
 
-	switch {
-	case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
+	if key.Matches(msg, key.NewBinding(key.WithKeys("esc"))) {
 		l.diffViewer.Active = false
 		l.diffViewer.Lines = nil
 		l.diffViewer.Path = ""
 		l.diffViewer.ScrollY = 0
 		l.diffViewer.ScrollX = 0
 		return l, nil
+	}
+
+	// Compare toggle also works from the detail panel
+	if key.Matches(msg, l.commitOpsKeys.CompareRef) {
+		return l.handleCompareToggle()
 	}
 
 	// Tab-specific keys
@@ -304,12 +317,12 @@ func (l LogPage) handleDetailKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, l.navKeys.PageDown):
 			if l.diffViewer.Active {
 				l.diffViewer.ScrollY += 10
-				max := len(l.diffViewer.Lines) - 10
-				if max < 0 {
-					max = 0
+				maxScroll := len(l.diffViewer.Lines) - 10
+				if maxScroll < 0 {
+					maxScroll = 0
 				}
-				if l.diffViewer.ScrollY > max {
-					l.diffViewer.ScrollY = max
+				if l.diffViewer.ScrollY > maxScroll {
+					l.diffViewer.ScrollY = maxScroll
 				}
 			}
 		case key.Matches(msg, l.navKeys.PageUp):
@@ -364,8 +377,15 @@ func (l LogPage) renderCommitList(width, height int) string {
 	if l.hasWIP {
 		commitCount-- // exclude synthetic WIP entry from count
 	}
+
+	// Title — include filter query when active
+	commitSearching := l.searching && l.searchPanel == focusLogList
+	titleLabel := fmt.Sprintf("Commits (%d)", commitCount)
+	if l.commitFilterQuery != "" && !commitSearching {
+		titleLabel = fmt.Sprintf("Commits %q (%d)", l.commitFilterQuery, commitCount)
+	}
 	titleStr := styles.PanelTitle(
-		fmt.Sprintf("Commits (%d)", commitCount),
+		titleLabel,
 		"2", l.focus == focusLogList, innerWidth,
 	)
 
@@ -374,10 +394,16 @@ func (l LogPage) renderCommitList(width, height int) string {
 		lines = append(lines, styles.DimStyle().Width(innerWidth).Render("  No commits yet. Make your first commit with 'c' on the Status page."))
 	}
 
+	// Inline search bar takes 1 line when active
+	searchHeight := 0
+	if commitSearching {
+		searchHeight = 1
+	}
+
 	// Viewport windowing: only render visible commits, following the cursor.
 	ph := height - styles.PanelBorderHeight
-	// Visible lines: panel height minus title (1) minus title gap (1) minus hints area (2: empty + hints)
-	visibleCount := ph - 4
+	// Visible lines: panel height minus title (1) minus title gap (1) minus hints area (2: empty + hints) minus search
+	visibleCount := ph - 4 - searchHeight
 	if visibleCount < 1 {
 		visibleCount = 1
 	}
@@ -435,7 +461,11 @@ func (l LogPage) renderCommitList(width, height int) string {
 		c := l.commits[i]
 		isWIP := l.hasWIP && i == 0
 		selected := i == l.cursor && l.focus == focusLogList
+		isCompareBase := l.compareBase != nil && c.Hash == l.compareBase.Hash && c.Hash != ""
 		bg := t.Base
+		if isCompareBase {
+			bg = t.Surface0
+		}
 		if selected {
 			bg = t.Surface1
 		}
@@ -522,6 +552,12 @@ func (l LogPage) renderCommitList(width, height int) string {
 			continue
 		}
 
+		// Compare base marker
+		compareMarker := ""
+		if isCompareBase {
+			compareMarker = lipgloss.NewStyle().Foreground(t.Mauve).Background(bg).Bold(true).Render("▶")
+		}
+
 		hash := lipgloss.NewStyle().Foreground(t.Yellow).Background(bg).Width(hashWidth).Render(c.ShortHash)
 		date := lipgloss.NewStyle().Foreground(t.Overlay0).Background(bg).Width(dateWidth).Render(c.Date.Format("2006-01-02"))
 		author := lipgloss.NewStyle().Foreground(t.Teal).Background(bg).Width(authorWidth).Render(truncate(c.Author, authorWidth))
@@ -544,16 +580,16 @@ func (l LogPage) renderCommitList(width, height int) string {
 		var line string
 		if graphStr != "" {
 			if badgeWidth > 0 {
-				line = lipgloss.JoinHorizontal(lipgloss.Top, sp, graphStr, sp, hash, sp, date, sp, author, sp, badges, sp, subject)
+				line = lipgloss.JoinHorizontal(lipgloss.Top, sp, graphStr, sp, compareMarker, hash, sp, date, sp, author, sp, badges, sp, subject)
 			} else {
-				line = lipgloss.JoinHorizontal(lipgloss.Top, sp, graphStr, sp, hash, sp, date, sp, author, sp, subject)
+				line = lipgloss.JoinHorizontal(lipgloss.Top, sp, graphStr, sp, compareMarker, hash, sp, date, sp, author, sp, subject)
 			}
 		} else {
 			sp2 := bgS.Render("  ")
 			if badgeWidth > 0 {
-				line = lipgloss.JoinHorizontal(lipgloss.Top, sp2, hash, sp, date, sp, author, sp, badges, sp, subject)
+				line = lipgloss.JoinHorizontal(lipgloss.Top, sp2, compareMarker, hash, sp, date, sp, author, sp, badges, sp, subject)
 			} else {
-				line = lipgloss.JoinHorizontal(lipgloss.Top, sp2, hash, sp, date, sp, author, sp, subject)
+				line = lipgloss.JoinHorizontal(lipgloss.Top, sp2, compareMarker, hash, sp, date, sp, author, sp, subject)
 			}
 		}
 
@@ -579,24 +615,39 @@ func (l LogPage) renderCommitList(width, height int) string {
 	}
 	content = strings.Join(contentLines, "\n")
 
-	scrollInfo := ""
-	if len(l.commits) > visibleCount {
-		scrollInfo = fmt.Sprintf("  [%d/%d]", l.cursor+1, len(l.commits))
-	}
-	graphHint := ""
-	if l.maxGraphWidth() > l.graphViewportCols() {
-		graphHint = "  H/L:scroll graph"
-	}
-	hintParts := "j/k:navigate  z:undo  X:reset  B:bisect  W:compare"
+	// Compact status line (key hints shown in global hint bar)
+	statusParts := ""
 	if l.compareBase != nil {
-		hintParts = "j/k:navigate  W:exit compare"
+		statusParts = "COMPARING  W:exit"
+	}
+	if len(l.commits) > visibleCount {
+		if statusParts != "" {
+			statusParts += "  "
+		}
+		statusParts += fmt.Sprintf("%d/%d", l.cursor+1, len(l.commits))
 	}
 	hints := lipgloss.NewStyle().Background(t.Base).Width(innerWidth).Render(
-		styles.KeyHintStyle().Render(hintParts + graphHint + scrollInfo),
+		styles.KeyHintStyle().Render(statusParts),
 	)
 	titleGap := lipgloss.NewStyle().Background(t.Base).Width(innerWidth).Render("")
 	emptyLine := lipgloss.NewStyle().Background(t.Base).Width(innerWidth).Render("")
-	full := lipgloss.JoinVertical(lipgloss.Left, titleStr, titleGap, content, emptyLine, hints)
+
+	// Build inline search bar when active
+	var searchBar string
+	if commitSearching {
+		searchBar = lipgloss.NewStyle().
+			Foreground(t.Text).
+			Background(t.Surface0).
+			Width(innerWidth).
+			Render(l.searchInput.View())
+	}
+
+	var full string
+	if commitSearching {
+		full = lipgloss.JoinVertical(lipgloss.Left, titleStr, titleGap, searchBar, content, emptyLine, hints)
+	} else {
+		full = lipgloss.JoinVertical(lipgloss.Left, titleStr, titleGap, content, emptyLine, hints)
+	}
 	// Clip to panel height so all panels stay the same outer height.
 	if cl := strings.Split(full, "\n"); len(cl) > ph {
 		full = strings.Join(cl[:ph], "\n")
@@ -667,18 +718,18 @@ func (l LogPage) renderCommitDetail(width, height int) string {
 	metaContent := lipgloss.JoinVertical(lipgloss.Left, metaSections...)
 	metaLineCount := strings.Count(metaContent, "\n") + 1
 
-	// Hint line (separate from content, pinned to bottom)
-	hintText := "←/→:tabs  j/k:scroll  Enter:diff  y:copy"
+	// Compact status line (key hints shown in global hint bar)
+	detailStatus := ""
 	if l.compareBase != nil {
-		hintText = "←/→:tabs  j/k:scroll  W:exit compare  y:copy"
+		detailStatus = "COMPARING"
 	}
 	hints := lipgloss.NewStyle().Background(t.Base).Width(iw).Render(
-		styles.KeyHintStyle().Render(hintText),
+		styles.KeyHintStyle().Render(detailStatus),
 	)
 	hintHeight := strings.Count(hints, "\n") + 1
 	emptyLine := bgLine("")
 
-	// contentBudget = ph - title(1) - titleGap(1) - emptyLine(1) - hintHeight
+	// Budget: panel height minus title, title gap, empty line, and hints.
 	contentBudget := ph - 3 - hintHeight
 	if contentBudget < 1 {
 		contentBudget = 1
@@ -702,7 +753,9 @@ func (l LogPage) renderCommitDetail(width, height int) string {
 	}
 
 	// Combine metadata + body
-	allSections := append(metaSections, bodySections...)
+	allSections := make([]string, 0, len(metaSections)+len(bodySections))
+	allSections = append(allSections, metaSections...)
+	allSections = append(allSections, bodySections...)
 	content := lipgloss.JoinVertical(lipgloss.Left, allSections...)
 
 	// Pad content to exactly contentBudget lines so hints are pinned to the bottom
@@ -747,7 +800,7 @@ func (l LogPage) renderDetailTabBar(iw int, t theme.Theme) string {
 }
 
 // renderDetailFilesTab renders the file list content for the Files tab.
-func (l LogPage) renderDetailFilesTab(iw, budget int, focused bool, t theme.Theme, bgLine func(string) string) []string {
+func (l LogPage) renderDetailFilesTab(iw, budget int, focused bool, t theme.Theme, _ func(string) string) []string {
 	var sections []string
 
 	if len(l.detailFiles) == 0 {
@@ -828,7 +881,7 @@ func (l LogPage) renderDetailFilesTab(iw, budget int, focused bool, t theme.Them
 
 // renderDetailMessageTab renders the full commit message for the Message tab.
 func (l LogPage) renderDetailMessageTab(iw, budget int, c *git.CommitInfo, t theme.Theme, bgLine func(string) string) []string {
-	var lines []string
+	lines := make([]string, 0, 16)
 
 	// Subject
 	lines = append(lines, bgLine(""))
@@ -884,7 +937,7 @@ func (l LogPage) renderDetailMessageTab(iw, budget int, c *git.CommitInfo, t the
 
 // renderDetailStatsTab renders diff statistics for the Stats tab.
 func (l LogPage) renderDetailStatsTab(iw, budget int, t theme.Theme, bgLine func(string) string) []string {
-	var lines []string
+	lines := make([]string, 0, len(l.detailFiles)+4)
 
 	if len(l.detailFiles) == 0 {
 		lines = append(lines, bgLine(styles.DimStyle().Render("  No files changed")))
@@ -1018,14 +1071,14 @@ func (l LogPage) renderStashDiff(width, height int) string {
 	titleGap := lipgloss.NewStyle().Background(t.Base).Width(iw).Render("")
 	content := lipgloss.JoinVertical(lipgloss.Left, sections...)
 
-	// Hint line (separate from content, pinned to bottom)
+	// Compact status line (key hints shown in global hint bar)
 	hints := lipgloss.NewStyle().Background(t.Base).Width(iw).Render(
-		styles.KeyHintStyle().Render("Esc:back to graph  j/k:scroll diff"),
+		styles.KeyHintStyle().Render(""),
 	)
 	hintHeight := strings.Count(hints, "\n") + 1
 	emptyLine := bgLine("")
 
-	// contentBudget = ph - title(1) - titleGap(1) - emptyLine(1) - hintHeight
+	// Budget: panel height minus title, title gap, empty line, and hints.
 	contentBudget := ph - 3 - hintHeight
 	if contentBudget < 1 {
 		contentBudget = 1
@@ -1279,7 +1332,7 @@ func (l LogPage) doCherryPick(hash string) tea.Cmd {
 // Reset menu
 // ---------------------------------------------------------------------------
 
-func (l LogPage) showResetMenu(commit git.CommitInfo, short string) tea.Cmd {
+func (l LogPage) showResetMenu(_ git.CommitInfo, short string) tea.Cmd {
 	return func() tea.Msg {
 		return RequestMenuMsg{
 			ID:    "reset-menu",
@@ -1518,7 +1571,15 @@ func (l LogPage) doBisectMark(markType string) tea.Cmd {
 		// Check if bisect found the culprit
 		msg := "Marked as " + markType
 		if strings.Contains(out, "is the first bad commit") {
-			msg = "Bisect complete! Found the culprit."
+			// Extract first line (the culprit hash + subject)
+			culprit := out
+			if idx := strings.Index(out, " is the first bad commit"); idx > 0 {
+				culprit = out[:idx]
+				if len(culprit) > 12 {
+					culprit = culprit[:12]
+				}
+			}
+			msg = "Bisect complete! Culprit: " + culprit
 		}
 		return commitOpDoneMsg{op: msg}
 	}
@@ -1591,48 +1652,44 @@ func (l LogPage) doUndoConfirmed() tea.Cmd {
 func (l LogPage) doRedo() tea.Cmd {
 	repo := l.repo
 	return func() tea.Msg {
-		// Redo by looking at reflog — after an undo (reset --hard), the
-		// reflog entry before the undo points to the state we want to redo to.
-		// The last entry (entries[0]) should be the undo's reset.
-		// The entry we undid from should still be in the reflog.
+		// After an undo (reset --hard), the reflog looks like:
+		// entries[0] = current state (after undo)
+		// entries[1] = the reset operation itself
+		// entries[2] = state before undo (what we want to redo to)
 		entries, err := repo.Reflog(30)
-		if err != nil || len(entries) < 2 {
+		if err != nil || len(entries) < 3 {
 			return RequestToastMsg{Message: "Nothing to redo", IsError: true}
 		}
-		// Look for the first entry that was our undo reset
-		// entries[0] is current HEAD (the undo target)
-		// entries[1] is the reset itself
-		// If entries[1].Action == "reset" and there's a prior entry, redo to entries[0].Hash of the previous reflog
-		// Actually, simpler: redo just means go forward to what entries[0] was before the reset
-		// We need to find the entry just before the most recent "reset: moving to" entry
-		for i, e := range entries {
-			if i == 0 {
-				continue
-			}
-			if strings.HasPrefix(e.Action, "reset") && i > 0 {
-				// The entry right before this reset is the state before undo
-				// But entries[i-1] is the current state... need to find the target
-				// Actually entries[0] is already the undone state. We can't easily redo.
-				break
-			}
+		if !strings.HasPrefix(entries[1].Action, "reset") {
+			return RequestToastMsg{Message: "Nothing to redo", IsError: true}
 		}
-		// Simple approach: reflog HEAD@{1} is always the state before the last operation
-		// For redo after undo: the undo did a reset to reflog[1], so reflog[0] is now at reflog[1]
-		// and reflog[1] is the reset operation itself. The "before undo" state is at
-		// what was previously reflog[0], which is now pushed to reflog[2] (since two new entries were added).
-		if len(entries) >= 3 {
-			// After undo: entries[0] = state after undo, entries[1] = the reset op,
-			// entries[2] = state before undo (what we want to redo to)
-			target := entries[2]
-			if strings.HasPrefix(entries[1].Action, "reset") {
-				err = repo.ResetHard(target.Hash)
-				if err != nil {
-					return RequestToastMsg{Message: "Redo failed: " + err.Error(), IsError: true}
-				}
-				return commitOpDoneMsg{op: "Redo to " + target.ShortHash}
-			}
+		target := entries[2]
+		return redoTargetMsg{
+			hash:      target.Hash,
+			shortHash: target.ShortHash,
+			message:   target.Message,
 		}
-		return RequestToastMsg{Message: "Nothing to redo", IsError: true}
+	}
+}
+
+func (l LogPage) doRedoConfirmed() tea.Cmd {
+	repo := l.repo
+	hash := l.pendingRedoHash
+	if hash == "" {
+		return func() tea.Msg {
+			return RequestToastMsg{Message: "Nothing to redo", IsError: true}
+		}
+	}
+	short := hash
+	if len(short) > 7 {
+		short = short[:7]
+	}
+	return func() tea.Msg {
+		err := repo.ResetHard(hash)
+		if err != nil {
+			return RequestToastMsg{Message: "Redo failed: " + err.Error(), IsError: true}
+		}
+		return commitOpDoneMsg{op: "Redo to " + short}
 	}
 }
 

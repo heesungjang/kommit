@@ -60,15 +60,13 @@ type Hunk struct {
 // StageHunk stages a specific diff hunk for a file.
 func (r *Repository) StageHunk(path string, hunk Hunk) error {
 	patch := buildPatch(path, path, hunk)
-	_, err := r.runWithStdin(patch, "apply", "--cached", "--unidiff-zero", "-")
-	return err
+	return r.runWithStdin(patch, "apply", "--cached", "--unidiff-zero", "-")
 }
 
 // UnstageHunk unstages a specific diff hunk.
 func (r *Repository) UnstageHunk(path string, hunk Hunk) error {
 	patch := buildPatch(path, path, hunk)
-	_, err := r.runWithStdin(patch, "apply", "--cached", "--reverse", "--unidiff-zero", "-")
-	return err
+	return r.runWithStdin(patch, "apply", "--cached", "--reverse", "--unidiff-zero", "-")
 }
 
 func buildPatch(oldPath, newPath string, hunk Hunk) string {
@@ -94,8 +92,7 @@ func (r *Repository) StageLines(path string, hunk Hunk, selectedIndices map[int]
 	if partial == "" {
 		return nil // nothing to stage
 	}
-	_, err := r.runWithStdin(partial, "apply", "--cached", "--unidiff-zero", "-")
-	return err
+	return r.runWithStdin(partial, "apply", "--cached", "--unidiff-zero", "-")
 }
 
 // UnstageLines unstages only the selected lines from a staged hunk.
@@ -109,8 +106,7 @@ func (r *Repository) UnstageLines(path string, hunk Hunk, selectedIndices map[in
 	if partial == "" {
 		return nil
 	}
-	_, err := r.runWithStdin(partial, "apply", "--cached", "--reverse", "--unidiff-zero", "-")
-	return err
+	return r.runWithStdin(partial, "apply", "--cached", "--reverse", "--unidiff-zero", "-")
 }
 
 // buildPartialPatch constructs a unified diff patch containing only the selected
@@ -122,7 +118,7 @@ func buildPartialPatch(path string, hunk Hunk, selectedIndices map[int]bool, rev
 	newCount := 0
 
 	for i, line := range hunk.Lines {
-		if len(line) == 0 {
+		if line == "" {
 			// Empty line = context
 			patchLines = append(patchLines, " ")
 			oldCount++
@@ -139,16 +135,12 @@ func buildPartialPatch(path string, hunk Hunk, selectedIndices map[int]bool, rev
 				// For unstage (reverse apply): "+" lines are always kept
 				patchLines = append(patchLines, line)
 				newCount++
-			} else {
+			} else if selectedIndices[i] {
 				// For stage: only include selected "+" lines; drop unselected
-				if selectedIndices[i] {
-					patchLines = append(patchLines, line)
-					newCount++
-				} else {
-					// Unselected add: skip it (don't stage this addition)
-					// Don't add to patch at all
-				}
+				patchLines = append(patchLines, line)
+				newCount++
 			}
+			// Unselected add: skip it (don't stage this addition)
 		case '-':
 			if reverse {
 				// For unstage (reverse apply): only include selected "-" lines

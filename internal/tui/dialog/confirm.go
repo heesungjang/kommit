@@ -5,8 +5,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	tuictx "github.com/nicholascross/opengit/internal/tui/context"
-	"github.com/nicholascross/opengit/internal/tui/theme"
+	tuictx "github.com/heesungjang/kommit/internal/tui/context"
+	"github.com/heesungjang/kommit/internal/tui/theme"
 )
 
 // ---------------------------------------------------------------------------
@@ -44,8 +44,7 @@ func NewConfirm(id, title, message string, ctx *tuictx.ProgramContext) Confirm {
 func (c Confirm) Init() tea.Cmd { return nil }
 
 func (c Confirm) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	if msg, ok := msg.(tea.KeyMsg); ok {
 		// Let base handle page-scroll keys first.
 		if c.Base.HandleScrollKeys(msg, len(c.buildContentLines())) {
 			return c, nil

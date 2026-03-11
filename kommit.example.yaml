@@ -1,0 +1,200 @@
+# kommit configuration
+#
+# Place this file at one of these locations (in priority order):
+#   1. ./.kommit.yaml                      (project-local dotfile)
+#   2. $XDG_CONFIG_HOME/kommit/config.yaml (XDG global)
+#   3. ~/.config/kommit/config.yaml        (global)
+#
+# JSON format is also supported (.kommit.json).
+# Environment variables with prefix KOMMIT_ override config values.
+
+# ---------------------------------------------------------------------------
+# Theme
+# ---------------------------------------------------------------------------
+# Built-in themes: catppuccin-mocha (dark), catppuccin-latte (light),
+#                  catppuccin-macchiato (dark, warmer)
+# Use "auto" to detect terminal background and pick light/dark automatically.
+theme: auto
+
+# Preferred editor for opening files (falls back to $VISUAL, $EDITOR, then vim).
+editor: ""
+
+# ---------------------------------------------------------------------------
+# Appearance
+# ---------------------------------------------------------------------------
+appearance:
+  # Diff display mode: "inline" (unified) or "side-by-side" (split view).
+  diffMode: inline
+
+  # Show the commit graph in the center panel.
+  showGraph: true
+
+  # Compact log mode — reduces line height per commit.
+  compactLog: false
+
+  # Chroma syntax highlighting theme for diffs.
+  syntaxTheme: catppuccin-mocha
+
+  # Panel width configuration.
+  # sidebarWidth: fixed column width (0 = auto-calculate from percentage).
+  sidebarWidth: 0
+
+  # sidebarMaxPct: sidebar width as percentage of terminal width (default: 15).
+  # Only used when sidebarWidth is 0.
+  sidebarMaxPct: 15
+
+  # centerPct: center panel width as percentage of remaining space (default: 70).
+  # The right panel gets the rest. Range: 30-90.
+  centerPct: 70
+
+  # Override individual colors in the active theme.
+  # All values are hex color strings. Leave empty to use the theme default.
+  # This lets you tweak a built-in theme without creating a full custom theme.
+  themeColors: {}
+    # Example: make the accent color orange instead of blue:
+    # blue: "#fe640b"
+    #
+    # Example: use a darker background:
+    # base: "#181818"
+    # mantle: "#121212"
+    #
+    # Available color keys:
+    #   base, mantle, crust              — background tones
+    #   surface0, surface1, surface2     — elevated surface tones
+    #   overlay0, overlay1               — overlay/popup backgrounds
+    #   text, subtext0, subtext1         — text colors
+    #   red, green, yellow, blue         — primary accents
+    #   mauve, pink, teal, sky           — secondary accents
+    #   peach, maroon, lavender          — tertiary accents
+    #   flamingo, rosewater, sapphire    — additional accents
+
+# ---------------------------------------------------------------------------
+# Keybindings
+# ---------------------------------------------------------------------------
+keybinds:
+  # Override any default keybinding. Keys are canonical action names,
+  # values are key strings. Multiple keys can be separated by spaces.
+  #
+  # Example: vim-style HJKL navigation:
+  #   custom:
+  #     nav.up: "k up"
+  #     nav.down: "j down"
+  #     nav.left: "h left"
+  #     nav.right: "l right"
+  #
+  # Example: change quit to Ctrl+Q:
+  #   custom:
+  #     global.quit: "ctrl+q"
+  #
+  # Available action names (grouped by context):
+  #
+  #   Global:
+  #     global.quit, global.forceQuit, global.help, global.search,
+  #     global.commandPalette, global.nextPanel, global.prevPanel
+  #
+  #   Navigation:
+  #     nav.up, nav.down, nav.left, nav.right,
+  #     nav.pageUp, nav.pageDown, nav.home, nav.end, nav.select
+  #
+  #   Status/WIP:
+  #     status.stage, status.unstage, status.stageAll, status.stageHunk,
+  #     status.commit, status.commitAmend, status.push, status.pull,
+  #     status.fetch, status.discard, status.aiCommit, status.undo,
+  #     status.refresh
+  #
+  #   Branches:
+  #     branch.new, branch.delete, branch.rename, branch.checkout,
+  #     branch.merge, branch.rebase
+  #
+  #   Commit operations:
+  #     commit.revert, commit.cherryPick, commit.copyHash,
+  #     commit.resetMenu, commit.squash, commit.fixup, commit.drop,
+  #     commit.compareRef, commit.bisectMenu, commit.undo, commit.redo
+  #
+  #   Diff:
+  #     diff.nextHunk, diff.prevHunk, diff.stageHunk, diff.toggleView
+  #
+  #   Stash:
+  #     stash.save, stash.pop, stash.apply, stash.drop
+  #
+  #   Remote:
+  #     remote.push, remote.forcePush, remote.pull, remote.fetch
+  #
+  #   Pull Requests:
+  #     pr.create, pr.approve, pr.merge, pr.comment, pr.aiDescription
+  custom: {}
+
+# ---------------------------------------------------------------------------
+# Custom Commands
+# ---------------------------------------------------------------------------
+# User-defined shell commands accessible from the TUI via the custom
+# commands menu (`:` key). Commands support Go template variables:
+#
+#   {{.Hash}}      — full commit hash
+#   {{.ShortHash}} — abbreviated hash (7 chars)
+#   {{.Branch}}    — current branch name
+#   {{.Path}}      — selected file path
+#   {{.RepoRoot}}  — repository root directory
+#   {{.Subject}}   — commit subject line
+#   {{.Author}}    — commit author name
+#
+# Each command has these fields:
+#   name:        Display name in the menu (required)
+#   command:     Shell command to execute (required)
+#   key:         Optional shortcut key (e.g. "ctrl+x")
+#   context:     When to show: "global", "commit", "file", "branch"
+#   confirm:     Show confirmation dialog before executing (default: false)
+#   showOutput:  Show command output in a toast notification (default: false)
+#   suspend:     Suspend TUI while command runs — for interactive commands (default: false)
+#   description: Optional description shown in the menu
+#
+customCommands:
+  # Example: open the commit on GitHub
+  # - name: View on GitHub
+  #   command: "open https://github.com/$(git remote get-url origin | sed 's|.*github.com[:/]||;s|\\.git$||')/commit/{{.Hash}}"
+  #   context: commit
+  #   description: Open this commit in your browser
+
+  # Example: interactive rebase from selected commit
+  # - name: Interactive rebase
+  #   command: "git rebase -i {{.Hash}}^"
+  #   context: commit
+  #   confirm: true
+  #   suspend: true
+  #   description: Start an interactive rebase from this commit
+
+  # Example: run tests
+  # - name: Run tests
+  #   command: "go test ./..."
+  #   showOutput: true
+  #   description: Run the project test suite
+
+  # Example: create a fixup commit for the selected commit
+  # - name: Fixup commit
+  #   command: "git commit --fixup={{.Hash}}"
+  #   context: commit
+  #   showOutput: true
+
+# ---------------------------------------------------------------------------
+# AI Configuration
+# ---------------------------------------------------------------------------
+ai:
+  # Provider: anthropic, openai, ollama
+  provider: anthropic
+  model: claude-sonnet-4-20250514
+  # API key (prefer environment variables ANTHROPIC_API_KEY or OPENAI_API_KEY)
+  # apiKey: ""
+  # Custom base URL for self-hosted models
+  # baseUrl: ""
+
+# ---------------------------------------------------------------------------
+# Git Hosting
+# ---------------------------------------------------------------------------
+hosting:
+  # Provider: auto (detect from remote URL), github, gitlab
+  provider: auto
+  # Auth token (prefer environment variables GITHUB_TOKEN or GITLAB_TOKEN)
+  # token: ""
+
+# Debug mode — enables verbose logging.
+debug: false

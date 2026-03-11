@@ -10,43 +10,62 @@ import (
 var cfg Config
 
 // Load reads configuration from multiple paths, merging them.
-// Supports both YAML (.opengit.yml / .opengit.yaml) and JSON (.opengit.json)
-// formats. Later paths override earlier ones.
+// Supports YAML (.kommit.yaml / .kommit.yml) and JSON (.kommit.json).
+//
+// Search order (lowest to highest priority):
+//
+//	~/.config/kommit/config.yaml    (global)
+//	$XDG_CONFIG_HOME/kommit/config.yaml
+//	./.kommit.yaml                  (local, dotfile to avoid binary collision)
 func Load() (Config, error) {
 	cfg = DefaultConfig()
 
-	// Build search paths (lowest to highest priority).
-	var searchPaths []string
+	// --- Pass 1: global config dirs ---
+	var globalPaths []string
 	if home, err := os.UserHomeDir(); err == nil {
-		searchPaths = append(searchPaths, filepath.Join(home, ".config", "opengit"))
+		globalPaths = append(globalPaths, filepath.Join(home, ".config", "kommit"))
 	}
 	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
-		searchPaths = append(searchPaths, filepath.Join(xdg, "opengit"))
-	}
-	searchPaths = append(searchPaths, ".")
-
-	// Try config file names in priority order: YAML first, then JSON.
-	// Viper resolves the first file it finds across all search paths.
-	configNames := []struct {
-		name string
-		typ  string
-	}{
-		{"opengit", "yaml"},  // opengit.yaml / opengit.yml
-		{".opengit", "yaml"}, // .opengit.yaml / .opengit.yml
-		{".opengit", "json"}, // .opengit.json (legacy)
+		globalPaths = append(globalPaths, filepath.Join(xdg, "kommit"))
 	}
 
 	var loaded bool
-	for _, cn := range configNames {
+	if len(globalPaths) > 0 {
 		v := viper.New()
-		v.SetConfigName(cn.name)
-		v.SetConfigType(cn.typ)
-		for _, p := range searchPaths {
+		v.SetConfigName("config")
+		v.SetConfigType("yaml")
+		for _, p := range globalPaths {
 			v.AddConfigPath(p)
 		}
 		if err := v.ReadInConfig(); err != nil {
+			if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
+				return cfg, err
+			}
+		} else {
+			if err := v.Unmarshal(&cfg); err != nil {
+				return cfg, err
+			}
+			loaded = true
+		}
+	}
+
+	// --- Pass 2: local dotfile in current directory ---
+	// Uses ".kommit" (with dot prefix) to avoid collision with the kommit binary.
+	localNames := []struct {
+		name string
+		typ  string
+	}{
+		{".kommit", "yaml"}, // .kommit.yaml / .kommit.yml
+		{".kommit", "json"}, // .kommit.json
+	}
+	for _, cn := range localNames {
+		v := viper.New()
+		v.SetConfigName(cn.name)
+		v.SetConfigType(cn.typ)
+		v.AddConfigPath(".")
+		if err := v.ReadInConfig(); err != nil {
 			if _, ok := err.(viper.ConfigFileNotFoundError); ok {
-				continue // try next name
+				continue
 			}
 			return cfg, err
 		}
@@ -60,12 +79,12 @@ func Load() (Config, error) {
 	// If no file found, use defaults — also set up env overrides.
 	if !loaded {
 		v := viper.New()
-		v.SetEnvPrefix("OPENGIT")
+		v.SetEnvPrefix("KOMMIT")
 		v.AutomaticEnv()
 	}
 
 	// Override AI API key from environment
-	if key := os.Getenv("OPENGIT_AI_API_KEY"); key != "" {
+	if key := os.Getenv("KOMMIT_AI_API_KEY"); key != "" {
 		cfg.AI.APIKey = key
 	}
 	if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" && cfg.AI.Provider == "anthropic" {

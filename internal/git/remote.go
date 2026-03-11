@@ -41,7 +41,7 @@ func (r *Repository) RemoteList() ([]RemoteInfo, error) {
 		}
 	}
 
-	var remotes []RemoteInfo
+	remotes := make([]RemoteInfo, 0, len(remoteMap))
 	for _, info := range remoteMap {
 		remotes = append(remotes, *info)
 	}
@@ -82,9 +82,9 @@ func (r *Repository) ForcePush(remote, branch string) error {
 
 // HasUpstream returns true if the given branch has an upstream tracking ref.
 func (r *Repository) HasUpstream(branch string) (bool, error) {
-	_, err := r.run("rev-parse", "--abbrev-ref", branch+"@{upstream}")
-	if err != nil {
-		return false, nil // no upstream, not a fatal error
+	_, runErr := r.run("rev-parse", "--abbrev-ref", branch+"@{upstream}")
+	if runErr != nil {
+		return false, nil //nolint:nilerr // no upstream, not a fatal error
 	}
 	return true, nil
 }

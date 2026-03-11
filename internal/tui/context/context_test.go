@@ -3,7 +3,7 @@ package context
 import (
 	"testing"
 
-	"github.com/nicholascross/opengit/internal/config"
+	"github.com/heesungjang/kommit/internal/config"
 )
 
 func TestNew_DefaultConfig(t *testing.T) {
@@ -17,9 +17,9 @@ func TestNew_DefaultConfig(t *testing.T) {
 		t.Errorf("Theme.Name = %q, want %q", ctx.Theme.Name, "catppuccin-mocha")
 	}
 	// Styles should be initialized (verify border foreground is set).
-	if ctx.Styles.PanelFocused.GetBorderTopForeground() == ctx.Styles.PanelUnfocused.GetBorderTopForeground() {
-		// Both could be the same if default, but at least they should exist.
-	}
+	// Styles should be initialized — verify they exist (focused/unfocused may use same border color).
+	_ = ctx.Styles.PanelFocused.GetBorderTopForeground()
+	_ = ctx.Styles.PanelUnfocused.GetBorderTopForeground()
 }
 
 func TestNew_AutoTheme(t *testing.T) {

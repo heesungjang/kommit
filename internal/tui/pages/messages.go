@@ -70,3 +70,16 @@ type MenuOption struct {
 	Description string
 	Key         string
 }
+
+// RequestCustomCmdMenuMsg asks the app shell to show the custom commands menu
+// filtered by the current context.
+type RequestCustomCmdMenuMsg struct {
+	Context string // "commit", "file", "branch", or "global"
+	// Template variables for expanding command templates.
+	Hash      string
+	ShortHash string
+	Branch    string
+	Path      string
+	Subject   string
+	Author    string
+}

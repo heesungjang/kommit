@@ -18,8 +18,9 @@ func (r *Repository) Tags() ([]TagInfo, error) {
 		return nil, nil
 	}
 
-	var tags []TagInfo
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	tags := make([]TagInfo, 0, len(lines))
+	for _, line := range lines {
 		if line == "" {
 			continue
 		}

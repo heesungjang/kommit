@@ -10,11 +10,11 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/nicholascross/opengit/internal/git"
-	"github.com/nicholascross/opengit/internal/tui/anim"
-	"github.com/nicholascross/opengit/internal/tui/dialog"
-	"github.com/nicholascross/opengit/internal/tui/styles"
-	"github.com/nicholascross/opengit/internal/tui/theme"
+	"github.com/heesungjang/kommit/internal/git"
+	"github.com/heesungjang/kommit/internal/tui/anim"
+	"github.com/heesungjang/kommit/internal/tui/dialog"
+	"github.com/heesungjang/kommit/internal/tui/styles"
+	"github.com/heesungjang/kommit/internal/tui/theme"
 )
 
 // ---------------------------------------------------------------------------
@@ -158,6 +158,11 @@ func (l LogPage) handleWIPDetailKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return l, nil
 	}
 
+	// Undo — available when not editing commit text
+	if !l.commitEditing && key.Matches(msg, l.statusKeys.Undo) {
+		return l, l.doUndo()
+	}
+
 	// Section jump shortcuts: u/s/c (available when not actively editing text)
 	if !l.commitEditing {
 		switch {
@@ -233,6 +238,10 @@ func (l LogPage) handleWIPUnstagedKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, l.navKeys.Down):
 		if l.wipUnstagedCursor < len(l.wipUnstaged)-1 {
 			l.wipUnstagedCursor++
+		} else if len(l.wipStaged) > 0 {
+			// Auto-advance to staged section
+			l.wipFocus = wipFocusStaged
+			l.wipStagedCursor = 0
 		}
 	case key.Matches(msg, l.navKeys.Up):
 		if l.wipUnstagedCursor > 0 {
@@ -247,12 +256,25 @@ func (l LogPage) handleWIPUnstagedKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, l.navKeys.PageDown):
 		if l.diffViewer.Active {
 			l.diffViewer.ScrollY += 10
-			max := len(l.diffViewer.Lines) - 10
-			if max < 0 {
-				max = 0
+			maxScroll := len(l.diffViewer.Lines) - 10
+			if maxScroll < 0 {
+				maxScroll = 0
 			}
-			if l.diffViewer.ScrollY > max {
-				l.diffViewer.ScrollY = max
+			if l.diffViewer.ScrollY > maxScroll {
+				l.diffViewer.ScrollY = maxScroll
+			}
+		} else {
+			// Page-jump in file list
+			jump := l.wipFilePageSize() / 2
+			if jump < 1 {
+				jump = 1
+			}
+			l.wipUnstagedCursor += jump
+			if l.wipUnstagedCursor >= len(l.wipUnstaged) {
+				l.wipUnstagedCursor = len(l.wipUnstaged) - 1
+			}
+			if l.wipUnstagedCursor < 0 {
+				l.wipUnstagedCursor = 0
 			}
 		}
 		return l, nil
@@ -261,6 +283,15 @@ func (l LogPage) handleWIPUnstagedKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			l.diffViewer.ScrollY -= 10
 			if l.diffViewer.ScrollY < 0 {
 				l.diffViewer.ScrollY = 0
+			}
+		} else {
+			jump := l.wipFilePageSize() / 2
+			if jump < 1 {
+				jump = 1
+			}
+			l.wipUnstagedCursor -= jump
+			if l.wipUnstagedCursor < 0 {
+				l.wipUnstagedCursor = 0
 			}
 		}
 		return l, nil
@@ -326,6 +357,10 @@ func (l LogPage) handleWIPStagedKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, l.navKeys.Up):
 		if l.wipStagedCursor > 0 {
 			l.wipStagedCursor--
+		} else if len(l.wipUnstaged) > 0 {
+			// Auto-advance back to unstaged section
+			l.wipFocus = wipFocusUnstaged
+			l.wipUnstagedCursor = len(l.wipUnstaged) - 1
 		}
 	case key.Matches(msg, l.navKeys.Home):
 		l.wipStagedCursor = 0
@@ -336,12 +371,24 @@ func (l LogPage) handleWIPStagedKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, l.navKeys.PageDown):
 		if l.diffViewer.Active {
 			l.diffViewer.ScrollY += 10
-			max := len(l.diffViewer.Lines) - 10
-			if max < 0 {
-				max = 0
+			maxScroll := len(l.diffViewer.Lines) - 10
+			if maxScroll < 0 {
+				maxScroll = 0
 			}
-			if l.diffViewer.ScrollY > max {
-				l.diffViewer.ScrollY = max
+			if l.diffViewer.ScrollY > maxScroll {
+				l.diffViewer.ScrollY = maxScroll
+			}
+		} else {
+			jump := l.wipFilePageSize() / 2
+			if jump < 1 {
+				jump = 1
+			}
+			l.wipStagedCursor += jump
+			if l.wipStagedCursor >= len(l.wipStaged) {
+				l.wipStagedCursor = len(l.wipStaged) - 1
+			}
+			if l.wipStagedCursor < 0 {
+				l.wipStagedCursor = 0
 			}
 		}
 		return l, nil
@@ -350,6 +397,15 @@ func (l LogPage) handleWIPStagedKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			l.diffViewer.ScrollY -= 10
 			if l.diffViewer.ScrollY < 0 {
 				l.diffViewer.ScrollY = 0
+			}
+		} else {
+			jump := l.wipFilePageSize() / 2
+			if jump < 1 {
+				jump = 1
+			}
+			l.wipStagedCursor -= jump
+			if l.wipStagedCursor < 0 {
+				l.wipStagedCursor = 0
 			}
 		}
 		return l, nil
@@ -472,45 +528,50 @@ func (l LogPage) submitCommit() (tea.Model, tea.Cmd) {
 
 // handleWIPMouseClick processes a left-click in the WIP detail (right) panel.
 // It maps the Y coordinate to either the unstaged or staged file list section
-// and updates focus/cursor accordingly.
-func (l LogPage) handleWIPMouseClick(msg tea.MouseMsg, leftOuter int) (tea.Model, tea.Cmd) {
-	// Y coordinate relative to right panel top: subtract border (1) + title (1) = 2
-	relY := msg.Y - 2
+// and updates focus/cursor accordingly. Accounts for sub-viewport scrolling.
+func (l LogPage) handleWIPMouseClick(msg tea.MouseMsg, _ int) (tea.Model, tea.Cmd) {
+	// Y coordinate relative to right panel content: subtract border(1) + title(1) + gap(1) = 3
+	relY := msg.Y - 3
 	if relY < 0 {
 		return l, nil
 	}
 
-	// Layout in renderWIPDetail:
-	// row 0: "Unstaged Files (N)" header
-	// rows 1..U: unstaged files (or 1 row "Working tree clean")
-	// row U+1: separator ─
-	// row U+2: "Staged Files (N)" header
-	// rows U+3..U+2+S: staged files (or 1 row "No files staged")
-	// rest: separator, commit hint, diff...
+	// Layout with split sub-viewports:
+	// row 0: unstaged header
+	// row 1: margin
+	// rows 2..2+visUnstaged-1: visible unstaged file lines
+	// row 2+visUnstaged: separator ─
+	// row 3+visUnstaged: staged header
+	// row 4+visUnstaged: margin
+	// rows 5+visUnstaged..5+visUnstaged+visStaged-1: visible staged file lines
 
-	unstagedRows := len(l.wipUnstaged)
-	if unstagedRows == 0 {
-		unstagedRows = 1 // "Working tree clean" placeholder
+	// Compute visible unstaged count (same as render — approximate using viewport height)
+	unstagedContentH := l.wipUnstagedViewHeight()
+	visUnstaged := len(l.wipUnstaged)
+	if visUnstaged == 0 {
+		visUnstaged = 1 // placeholder
 	}
-	stagedRows := len(l.wipStaged)
-	if stagedRows == 0 {
-		stagedRows = 1 // "No files staged" placeholder
+	if visUnstaged > unstagedContentH && unstagedContentH > 0 {
+		visUnstaged = unstagedContentH
 	}
 
-	// Unstaged header at row 0
-	// Unstaged files: rows 1 .. unstagedRows
-	// Separator: row unstagedRows + 1
-	// Staged header: row unstagedRows + 2
-	// Staged files: rows unstagedRows + 3 .. unstagedRows + 2 + stagedRows
-
-	unstagedFileStart := 1
-	unstagedFileEnd := unstagedFileStart + unstagedRows // exclusive
-	stagedHeaderRow := unstagedFileEnd + 1              // after separator
-	stagedFileStart := stagedHeaderRow + 1
-	stagedFileEnd := stagedFileStart + stagedRows // exclusive
+	unstagedFileStart := 2 // after header + margin
+	unstagedFileEnd := unstagedFileStart + visUnstaged
+	separatorRow := unstagedFileEnd
+	stagedFileStart := separatorRow + 3 // separator + header + margin
+	stagedContentH := l.wipStagedViewHeight()
+	visStaged := len(l.wipStaged)
+	if visStaged == 0 {
+		visStaged = 1 // placeholder
+	}
+	if visStaged > stagedContentH && stagedContentH > 0 {
+		visStaged = stagedContentH
+	}
+	stagedFileEnd := stagedFileStart + visStaged
 
 	if relY >= unstagedFileStart && relY < unstagedFileEnd && len(l.wipUnstaged) > 0 {
-		idx := relY - unstagedFileStart
+		visIdx := relY - unstagedFileStart
+		idx := l.wipUnstagedScroll + visIdx
 		if idx < len(l.wipUnstaged) {
 			l.wipFocus = wipFocusUnstaged
 			l.wipUnstagedCursor = idx
@@ -519,7 +580,8 @@ func (l LogPage) handleWIPMouseClick(msg tea.MouseMsg, leftOuter int) (tea.Model
 			return l, l.loadCenterDiff()
 		}
 	} else if relY >= stagedFileStart && relY < stagedFileEnd && len(l.wipStaged) > 0 {
-		idx := relY - stagedFileStart
+		visIdx := relY - stagedFileStart
+		idx := l.wipStagedScroll + visIdx
 		if idx < len(l.wipStaged) {
 			l.wipFocus = wipFocusStaged
 			l.wipStagedCursor = idx
@@ -530,6 +592,93 @@ func (l LogPage) handleWIPMouseClick(msg tea.MouseMsg, leftOuter int) (tea.Model
 	}
 
 	return l, nil
+}
+
+// wipUnstagedViewHeight returns the number of file lines visible in the
+// unstaged sub-viewport. Used by mouse click handler to map Y coordinates.
+func (l LogPage) wipUnstagedViewHeight() int {
+	unstagedContentH, _ := l.wipViewportContentHeights()
+	return unstagedContentH
+}
+
+// wipStagedViewHeight returns the number of file lines visible in the
+// staged sub-viewport. Used by mouse click handler to map Y coordinates.
+func (l LogPage) wipStagedViewHeight() int {
+	_, stagedContentH := l.wipViewportContentHeights()
+	return stagedContentH
+}
+
+// wipViewportContentHeights computes the content-only heights for the unstaged
+// and staged sub-viewports. This duplicates the height allocation logic from
+// renderWIPDetail to keep mouse mapping consistent with rendering.
+func (l LogPage) wipViewportContentHeights() (unstagedContentH, stagedContentH int) {
+	ph := l.height - styles.PanelBorderHeight
+	// Estimate commit box height (~11 lines) and hint height (~1 line)
+	commitBoxHeight := 11
+	hintHeight := 1
+	separatorHeight := 1
+	fileAreaHeight := ph - 2 - separatorHeight - commitBoxHeight - hintHeight
+	if fileAreaHeight < 2 {
+		fileAreaHeight = 2
+	}
+
+	unstagedChrome := 2
+	stagedChrome := 2
+	unstagedDataLines := len(l.wipUnstaged)
+	if unstagedDataLines == 0 {
+		unstagedDataLines = 1
+	}
+	stagedDataLines := len(l.wipStaged)
+	if stagedDataLines == 0 {
+		stagedDataLines = 1
+	}
+
+	minStagedHeight := stagedChrome + 1
+	if minStagedHeight > fileAreaHeight-unstagedChrome-1 {
+		minStagedHeight = fileAreaHeight - unstagedChrome - 1
+		if minStagedHeight < 1 {
+			minStagedHeight = 1
+		}
+	}
+
+	wantUnstaged := unstagedChrome + unstagedDataLines
+	wantStaged := stagedChrome + stagedDataLines
+	totalWant := wantUnstaged + wantStaged
+
+	var unstagedViewH, stagedViewH int
+	if totalWant <= fileAreaHeight {
+		unstagedViewH = wantUnstaged
+		stagedViewH = fileAreaHeight - unstagedViewH
+	} else {
+		stagedViewH = minStagedHeight
+		remaining := fileAreaHeight - stagedViewH
+		if remaining < unstagedChrome+1 {
+			remaining = unstagedChrome + 1
+			stagedViewH = fileAreaHeight - remaining
+		}
+		if wantStaged < stagedViewH {
+			stagedViewH = wantStaged
+			remaining = fileAreaHeight - stagedViewH
+		}
+		unstagedViewH = remaining
+	}
+
+	if unstagedViewH < 1 {
+		unstagedViewH = 1
+	}
+	if stagedViewH < 1 {
+		stagedViewH = 1
+	}
+
+	unstagedContentH = unstagedViewH - unstagedChrome
+	if unstagedContentH < 0 {
+		unstagedContentH = 0
+	}
+	stagedContentH = stagedViewH - stagedChrome
+	if stagedContentH < 0 {
+		stagedContentH = 0
+	}
+	return
 }
 
 // ---------------------------------------------------------------------------
@@ -575,101 +724,67 @@ func (l LogPage) renderWIPDetail(width, height int) string {
 		return lipgloss.JoinHorizontal(lipgloss.Top, leftPart, gap, rightPart)
 	}
 
-	var fileSections []string
+	// --- Helper: render a file line ---
+	renderFileLine := func(f git.FileStatus, idx int, cursorIdx int, isFocused bool, staged bool) string {
+		icon := f.StatusIcon()
+		code := f.UnstagedCode
+		statsMap := l.wipUnstagedStats
+		if staged {
+			code = f.StagedCode
+			statsMap = l.wipStagedStats
+		}
+		color := styles.FileStatusColor(code)
 
-	// --- Unstaged Files ---
+		selected := idx == cursorIdx && isFocused
+		bg := t.Base
+		prefix := "  "
+		if selected {
+			bg = t.Surface1
+			prefix = "▸ "
+		}
+
+		iconStr := lipgloss.NewStyle().Foreground(color).Render(icon)
+		pathStr := lipgloss.NewStyle().Foreground(t.Text).Render(" " + f.Path)
+		if selected {
+			iconStr = lipgloss.NewStyle().Foreground(color).Bold(true).Render(icon)
+			pathStr = lipgloss.NewStyle().Foreground(t.Text).Bold(true).Render(" " + f.Path)
+		}
+
+		var statStr string
+		if st, ok := statsMap[f.Path]; ok && (st.Added > 0 || st.Removed > 0) {
+			var statParts []string
+			if st.Added > 0 {
+				statParts = append(statParts, lipgloss.NewStyle().Foreground(t.Green).Render(fmt.Sprintf("+%d", st.Added)))
+			}
+			if st.Removed > 0 {
+				statParts = append(statParts, lipgloss.NewStyle().Foreground(t.Red).Render(fmt.Sprintf("-%d", st.Removed)))
+			}
+			statStr = " " + strings.Join(statParts, " ")
+		}
+
+		lineContent := lipgloss.NewStyle().MaxWidth(iw).Render(prefix + iconStr + pathStr + statStr)
+		return fillBg(lineContent, bg, iw)
+	}
+
+	// --- Build unstaged file lines ---
 	unstagedFocused := focused && l.wipFocus == wipFocusUnstaged
-	fileSections = append(fileSections, sectionTitle(fmt.Sprintf("▾ Unstaged Files (%d)", len(l.wipUnstaged)), "u", unstagedFocused))
-	fileSections = append(fileSections, bgLine("")) // margin bottom
-
+	var unstagedFileLines []string
 	if len(l.wipUnstaged) == 0 {
-		fileSections = append(fileSections, styles.DimStyle().Width(iw).Render("  Working tree clean"))
+		unstagedFileLines = append(unstagedFileLines, styles.DimStyle().Width(iw).Render("  Working tree clean"))
 	} else {
 		for i, f := range l.wipUnstaged {
-			icon := f.StatusIcon()
-			code := f.UnstagedCode
-			color := styles.FileStatusColor(code)
-
-			selected := i == l.wipUnstagedCursor && unstagedFocused
-			bg := t.Base
-			prefix := "  "
-			if selected {
-				bg = t.Surface1
-				prefix = "▸ "
-			}
-
-			// Build line with ANSI-safe segments (no .Background on segments)
-			iconStr := lipgloss.NewStyle().Foreground(color).Render(icon)
-			pathStr := lipgloss.NewStyle().Foreground(t.Text).Render(" " + f.Path)
-			if selected {
-				iconStr = lipgloss.NewStyle().Foreground(color).Bold(true).Render(icon)
-				pathStr = lipgloss.NewStyle().Foreground(t.Text).Bold(true).Render(" " + f.Path)
-			}
-
-			// Diff stats: +N -M
-			var statStr string
-			if st, ok := l.wipUnstagedStats[f.Path]; ok && (st.Added > 0 || st.Removed > 0) {
-				var statParts []string
-				if st.Added > 0 {
-					statParts = append(statParts, lipgloss.NewStyle().Foreground(t.Green).Render(fmt.Sprintf("+%d", st.Added)))
-				}
-				if st.Removed > 0 {
-					statParts = append(statParts, lipgloss.NewStyle().Foreground(t.Red).Render(fmt.Sprintf("-%d", st.Removed)))
-				}
-				statStr = " " + strings.Join(statParts, " ")
-			}
-
-			lineContent := lipgloss.NewStyle().MaxWidth(iw).Render(prefix + iconStr + pathStr + statStr)
-			fileSections = append(fileSections, fillBg(lineContent, bg, iw))
+			unstagedFileLines = append(unstagedFileLines, renderFileLine(f, i, l.wipUnstagedCursor, unstagedFocused, false))
 		}
 	}
 
-	fileSections = append(fileSections, bgLine(lipgloss.NewStyle().Foreground(t.Surface2).Background(t.Base).Render(strings.Repeat("─", iw))))
-
-	// --- Staged Files ---
+	// --- Build staged file lines ---
 	stagedFocused := focused && l.wipFocus == wipFocusStaged
-	fileSections = append(fileSections, sectionTitle(fmt.Sprintf("▾ Staged Files (%d)", len(l.wipStaged)), "s", stagedFocused))
-	fileSections = append(fileSections, bgLine("")) // margin bottom
-
+	var stagedFileLines []string
 	if len(l.wipStaged) == 0 {
-		fileSections = append(fileSections, styles.DimStyle().Width(iw).Render("  No files staged"))
+		stagedFileLines = append(stagedFileLines, styles.DimStyle().Width(iw).Render("  No files staged"))
 	} else {
 		for i, f := range l.wipStaged {
-			icon := f.StatusIcon()
-			code := f.StagedCode
-			color := styles.FileStatusColor(code)
-
-			selected := i == l.wipStagedCursor && stagedFocused
-			bg := t.Base
-			prefix := "  "
-			if selected {
-				bg = t.Surface1
-				prefix = "▸ "
-			}
-
-			// Build line with ANSI-safe segments (no .Background on segments)
-			iconStr := lipgloss.NewStyle().Foreground(color).Render(icon)
-			pathStr := lipgloss.NewStyle().Foreground(t.Text).Render(" " + f.Path)
-			if selected {
-				iconStr = lipgloss.NewStyle().Foreground(color).Bold(true).Render(icon)
-				pathStr = lipgloss.NewStyle().Foreground(t.Text).Bold(true).Render(" " + f.Path)
-			}
-
-			// Diff stats: +N -M
-			var statStr string
-			if st, ok := l.wipStagedStats[f.Path]; ok && (st.Added > 0 || st.Removed > 0) {
-				var statParts []string
-				if st.Added > 0 {
-					statParts = append(statParts, lipgloss.NewStyle().Foreground(t.Green).Render(fmt.Sprintf("+%d", st.Added)))
-				}
-				if st.Removed > 0 {
-					statParts = append(statParts, lipgloss.NewStyle().Foreground(t.Red).Render(fmt.Sprintf("-%d", st.Removed)))
-				}
-				statStr = " " + strings.Join(statParts, " ")
-			}
-
-			lineContent := lipgloss.NewStyle().MaxWidth(iw).Render(prefix + iconStr + pathStr + statStr)
-			fileSections = append(fileSections, fillBg(lineContent, bg, iw))
+			stagedFileLines = append(stagedFileLines, renderFileLine(f, i, l.wipStagedCursor, stagedFocused, true))
 		}
 	}
 
@@ -790,9 +905,9 @@ func (l LogPage) renderWIPDetail(width, height int) string {
 			hintText = "ctrl+s:commit  Tab:summary  Esc:stop"
 		}
 	} else if commitFocused {
-		hintText = "Enter:edit  A:amend  u:unstaged  s:staged"
+		hintText = "Enter:edit  A:amend"
 	} else {
-		hintText = "Enter:diff  spc:stage  a:all  A:amend  d:del"
+		hintText = ""
 	}
 	hintsLine := lipgloss.NewStyle().Background(t.Base).Width(iw).Render(
 		styles.KeyHintStyle().Render(hintText),
@@ -800,64 +915,212 @@ func (l LogPage) renderWIPDetail(width, height int) string {
 	hintHeight := strings.Count(hintsLine, "\n") + 1
 
 	// ---------------------------------------------------------------
-	// Compute file area height and pad/clip to fill the gap
-	// fileAreaHeight = ph - title(1) - titleGap(1) - commitBoxHeight - hintHeight
+	// Split file area into two independent sub-viewports so the staged
+	// section header is ALWAYS visible, even with many unstaged files.
+	// Layout: title(1) + gap(1) + [unstaged viewport] + separator(1)
+	//         + [staged viewport] + commitBox + hints
 	// ---------------------------------------------------------------
-	fileAreaHeight := ph - 2 - commitBoxHeight - hintHeight
-	if fileAreaHeight < 1 {
-		fileAreaHeight = 1
+	separatorHeight := 1
+	fileAreaHeight := ph - 2 - separatorHeight - commitBoxHeight - hintHeight
+	if fileAreaHeight < 2 {
+		fileAreaHeight = 2
 	}
 
-	fileContent := lipgloss.JoinVertical(lipgloss.Left, fileSections...)
-	fileLines := strings.Split(fileContent, "\n")
+	// Each sub-viewport gets: header(1) + margin(1) + file lines.
+	// Chrome per section = 2 (header + margin).
+	unstagedChrome := 2
+	stagedChrome := 2
 
-	// Viewport windowing: compute cursor's line position and scroll to keep it visible
-	if len(fileLines) > fileAreaHeight {
-		// Compute the cursor's line index within fileSections.
-		// Layout: unstaged header(1) + margin(1) + unstaged files/empty(N) + separator(1)
-		//         + staged header(1) + margin(1) + staged files/empty(M)
-		unstagedFileCount := len(l.wipUnstaged)
-		if unstagedFileCount == 0 {
-			unstagedFileCount = 1 // "Working tree clean" placeholder
-		}
-		stagedFileCount := len(l.wipStaged)
-		if stagedFileCount == 0 {
-			stagedFileCount = 1 // "No files staged" placeholder
-		}
+	// Allocate heights proportionally — staged gets at least enough to show
+	// header + margin + 1 visible file line (min 3), unstaged gets the rest.
+	unstagedDataLines := len(unstagedFileLines) // actual file rows (or 1 placeholder)
+	stagedDataLines := len(stagedFileLines)
 
-		cursorLine := 0
-		switch l.wipFocus {
-		case wipFocusUnstaged:
-			cursorLine = 2 + l.wipUnstagedCursor // header(1) + margin(1) + cursor offset
-		case wipFocusStaged:
-			cursorLine = 2 + unstagedFileCount + 1 + 2 + l.wipStagedCursor // unstaged section + separator(1) + staged header(1) + margin(1)
-		case wipFocusCommit:
-			// Commit box is below the file area — scroll to show end of files
-			cursorLine = 0
+	// Minimum staged viewport: chrome + 1 file line
+	minStagedHeight := stagedChrome + 1
+	if minStagedHeight > fileAreaHeight-unstagedChrome-1 {
+		minStagedHeight = fileAreaHeight - unstagedChrome - 1
+		if minStagedHeight < 1 {
+			minStagedHeight = 1
 		}
-
-		// Compute scroll offset
-		scrollOffset := 0
-		if cursorLine >= fileAreaHeight {
-			scrollOffset = cursorLine - fileAreaHeight + 1
-		}
-		if scrollOffset > len(fileLines)-fileAreaHeight {
-			scrollOffset = len(fileLines) - fileAreaHeight
-		}
-		if scrollOffset < 0 {
-			scrollOffset = 0
-		}
-		fileLines = fileLines[scrollOffset : scrollOffset+fileAreaHeight]
 	}
 
-	// Pad with empty bg lines if file list is shorter — this pushes commit area to the bottom
-	for len(fileLines) < fileAreaHeight {
-		fileLines = append(fileLines, lipgloss.NewStyle().Background(t.Base).Width(iw).Render(""))
+	// Desired heights (if there were unlimited space)
+	wantUnstaged := unstagedChrome + unstagedDataLines
+	wantStaged := stagedChrome + stagedDataLines
+	totalWant := wantUnstaged + wantStaged
+
+	var unstagedViewH, stagedViewH int
+	if totalWant <= fileAreaHeight {
+		// Everything fits — no scrolling needed
+		unstagedViewH = wantUnstaged
+		stagedViewH = fileAreaHeight - unstagedViewH
+	} else {
+		// Not everything fits — allocate proportionally with staged minimum
+		stagedViewH = minStagedHeight
+		remaining := fileAreaHeight - stagedViewH
+		if remaining < unstagedChrome+1 {
+			remaining = unstagedChrome + 1
+			stagedViewH = fileAreaHeight - remaining
+		}
+		// If staged has few items, give more to unstaged
+		if wantStaged < stagedViewH {
+			stagedViewH = wantStaged
+			remaining = fileAreaHeight - stagedViewH
+		}
+		unstagedViewH = remaining
 	}
-	fileContent = strings.Join(fileLines, "\n")
+
+	// Ensure minimums
+	if unstagedViewH < 1 {
+		unstagedViewH = 1
+	}
+	if stagedViewH < 1 {
+		stagedViewH = 1
+	}
+
+	// --- Render unstaged sub-viewport ---
+	unstagedHeader := sectionTitle(fmt.Sprintf("▾ Unstaged Files (%d)", len(l.wipUnstaged)), "u", unstagedFocused)
+	unstagedMargin := bgLine("")
+	unstagedContentH := unstagedViewH - unstagedChrome
+	if unstagedContentH < 0 {
+		unstagedContentH = 0
+	}
+
+	// Scroll unstaged viewport to keep cursor visible
+	if len(unstagedFileLines) > unstagedContentH && unstagedContentH > 0 {
+		if l.wipUnstagedScroll > l.wipUnstagedCursor {
+			l.wipUnstagedScroll = l.wipUnstagedCursor
+		}
+		if l.wipUnstagedCursor >= l.wipUnstagedScroll+unstagedContentH {
+			l.wipUnstagedScroll = l.wipUnstagedCursor - unstagedContentH + 1
+		}
+		maxScroll := len(unstagedFileLines) - unstagedContentH
+		if l.wipUnstagedScroll > maxScroll {
+			l.wipUnstagedScroll = maxScroll
+		}
+		if l.wipUnstagedScroll < 0 {
+			l.wipUnstagedScroll = 0
+		}
+	} else {
+		l.wipUnstagedScroll = 0
+	}
+
+	// Clip unstaged file lines to viewport
+	visibleUnstaged := unstagedFileLines
+	if len(visibleUnstaged) > unstagedContentH && unstagedContentH > 0 {
+		end := l.wipUnstagedScroll + unstagedContentH
+		if end > len(visibleUnstaged) {
+			end = len(visibleUnstaged)
+		}
+		visibleUnstaged = visibleUnstaged[l.wipUnstagedScroll:end]
+	}
+	// Pad to fill the viewport
+	for len(visibleUnstaged) < unstagedContentH {
+		visibleUnstaged = append(visibleUnstaged, bgLine(""))
+	}
+
+	// Build scroll indicator for unstaged
+	unstagedScrollHint := ""
+	if len(unstagedFileLines) > unstagedContentH && unstagedContentH > 0 {
+		if l.wipUnstagedScroll > 0 {
+			unstagedScrollHint += "↑"
+		}
+		if l.wipUnstagedScroll+unstagedContentH < len(unstagedFileLines) {
+			if unstagedScrollHint != "" {
+				unstagedScrollHint += " "
+			}
+			unstagedScrollHint += "↓"
+		}
+	}
+	if unstagedScrollHint != "" {
+		scrollTag := lipgloss.NewStyle().Foreground(t.Overlay0).Background(t.Base).Render(" " + unstagedScrollHint)
+		unstagedHeader = sectionTitle(fmt.Sprintf("▾ Unstaged (%d) %s", len(l.wipUnstaged), scrollTag), "u", unstagedFocused)
+	}
+
+	var unstagedSection []string
+	unstagedSection = append(unstagedSection, unstagedHeader)
+	unstagedSection = append(unstagedSection, unstagedMargin)
+	unstagedSection = append(unstagedSection, visibleUnstaged...)
+
+	// --- Separator ---
+	separator := bgLine(lipgloss.NewStyle().Foreground(t.Surface2).Background(t.Base).Render(strings.Repeat("─", iw)))
+
+	// --- Render staged sub-viewport ---
+	stagedHeader := sectionTitle(fmt.Sprintf("▾ Staged Files (%d)", len(l.wipStaged)), "s", stagedFocused)
+	stagedMargin := bgLine("")
+	stagedContentH := stagedViewH - stagedChrome
+	if stagedContentH < 0 {
+		stagedContentH = 0
+	}
+
+	// Scroll staged viewport to keep cursor visible
+	if len(stagedFileLines) > stagedContentH && stagedContentH > 0 {
+		if l.wipStagedScroll > l.wipStagedCursor {
+			l.wipStagedScroll = l.wipStagedCursor
+		}
+		if l.wipStagedCursor >= l.wipStagedScroll+stagedContentH {
+			l.wipStagedScroll = l.wipStagedCursor - stagedContentH + 1
+		}
+		maxScroll := len(stagedFileLines) - stagedContentH
+		if l.wipStagedScroll > maxScroll {
+			l.wipStagedScroll = maxScroll
+		}
+		if l.wipStagedScroll < 0 {
+			l.wipStagedScroll = 0
+		}
+	} else {
+		l.wipStagedScroll = 0
+	}
+
+	// Clip staged file lines to viewport
+	visibleStaged := stagedFileLines
+	if len(visibleStaged) > stagedContentH && stagedContentH > 0 {
+		end := l.wipStagedScroll + stagedContentH
+		if end > len(visibleStaged) {
+			end = len(visibleStaged)
+		}
+		visibleStaged = visibleStaged[l.wipStagedScroll:end]
+	}
+	// Pad to fill the viewport
+	for len(visibleStaged) < stagedContentH {
+		visibleStaged = append(visibleStaged, bgLine(""))
+	}
+
+	// Build scroll indicator for staged
+	stagedScrollHint := ""
+	if len(stagedFileLines) > stagedContentH && stagedContentH > 0 {
+		if l.wipStagedScroll > 0 {
+			stagedScrollHint += "↑"
+		}
+		if l.wipStagedScroll+stagedContentH < len(stagedFileLines) {
+			if stagedScrollHint != "" {
+				stagedScrollHint += " "
+			}
+			stagedScrollHint += "↓"
+		}
+	}
+	if stagedScrollHint != "" {
+		scrollTag := lipgloss.NewStyle().Foreground(t.Overlay0).Background(t.Base).Render(" " + stagedScrollHint)
+		stagedHeader = sectionTitle(fmt.Sprintf("▾ Staged (%d) %s", len(l.wipStaged), scrollTag), "s", stagedFocused)
+	}
+
+	var stagedSection []string
+	stagedSection = append(stagedSection, stagedHeader)
+	stagedSection = append(stagedSection, stagedMargin)
+	stagedSection = append(stagedSection, visibleStaged...)
 
 	// ---------------------------------------------------------------
-	// Assemble: title + file area (padded) + commit area (fixed height) + hints (pinned bottom)
+	// Assemble the file area from the two sub-viewports
+	// ---------------------------------------------------------------
+	var fileAreaParts []string
+	fileAreaParts = append(fileAreaParts, unstagedSection...)
+	fileAreaParts = append(fileAreaParts, separator)
+	fileAreaParts = append(fileAreaParts, stagedSection...)
+	fileContent := strings.Join(fileAreaParts, "\n")
+
+	// ---------------------------------------------------------------
+	// Assemble: title + gap + file area + commit area + hints
 	// ---------------------------------------------------------------
 	full := lipgloss.JoinVertical(lipgloss.Left, titleStr, titleGap, fileContent, commitContent, hintsLine)
 
@@ -866,6 +1129,19 @@ func (l LogPage) renderWIPDetail(width, height int) string {
 		full = strings.Join(cl[:ph], "\n")
 	}
 	return styles.ClipPanel(styles.PanelStyleColor(l.borderAnim.Color(anim.BorderRight, t.Surface1, t.Blue)).Width(width).Height(ph).Render(full), height)
+}
+
+// wipFilePageSize returns an approximate number of file lines visible in one
+// sub-viewport, used for ctrl+d / ctrl+u page-jump calculations.
+func (l LogPage) wipFilePageSize() int {
+	ph := l.height - styles.PanelBorderHeight
+	// Rough: title(1) + gap(1) + separator(1) + 2*chrome(2*2=4) + commitBox(~11) + hint(1) = ~19 chrome
+	// Each section gets about half the remaining space
+	fileArea := (ph - 19) / 2
+	if fileArea < 4 {
+		fileArea = 4
+	}
+	return fileArea
 }
 
 // ---------------------------------------------------------------------------

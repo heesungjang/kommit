@@ -7,8 +7,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/nicholascross/opengit/internal/tui/styles"
-	"github.com/nicholascross/opengit/internal/tui/theme"
+	"github.com/heesungjang/kommit/internal/tui/styles"
+	"github.com/heesungjang/kommit/internal/tui/theme"
 )
 
 // ansiBgRe matches ANSI escape sequences that set a background color.
@@ -18,15 +18,16 @@ var ansiBgRe = regexp.MustCompile(
 
 // StatusBar displays branch info, ahead/behind counts, and help hints.
 type StatusBar struct {
-	branch    string
-	ahead     int
-	behind    int
-	clean     bool
-	repoDir   string
-	width     int
-	bisecting bool
-	rebasing  bool
-	comparing string // non-empty when comparing commits (shows base hash)
+	branch     string
+	ahead      int
+	behind     int
+	clean      bool
+	repoDir    string
+	width      int
+	bisecting  bool
+	rebasing   bool
+	comparing  string // non-empty when comparing commits (shows base hash)
+	focusLabel string // name of the focused panel (e.g. "Sidebar", "Commits")
 }
 
 // NewStatusBar creates a new StatusBar component.
@@ -81,6 +82,12 @@ func (sb StatusBar) SetComparing(hash string) StatusBar {
 	return sb
 }
 
+// SetFocusLabel sets the label for the currently focused panel.
+func (sb StatusBar) SetFocusLabel(label string) StatusBar {
+	sb.focusLabel = label
+	return sb
+}
+
 // SetSize sets the width of the status bar.
 func (sb StatusBar) SetSize(width int) StatusBar {
 	sb.width = width
@@ -90,6 +97,16 @@ func (sb StatusBar) SetSize(width int) StatusBar {
 // Branch returns the current branch name.
 func (sb StatusBar) Branch() string {
 	return sb.branch
+}
+
+// IsBisecting returns whether a bisect session is active.
+func (sb StatusBar) IsBisecting() bool {
+	return sb.bisecting
+}
+
+// IsComparing returns whether compare mode is active.
+func (sb StatusBar) IsComparing() bool {
+	return sb.comparing != ""
 }
 
 // Init implements tea.Model.
@@ -159,9 +176,13 @@ func (sb StatusBar) View() string {
 		leftContent += lipgloss.NewStyle().Foreground(t.Overlay0).Render("  " + sb.repoDir)
 	}
 
-	// Right side: help hint (no bg on individual styles)
-	helpHint := styles.KeyStyle().Render("?") +
-		styles.KeyHintStyle().Render(":help")
+	// Right side: focus label + help hint
+	rightParts := ""
+	if sb.focusLabel != "" {
+		rightParts += lipgloss.NewStyle().Foreground(t.Blue).Bold(true).Render(sb.focusLabel) + "  "
+	}
+	rightParts += styles.KeyStyle().Render("?") + styles.KeyHintStyle().Render(":help")
+	helpHint := rightParts
 
 	// Calculate padding between left and right
 	leftWidth := lipgloss.Width(leftContent)
@@ -197,13 +218,13 @@ func (sb StatusBar) View() string {
 // hexToBgSeq converts a hex color string (e.g. "#313244") to an ANSI 24-bit
 // background escape sequence.
 func hexToBgSeq(hex string) string {
-	if len(hex) > 0 && hex[0] == '#' {
+	if hex != "" && hex[0] == '#' {
 		hex = hex[1:]
 	}
 	if len(hex) != 6 {
 		return ""
 	}
 	var r, g, b int
-	fmt.Sscanf(hex, "%02x%02x%02x", &r, &g, &b)
+	_, _ = fmt.Sscanf(hex, "%02x%02x%02x", &r, &g, &b)
 	return fmt.Sprintf("\x1b[48;2;%d;%d;%dm", r, g, b)
 }

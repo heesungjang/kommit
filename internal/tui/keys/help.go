@@ -99,7 +99,7 @@ func renderBar(bindings []key.Binding, width int) string {
 	sep := helpSepStyle.Render(barSep)
 	sepLen := len(barSep)
 
-	var parts []string
+	parts := make([]string, 0, len(entries))
 	remaining := width - 2 // account for padding
 
 	for i, e := range entries {

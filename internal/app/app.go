@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"github.com/nicholascross/opengit/internal/config"
-	"github.com/nicholascross/opengit/internal/git"
-	"github.com/nicholascross/opengit/internal/tui"
+	"github.com/heesungjang/kommit/internal/config"
+	"github.com/heesungjang/kommit/internal/git"
+	"github.com/heesungjang/kommit/internal/tui"
 )
 
 // Run is the main entry point for the application.

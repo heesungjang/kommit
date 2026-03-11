@@ -2,8 +2,8 @@ package tui
 
 import (
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/nicholascross/opengit/internal/config"
-	"github.com/nicholascross/opengit/internal/git"
+	"github.com/heesungjang/kommit/internal/config"
+	"github.com/heesungjang/kommit/internal/git"
 )
 
 // Run launches the opengit TUI, blocking until the user quits.

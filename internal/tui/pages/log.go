@@ -16,21 +16,21 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/nicholascross/opengit/internal/git"
-	"github.com/nicholascross/opengit/internal/tui/anim"
-	"github.com/nicholascross/opengit/internal/tui/components"
-	tuictx "github.com/nicholascross/opengit/internal/tui/context"
-	"github.com/nicholascross/opengit/internal/tui/dialog"
-	"github.com/nicholascross/opengit/internal/tui/keys"
-	"github.com/nicholascross/opengit/internal/tui/styles"
-	"github.com/nicholascross/opengit/internal/tui/theme"
+	"github.com/heesungjang/kommit/internal/git"
+	"github.com/heesungjang/kommit/internal/tui/anim"
+	"github.com/heesungjang/kommit/internal/tui/components"
+	tuictx "github.com/heesungjang/kommit/internal/tui/context"
+	"github.com/heesungjang/kommit/internal/tui/dialog"
+	"github.com/heesungjang/kommit/internal/tui/keys"
+	"github.com/heesungjang/kommit/internal/tui/styles"
+	"github.com/heesungjang/kommit/internal/tui/theme"
 )
 
 // ---------------------------------------------------------------------------
 // Messages
 // ---------------------------------------------------------------------------
 
-// logLoadedMsg, commitDetailMsg, centerDiffMsg, commitOpDoneMsg, undoTargetMsg — now in commit_list.go
+// logLoadedMsg, commitDetailMsg, centerDiffMsg, commitOpDoneMsg, undoTargetMsg, redoTargetMsg — now in commit_list.go
 
 // editorDoneMsg is sent when an external editor process exits.
 type editorDoneMsg struct {
@@ -90,6 +90,8 @@ type LogPage struct {
 	wipFocus          wipPanelFocus // which sub-panel is focused within the WIP detail
 	wipUnstagedStats  map[string]git.DiffStatEntry
 	wipStagedStats    map[string]git.DiffStatEntry
+	wipUnstagedScroll int // viewport scroll offset for unstaged file list
+	wipStagedScroll   int // viewport scroll offset for staged file list
 
 	// Inline commit message area (GitKraken-style, always visible in WIP)
 	commitSummary textinput.Model // single-line commit title/summary
@@ -111,6 +113,7 @@ type LogPage struct {
 
 	// Undo — reflog-based
 	pendingUndoHash string // captured at confirm time to avoid TOCTOU race
+	pendingRedoHash string // captured at confirm time to avoid TOCTOU race
 
 	// Stash diff display
 	viewingStash     bool
@@ -120,11 +123,13 @@ type LogPage struct {
 	// Center diff viewer — shows file diffs, hunk navigation, visual mode
 	diffViewer DiffViewer
 
-	// Search/filter
+	// Search/filter — inline per-panel search
 	searching   bool            // true when search input is active
 	searchInput textinput.Model // search text input
-	searchQuery string          // active filter query (applied after Enter)
 	searchPanel logFocus        // which panel the search is filtering
+
+	// Per-panel persisted filter queries (sidebar uses sidebar.filter directly)
+	commitFilterQuery string // active git-grep filter for commit list
 
 	// Focus
 	focus logFocus
@@ -165,7 +170,7 @@ func (l LogPage) panelLayout() panelWidths {
 	bw := styles.PanelBorderWidth
 
 	// --- Sidebar width ---
-	sbw := 0
+	var sbw int
 	if l.ctx != nil && l.ctx.Config != nil && l.ctx.Config.Appearance.SidebarWidth > 0 {
 		// Fixed width from config
 		sbw = l.ctx.Config.Appearance.SidebarWidth
@@ -327,7 +332,7 @@ func (l *LogPage) updateContext() {
 		if l.isWIPSelected() {
 			keys.ActiveContext = keys.ContextStatus
 		} else {
-			keys.ActiveContext = keys.ContextLog
+			keys.ActiveContext = keys.ContextDetail
 		}
 	}
 }
@@ -482,6 +487,13 @@ func (l LogPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if l.wipStagedCursor < 0 {
 			l.wipStagedCursor = 0
 		}
+		// Clamp sub-viewport scroll offsets after cursor clamping.
+		if l.wipUnstagedScroll > l.wipUnstagedCursor {
+			l.wipUnstagedScroll = l.wipUnstagedCursor
+		}
+		if l.wipStagedScroll > l.wipStagedCursor {
+			l.wipStagedScroll = l.wipStagedCursor
+		}
 		l.diffViewer.ScrollY = 0
 		l.diffViewer.ScrollX = 0
 		l.diffViewer.Lines = nil
@@ -553,7 +565,7 @@ func (l LogPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for i := range l.diffViewer.Hunks {
 			h := &l.diffViewer.Hunks[i]
 			for _, ln := range h.Lines {
-				if len(ln) == 0 {
+				if ln == "" {
 					h.CountOld++
 					h.CountNew++
 					continue
@@ -598,6 +610,19 @@ func (l LogPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				ID:      "undo-action",
 				Title:   "Undo?",
 				Message: "Undo: " + message + "?\n\nThis will reset --hard to " + short,
+			}
+		}
+
+	case redoTargetMsg:
+		// Store the target hash and show confirm dialog
+		l.pendingRedoHash = msg.hash
+		short := msg.shortHash
+		message := msg.message
+		return l, func() tea.Msg {
+			return RequestConfirmMsg{
+				ID:      "redo-action",
+				Title:   "Redo?",
+				Message: "Redo: " + message + "?\n\nThis will reset --hard to " + short,
 			}
 		}
 
@@ -694,6 +719,15 @@ func (l LogPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.ID == "undo-action" {
 			l.pendingUndoHash = ""
+		}
+		// Redo confirm
+		if msg.ID == "redo-action" && msg.Confirmed {
+			cmd := l.doRedoConfirmed()
+			l.pendingRedoHash = ""
+			return l, cmd
+		}
+		if msg.ID == "redo-action" {
+			l.pendingRedoHash = ""
 		}
 		// Bisect reset confirm
 		if msg.ID == "bisect-reset" && msg.Confirmed {
@@ -918,13 +952,27 @@ func (l LogPage) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Search — available from any panel (not in diff mode or visual mode)
+	// Search — available from sidebar and commit list (not detail panel, not in diff mode)
 	if key.Matches(msg, key.NewBinding(key.WithKeys("/"))) && !l.diffViewer.Active {
-		l.searching = true
-		l.searchPanel = l.focus
-		l.searchInput.SetValue("")
-		l.searchInput.Focus()
-		return l, l.searchInput.Focus()
+		if l.focus == focusSidebar || l.focus == focusLogList {
+			l.searching = true
+			l.searchPanel = l.focus
+			// Set context-aware placeholder, width, and pre-fill with existing filter
+			pw := l.panelLayout()
+			switch l.focus {
+			case focusSidebar:
+				l.searchInput.Placeholder = "filter branches, tags..."
+				l.searchInput.SetValue(l.sidebar.Filter())
+				l.searchInput.Width = pw.sidebar - styles.PanelPaddingWidth - 2 // -2 for prompt
+			case focusLogList:
+				l.searchInput.Placeholder = "search commits..."
+				l.searchInput.SetValue(l.commitFilterQuery)
+				l.searchInput.Width = pw.center - styles.PanelPaddingWidth - 2
+			}
+			l.searchInput.CursorEnd()
+			l.searchInput.Focus()
+			return l, l.searchInput.Focus()
+		}
 	}
 
 	switch l.focus {
@@ -1008,12 +1056,12 @@ func (l LogPage) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			if l.diffViewer.Active {
 				// Scroll center diff down
 				l.diffViewer.ScrollY += 3
-				max := len(l.diffViewer.Lines) - 10
-				if max < 0 {
-					max = 0
+				maxScroll := len(l.diffViewer.Lines) - 10
+				if maxScroll < 0 {
+					maxScroll = 0
 				}
-				if l.diffViewer.ScrollY > max {
-					l.diffViewer.ScrollY = max
+				if l.diffViewer.ScrollY > maxScroll {
+					l.diffViewer.ScrollY = maxScroll
 				}
 			} else if l.cursor < len(l.commits)-1 {
 				l.cursor++
@@ -1097,7 +1145,12 @@ func (l LogPage) View() string {
 	// Three-column layout: sidebar | center (commit list) | right (detail)
 	pw := l.panelLayout()
 
-	sidebarPane := l.sidebar.View(l.focus == focusSidebar, l.borderAnim.Color(anim.BorderSidebar, t.Surface1, t.Blue))
+	sidebarSearching := l.searching && l.searchPanel == focusSidebar
+	sidebarSearchView := ""
+	if sidebarSearching {
+		sidebarSearchView = l.searchInput.View()
+	}
+	sidebarPane := l.sidebar.View(l.focus == focusSidebar, l.borderAnim.Color(anim.BorderSidebar, t.Surface1, t.Blue), sidebarSearching, sidebarSearchView)
 
 	var centerPane string
 	if l.diffViewer.Active {
@@ -1115,54 +1168,7 @@ func (l LogPage) View() string {
 
 	layout := lipgloss.JoinHorizontal(lipgloss.Top, sidebarPane, centerPane, rightPane)
 
-	// Overlay search bar at the bottom when active
-	if l.searching {
-		searchBar := l.renderSearchBar()
-		// Replace the last line of the layout with the search bar
-		lines := strings.Split(layout, "\n")
-		if len(lines) > 0 {
-			lines[len(lines)-1] = searchBar
-		}
-		layout = strings.Join(lines, "\n")
-	} else if l.searchQuery != "" {
-		// Show active filter indicator
-		filterBar := l.renderFilterIndicator()
-		lines := strings.Split(layout, "\n")
-		if len(lines) > 0 {
-			lines[len(lines)-1] = filterBar
-		}
-		layout = strings.Join(lines, "\n")
-	}
-
 	return layout
-}
-
-// renderSearchBar renders the search input bar.
-func (l LogPage) renderSearchBar() string {
-	t := theme.Active
-	input := l.searchInput.View()
-	bar := lipgloss.NewStyle().
-		Foreground(t.Text).
-		Background(t.Surface0).
-		Width(l.width).
-		Render(input)
-	return bar
-}
-
-// renderFilterIndicator shows a small bar indicating an active search filter.
-func (l LogPage) renderFilterIndicator() string {
-	t := theme.Active
-	label := lipgloss.NewStyle().Foreground(t.Yellow).Bold(true).Render(" FILTER: ")
-	query := lipgloss.NewStyle().Foreground(t.Text).Render(l.searchQuery)
-	hint := lipgloss.NewStyle().Foreground(t.Overlay0).Render("  (/ to search, Esc in / to clear)")
-
-	content := label + query + hint
-	w := lipgloss.Width(content)
-	pad := ""
-	if w < l.width {
-		pad = strings.Repeat(" ", l.width-w)
-	}
-	return lipgloss.NewStyle().Background(t.Surface0).Render(content + pad)
 }
 
 // renderCommitList, renderCommitDetail, renderStashDiff — now in commit_list.go
@@ -1187,13 +1193,19 @@ func (l LogPage) IsSearching() bool {
 func (l LogPage) handleSearchKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
-		// Cancel search — clear query and close
+		// Cancel search — close input and clear filter for this panel
 		l.searching = false
 		l.searchInput.Blur()
-		// If there was a previous query, clear the filter
-		if l.searchQuery != "" {
-			l.searchQuery = ""
-			return l, l.loadLog() // reload unfiltered
+		switch l.searchPanel {
+		case focusLogList:
+			if l.commitFilterQuery != "" {
+				l.commitFilterQuery = ""
+				return l, l.loadLog() // reload unfiltered
+			}
+		case focusSidebar:
+			if l.sidebar.Filter() != "" {
+				l.sidebar = l.sidebar.ClearFilter()
+			}
 		}
 		return l, nil
 
@@ -1202,17 +1214,23 @@ func (l LogPage) handleSearchKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		l.searching = false
 		l.searchInput.Blur()
 		query := l.searchInput.Value()
-		l.searchQuery = query
 		if query == "" {
-			return l, l.loadLog() // empty query — reload unfiltered
+			// Empty query — clear filter for this panel
+			switch l.searchPanel {
+			case focusLogList:
+				l.commitFilterQuery = ""
+				return l, l.loadLog()
+			case focusSidebar:
+				l.sidebar = l.sidebar.ClearFilter()
+			}
+			return l, nil
 		}
 		// Apply filter depending on which panel initiated search
 		switch l.searchPanel {
 		case focusLogList:
-			// Server-side grep through commit messages
+			l.commitFilterQuery = query
 			return l, l.loadLogFiltered(query)
 		case focusSidebar:
-			// Client-side filter — filter sidebar items
 			l.sidebar = l.sidebar.SetFilter(query)
 			return l, nil
 		}
@@ -1273,7 +1291,7 @@ func truncate(s string, maxLen int) string {
 // persists across the entire line.
 func fillBg(s string, bg lipgloss.Color, width int) string {
 	hex := string(bg)
-	if len(hex) > 0 && hex[0] == '#' {
+	if hex != "" && hex[0] == '#' {
 		hex = hex[1:]
 	}
 	r, g, b := hexToRGB(hex)

@@ -5,9 +5,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	tuictx "github.com/nicholascross/opengit/internal/tui/context"
-	"github.com/nicholascross/opengit/internal/tui/keys"
-	"github.com/nicholascross/opengit/internal/tui/theme"
+	tuictx "github.com/heesungjang/kommit/internal/tui/context"
+	"github.com/heesungjang/kommit/internal/tui/keys"
+	"github.com/heesungjang/kommit/internal/tui/theme"
 )
 
 // ---------------------------------------------------------------------------
@@ -21,7 +21,7 @@ type HelpCloseMsg struct{}
 // Help model
 // ---------------------------------------------------------------------------
 
-// Help displays keybindings organised by context. The displayed bindings
+// Help displays keybindings organized by context. The displayed bindings
 // change depending on the active page when the help dialog was opened.
 type Help struct {
 	Base Base
@@ -39,8 +39,7 @@ func NewHelp(kctx keys.Context, pctx *tuictx.ProgramContext) Help {
 func (h Help) Init() tea.Cmd { return nil }
 
 func (h Help) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	if msg, ok := msg.(tea.KeyMsg); ok {
 		totalLines := len(h.buildContentLines())
 
 		switch {
@@ -113,7 +112,7 @@ func (h Help) buildContentLines() []string {
 
 	groups := keys.FullHelp(h.ctx)
 
-	var allLines []string
+	allLines := make([]string, 0, 64)
 	for i, group := range groups {
 		// Determine section label.
 		var label string
