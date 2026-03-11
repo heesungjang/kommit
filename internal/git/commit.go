@@ -34,12 +34,6 @@ func (r *Repository) CommitAmend(message string) error {
 	return err
 }
 
-// CommitWithEditor opens the user's editor for the commit message.
-func (r *Repository) CommitWithEditor() error {
-	_, err := r.run("commit")
-	return err
-}
-
 // LastCommit returns info about the most recent commit.
 func (r *Repository) LastCommit() (*CommitInfo, error) {
 	out, err := r.run("log", "-1", "--format=%H%n%h%n%an%n%ae%n%aI%n%s%n%b")

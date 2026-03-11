@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"strings"
 	"testing"
 )
 
@@ -52,5 +54,89 @@ func TestThemeOverrides_ZeroValue(t *testing.T) {
 	// All fields should be empty strings (zero value).
 	if o.Base != "" || o.Text != "" || o.Blue != "" {
 		t.Error("Zero-value ThemeOverrides should have empty strings")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Save tests
+// ---------------------------------------------------------------------------
+
+func TestSave_CreatesFile(t *testing.T) {
+	// Override HOME so we don't touch the real config.
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	cfg := DefaultConfig()
+	cfg.Theme = "catppuccin-latte"
+	cfg.Appearance.ShowGraph = false
+	cfg.Appearance.DiffMode = "side-by-side"
+
+	err := Save(&cfg)
+	if err != nil {
+		t.Fatalf("Save() error: %v", err)
+	}
+
+	// Verify the file was created.
+	path := tmpDir + "/.config/kommit/config.yaml"
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("config file not found: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "catppuccin-latte") {
+		t.Errorf("config file should contain theme name, got:\n%s", content)
+	}
+	if !strings.Contains(content, "side-by-side") {
+		t.Errorf("config file should contain diff mode, got:\n%s", content)
+	}
+}
+
+func TestSave_StripsSecrets(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	cfg := DefaultConfig()
+	cfg.AI.APIKey = "sk-supersecret-12345"
+	cfg.Hosting.Token = "ghp_secret_token"
+
+	err := Save(&cfg)
+	if err != nil {
+		t.Fatalf("Save() error: %v", err)
+	}
+
+	path := tmpDir + "/.config/kommit/config.yaml"
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("config file not found: %v", err)
+	}
+	content := string(data)
+	if strings.Contains(content, "supersecret") {
+		t.Error("config file should NOT contain API key")
+	}
+	if strings.Contains(content, "ghp_secret") {
+		t.Error("config file should NOT contain hosting token")
+	}
+}
+
+func TestSave_ShowGraphPersists(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	cfg := DefaultConfig()
+	cfg.Appearance.ShowGraph = false
+
+	err := Save(&cfg)
+	if err != nil {
+		t.Fatalf("Save() error: %v", err)
+	}
+
+	path := tmpDir + "/.config/kommit/config.yaml"
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("config file not found: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "showgraph: false") && !strings.Contains(content, "showGraph: false") {
+		t.Errorf("config file should contain showGraph: false, got:\n%s", content)
 	}
 }

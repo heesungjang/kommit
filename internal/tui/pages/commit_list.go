@@ -78,6 +78,15 @@ type redoTargetMsg struct {
 	message   string
 }
 
+// safeResetMsg triggers a stash-bracketed hard reset: stash uncommitted
+// changes, reset --hard, then pop stash. This preserves working directory
+// changes while performing undo/redo operations.
+type safeResetMsg struct {
+	hash  string
+	short string
+	op    string // "Undo" or "Redo"
+}
+
 // ---------------------------------------------------------------------------
 // Key handlers
 // ---------------------------------------------------------------------------
@@ -424,12 +433,17 @@ func (l LogPage) renderCommitList(width, height int) string {
 		end = len(l.commits)
 	}
 
+	// Check if graph display is enabled in settings.
+	showGraph := l.ctx == nil || l.ctx.Config == nil || l.ctx.Config.Appearance.ShowGraph
+
 	// Compute max graph width across ALL commits (not just visible) for consistent column layout.
 	graphWidth := 0
-	for _, gr := range l.graphRows {
-		w := len(gr.Cells)
-		if w > graphWidth {
-			graphWidth = w
+	if showGraph {
+		for _, gr := range l.graphRows {
+			w := len(gr.Cells)
+			if w > graphWidth {
+				graphWidth = w
+			}
 		}
 	}
 	// Each graph cell takes 1 character, plus 1 space separator after graph
@@ -449,10 +463,21 @@ func (l LogPage) renderCommitList(width, height int) string {
 		graphColWidth = maxGraph
 	}
 
+	// Check if compact log is enabled (hides date + author columns).
+	compactLog := l.ctx != nil && l.ctx.Config != nil && l.ctx.Config.Appearance.CompactLog
+
 	hashWidth := 8
 	dateWidth := 10
 	authorWidth := 15
-	subjectWidth := innerWidth - graphColWidth - hashWidth - dateWidth - authorWidth - 5
+	if compactLog {
+		dateWidth = 0
+		authorWidth = 0
+	}
+	separators := 5 // spaces between columns
+	if compactLog {
+		separators = 3 // fewer columns = fewer separators
+	}
+	subjectWidth := innerWidth - graphColWidth - hashWidth - dateWidth - authorWidth - separators
 	if subjectWidth < 10 {
 		subjectWidth = 10
 	}
@@ -559,8 +584,13 @@ func (l LogPage) renderCommitList(width, height int) string {
 		}
 
 		hash := lipgloss.NewStyle().Foreground(t.Yellow).Background(bg).Width(hashWidth).Render(c.ShortHash)
-		date := lipgloss.NewStyle().Foreground(t.Overlay0).Background(bg).Width(dateWidth).Render(c.Date.Format("2006-01-02"))
-		author := lipgloss.NewStyle().Foreground(t.Teal).Background(bg).Width(authorWidth).Render(truncate(c.Author, authorWidth))
+
+		// Date and author columns (hidden in compact mode)
+		var datePart, authorPart string
+		if !compactLog {
+			datePart = lipgloss.NewStyle().Foreground(t.Overlay0).Background(bg).Width(dateWidth).Render(c.Date.Format("2006-01-02"))
+			authorPart = lipgloss.NewStyle().Foreground(t.Teal).Background(bg).Width(authorWidth).Render(truncate(c.Author, authorWidth))
+		}
 
 		// Render ref badges and compute remaining subject width
 		badges := styles.RenderRefBadges(c.Refs, bg)
@@ -577,21 +607,21 @@ func (l LogPage) renderCommitList(width, height int) string {
 		}
 		subject := lipgloss.NewStyle().Foreground(t.Text).Background(bg).Width(effectiveSubjectWidth).Render(truncate(c.Subject, effectiveSubjectWidth))
 
-		var line string
+		// Build the commit row from parts.
+		var parts []string
 		if graphStr != "" {
-			if badgeWidth > 0 {
-				line = lipgloss.JoinHorizontal(lipgloss.Top, sp, graphStr, sp, compareMarker, hash, sp, date, sp, author, sp, badges, sp, subject)
-			} else {
-				line = lipgloss.JoinHorizontal(lipgloss.Top, sp, graphStr, sp, compareMarker, hash, sp, date, sp, author, sp, subject)
-			}
+			parts = append(parts, sp, graphStr, sp, compareMarker, hash)
 		} else {
-			sp2 := bgS.Render("  ")
-			if badgeWidth > 0 {
-				line = lipgloss.JoinHorizontal(lipgloss.Top, sp2, compareMarker, hash, sp, date, sp, author, sp, badges, sp, subject)
-			} else {
-				line = lipgloss.JoinHorizontal(lipgloss.Top, sp2, compareMarker, hash, sp, date, sp, author, sp, subject)
-			}
+			parts = append(parts, bgS.Render("  "), compareMarker, hash)
 		}
+		if !compactLog {
+			parts = append(parts, sp, datePart, sp, authorPart)
+		}
+		if badgeWidth > 0 {
+			parts = append(parts, sp, badges)
+		}
+		parts = append(parts, sp, subject)
+		line := lipgloss.JoinHorizontal(lipgloss.Top, parts...)
 
 		lineStyle := lipgloss.NewStyle().Background(bg).Width(innerWidth)
 		if selected {
@@ -1629,7 +1659,6 @@ func (l LogPage) doUndo() tea.Cmd {
 }
 
 func (l LogPage) doUndoConfirmed() tea.Cmd {
-	repo := l.repo
 	hash := l.pendingUndoHash
 	if hash == "" {
 		return func() tea.Msg {
@@ -1641,11 +1670,7 @@ func (l LogPage) doUndoConfirmed() tea.Cmd {
 		short = short[:7]
 	}
 	return func() tea.Msg {
-		err := repo.ResetHard(hash)
-		if err != nil {
-			return RequestToastMsg{Message: "Undo failed: " + err.Error(), IsError: true}
-		}
-		return commitOpDoneMsg{op: "Undo to " + short}
+		return safeResetMsg{hash: hash, short: short, op: "Undo"}
 	}
 }
 
@@ -1673,7 +1698,6 @@ func (l LogPage) doRedo() tea.Cmd {
 }
 
 func (l LogPage) doRedoConfirmed() tea.Cmd {
-	repo := l.repo
 	hash := l.pendingRedoHash
 	if hash == "" {
 		return func() tea.Msg {
@@ -1685,11 +1709,7 @@ func (l LogPage) doRedoConfirmed() tea.Cmd {
 		short = short[:7]
 	}
 	return func() tea.Msg {
-		err := repo.ResetHard(hash)
-		if err != nil {
-			return RequestToastMsg{Message: "Redo failed: " + err.Error(), IsError: true}
-		}
-		return commitOpDoneMsg{op: "Redo to " + short}
+		return safeResetMsg{hash: hash, short: short, op: "Redo"}
 	}
 }
 

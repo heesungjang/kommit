@@ -4,7 +4,6 @@ package config
 type Config struct {
 	Theme          string           `json:"theme" mapstructure:"theme"`
 	Debug          bool             `json:"debug" mapstructure:"debug"`
-	Editor         string           `json:"editor" mapstructure:"editor"`
 	AI             AIConfig         `json:"ai" mapstructure:"ai"`
 	Hosting        HostingConfig    `json:"hosting" mapstructure:"hosting"`
 	Keybinds       KeybindConfig    `json:"keybinds" mapstructure:"keybinds"`
@@ -92,12 +91,11 @@ type ThemeOverrides struct {
 // DefaultConfig returns the default configuration.
 func DefaultConfig() Config {
 	return Config{
-		Theme:  "catppuccin-mocha",
-		Debug:  false,
-		Editor: "",
+		Theme: "catppuccin-mocha",
+		Debug: false,
 		AI: AIConfig{
 			Provider: "anthropic",
-			Model:    "claude-sonnet-4-20250514",
+			Model:    "claude-sonnet-4-6",
 		},
 		Hosting: HostingConfig{
 			Provider: "auto",

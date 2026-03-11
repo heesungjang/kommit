@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/heesungjang/kommit/internal/ai"
 	"github.com/heesungjang/kommit/internal/config"
 	"github.com/heesungjang/kommit/internal/git"
 	"github.com/heesungjang/kommit/internal/tui/components"
@@ -110,6 +112,9 @@ type App struct {
 	// (the App value is copied at the start of Update and returned at the end).
 	customCmdList []config.CustomCommand
 	customCmdVars customcmd.TemplateVars
+
+	// Pending commit — held while the confirm dialog is shown.
+	pendingCommitMsg *dialog.CommitRequestMsg
 }
 
 // NewApp creates a new App rooted at the given repository.
@@ -204,6 +209,107 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.dialog = nil
 		return a, nil
 
+	// -- Settings dialog close -----------------------------------------------
+	case dialog.SettingsCloseMsg:
+		a.showDialog = false
+		a.dialog = nil
+		return a, nil
+
+	// -- AI Setup dialog result -----------------------------------------------
+	case dialog.AISetupResultMsg:
+		a.showDialog = false
+		a.dialog = nil
+
+		// Copilot uses a browser OAuth flow — open the Copilot OAuth dialog.
+		if msg.Provider == "copilot" && msg.APIKey == "__copilot_oauth__" {
+			cfg := a.ctx.Config
+			if cfg != nil {
+				cfg.AI.Provider = "copilot"
+				cfg.AI.Model = ai.DefaultModel("copilot")
+			}
+			dlg := dialog.NewCopilotOAuth(a.ctx)
+			a.dialog = dlg
+			a.showDialog = true
+			return a, dlg.Init()
+		}
+
+		// Save the API key to credentials file and update config.
+		provider := msg.Provider
+		apiKey := msg.APIKey
+		cfg := a.ctx.Config
+		if cfg != nil {
+			cfg.AI.Provider = provider
+			cfg.AI.Model = ai.DefaultModel(provider)
+		}
+		// Save credentials, update config on disk, then trigger AI generation.
+		return a, func() tea.Msg {
+			// Save API key to auth.json (separate from config).
+			if apiKey != "" {
+				_ = ai.SetAPIKey(provider, apiKey)
+			}
+			// Save provider change to config.
+			if cfg != nil {
+				cfgCopy := *cfg
+				_ = config.Save(&cfgCopy)
+			}
+			// Re-trigger AI commit generation now that we have a key.
+			return pages.RequestAICommitMsg{}
+		}
+
+	case dialog.AISetupCancelMsg:
+		a.showDialog = false
+		a.dialog = nil
+		// Reset the aiGenerating flag by sending an error back to the LogPage.
+		return a, func() tea.Msg {
+			return pages.AICommitErrorMsg{Err: fmt.Errorf("AI setup canceled")}
+		}
+
+	// -- Copilot OAuth dialog result -----------------------------------------
+	case dialog.CopilotOAuthResultMsg:
+		a.showDialog = false
+		a.dialog = nil
+		ghToken := msg.GitHubToken
+		cpToken := msg.CopilotToken
+		cfg := a.ctx.Config
+		return a, func() tea.Msg {
+			// Save the GitHub token for future refresh, and the Copilot token for API calls.
+			_ = ai.SetAPIKey("copilot", ghToken)
+			if cfg != nil {
+				cfgCopy := *cfg
+				_ = config.Save(&cfgCopy)
+			}
+			// Set the Copilot bearer token in-memory for this session.
+			if cfg != nil {
+				cfg.AI.APIKey = cpToken
+			}
+			return pages.RequestAICommitMsg{}
+		}
+
+	case dialog.CopilotOAuthErrorMsg:
+		a.showDialog = false
+		a.dialog = nil
+		errMsg := msg.Err.Error()
+		return a, func() tea.Msg {
+			return pages.AICommitErrorMsg{Err: fmt.Errorf("Copilot login: %s", errMsg)}
+		}
+
+	case dialog.CopilotOAuthCancelMsg:
+		a.showDialog = false
+		a.dialog = nil
+		return a, func() tea.Msg {
+			return pages.AICommitErrorMsg{Err: fmt.Errorf("Copilot login canceled")}
+		}
+
+	// -- Settings change (theme swap, toggles, etc.) -------------------------
+	case dialog.SettingsChangeMsg:
+		return a, a.applySettingsChange(msg)
+
+	// -- Settings updated — forward to main view even while dialog is open --
+	case pages.SettingsUpdatedMsg:
+		var cmd tea.Cmd
+		a.mainView, cmd = a.mainView.Update(msg)
+		return a, cmd
+
 	// -- Confirm dialog result -----------------------------------------------
 	case dialog.ConfirmResultMsg:
 		a.showDialog = false
@@ -228,6 +334,30 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						a.customCmdList[i] = cc
 						return a, a.executeCustomCommand(i)
 					}
+				}
+			}
+			return a, nil
+		}
+		// Handle commit confirmation.
+		if msg.ID == "commit" {
+			pending := a.pendingCommitMsg
+			a.pendingCommitMsg = nil
+			if msg.Confirmed && pending != nil {
+				if pending.Amend {
+					return a, a.doCommitAmend(pending.Message)
+				}
+				return a, a.doCommit(pending.Message)
+			}
+			// Canceled — restore the commit message in the WIP panel.
+			if pending != nil {
+				summary := pending.Message
+				desc := ""
+				if idx := strings.Index(summary, "\n\n"); idx >= 0 {
+					desc = strings.TrimSpace(summary[idx+2:])
+					summary = summary[:idx]
+				}
+				return a, func() tea.Msg {
+					return pages.RestoreCommitMsg{Summary: summary, Description: desc}
 				}
 			}
 			return a, nil
@@ -259,10 +389,21 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case dialog.CommitRequestMsg:
 		a.showDialog = false
 		a.dialog = nil
+		// Store the pending commit and show a confirmation dialog.
+		a.pendingCommitMsg = &msg
+		title := "Commit?"
+		body := msg.Message
 		if msg.Amend {
-			return a, a.doCommitAmend(msg.Message)
+			title = "Amend commit?"
 		}
-		return a, a.doCommit(msg.Message)
+		// Truncate the body shown in the confirm dialog to keep it readable.
+		if len(body) > 120 {
+			body = body[:117] + "..."
+		}
+		dlg := dialog.NewConfirm("commit", title, body, a.ctx)
+		a.dialog = dlg
+		a.showDialog = true
+		return a, dlg.Init()
 
 	case dialog.CommitCancelMsg:
 		a.showDialog = false
@@ -446,6 +587,28 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.statusBar = a.statusBar.SetClean(!msg.Dirty)
 		return a, nil
 
+	// -- AI commit message request from WIP panel --------------------------
+	case pages.RequestAICommitMsg:
+		return a, a.generateAICommitMessage()
+
+	// -- AI commit result — route back to main view ----------------------
+	case pages.AICommitResultMsg:
+		var cmd tea.Cmd
+		a.mainView, cmd = a.mainView.Update(msg)
+		return a, cmd
+
+	case pages.AICommitErrorMsg:
+		var cmd tea.Cmd
+		a.mainView, cmd = a.mainView.Update(msg)
+		return a, cmd
+
+	// -- Settings change request from pages (e.g. V key toggle) ------------
+	case pages.RequestSettingsChangeMsg:
+		return a, a.applySettingsChange(dialog.SettingsChangeMsg{
+			Key:   msg.Key,
+			Value: msg.Value,
+		})
+
 	// -- Toast request from pages -------------------------------------------
 	case pages.RequestToastMsg:
 		if msg.IsError {
@@ -538,6 +701,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if cmd := a.buildCustomCommandsMenu("global", customcmd.TemplateVars{}); cmd != nil {
 					return a, cmd
 				}
+			case key.Matches(msg, a.keys.Settings):
+				return a, a.openSettings()
 			}
 		}
 
@@ -829,6 +994,178 @@ func friendlyGitError(op string, err error) string {
 		}
 	}
 	return msg
+}
+
+// ---------------------------------------------------------------------------
+// Settings
+// ---------------------------------------------------------------------------
+
+// openSettings creates and shows the settings dialog.
+func (a App) openSettings() tea.Cmd {
+	cfg := a.ctx.Config
+	pctx := a.ctx
+	return func() tea.Msg {
+		return showDialogMsg{model: dialog.NewSettings(cfg, pctx)}
+	}
+}
+
+// applySettingsChange handles a settings change: updates the in-memory config,
+// applies the change to the running app, and persists to disk.
+func (a App) applySettingsChange(msg dialog.SettingsChangeMsg) tea.Cmd {
+	cfg := a.ctx.Config
+	if cfg == nil {
+		return nil
+	}
+
+	themeChanged := false
+
+	switch msg.Key {
+	case "theme":
+		// Hot-swap theme: update config, rebuild theme, update context.
+		cfg.Theme = msg.Value
+		newTheme := theme.Get(msg.Value)
+		// Apply color overrides from config.
+		o := cfg.Appearance.ThemeColors
+		newTheme.ApplyOverrides(theme.ColorOverrides{
+			Base: o.Base, Mantle: o.Mantle, Crust: o.Crust,
+			Surface0: o.Surface0, Surface1: o.Surface1, Surface2: o.Surface2,
+			Overlay0: o.Overlay0, Overlay1: o.Overlay1,
+			Text: o.Text, Subtext0: o.Subtext0, Subtext1: o.Subtext1,
+			Red: o.Red, Green: o.Green, Yellow: o.Yellow, Blue: o.Blue,
+			Mauve: o.Mauve, Pink: o.Pink, Teal: o.Teal, Sky: o.Sky,
+			Peach: o.Peach, Maroon: o.Maroon, Lavender: o.Lavender,
+			Flamingo: o.Flamingo, Rosewater: o.Rosewater, Sapphire: o.Sapphire,
+		})
+		theme.Active = newTheme
+		a.ctx.Theme = newTheme
+		a.ctx.Styles = tuictx.InitStyles(newTheme)
+		themeChanged = true
+
+	case "appearance.diffMode":
+		cfg.Appearance.DiffMode = msg.Value
+
+	case "appearance.showGraph":
+		cfg.Appearance.ShowGraph = msg.Value == "true"
+
+	case "appearance.compactLog":
+		cfg.Appearance.CompactLog = msg.Value == "true"
+
+	case "ai.provider":
+		cfg.AI.Provider = msg.Value
+		// Auto-reset model to the new provider's default so we don't send
+		// e.g. a Claude model name to the OpenAI API.
+		cfg.AI.Model = ai.DefaultModel(msg.Value)
+
+	case "ai.model":
+		cfg.AI.Model = msg.Value
+	}
+
+	// Notify pages of the change so they can sync local state.
+	settingKey := msg.Key
+	settingValue := msg.Value
+	cmds := []tea.Cmd{
+		func() tea.Msg {
+			return pages.SettingsUpdatedMsg{Key: settingKey, Value: settingValue}
+		},
+	}
+
+	// Force a full screen clear on theme changes so the terminal repaints
+	// all lines atomically instead of updating them one-by-one (which causes
+	// a visible top-to-bottom "wipe" effect on many terminals).
+	if themeChanged {
+		cmds = append(cmds, tea.ClearScreen)
+	}
+
+	// Persist config to disk — but skip for preview changes (the user
+	// hasn't confirmed yet, and they might cancel).
+	if !msg.Preview {
+		cfgCopy := *cfg
+		cmds = append(cmds, func() tea.Msg {
+			_ = config.Save(&cfgCopy)
+			return nil
+		})
+	}
+
+	return tea.Batch(cmds...)
+}
+
+// ---------------------------------------------------------------------------
+// AI commit message generation
+// ---------------------------------------------------------------------------
+
+// generateAICommitMessage gathers the staged diff and sends it to the
+// configured AI provider to generate a commit message. The result is
+// delivered back as an AICommitResultMsg or AICommitErrorMsg.
+func (a App) generateAICommitMessage() tea.Cmd {
+	cfg := a.ctx.Config
+	if cfg == nil {
+		return func() tea.Msg {
+			return pages.AICommitErrorMsg{Err: fmt.Errorf("no configuration loaded")}
+		}
+	}
+
+	// Resolve API key: config/env > saved credentials.
+	apiKey := ai.GetAPIKey(cfg.AI.Provider, cfg.AI.APIKey)
+	if apiKey == "" && cfg.AI.Provider != "openai-compatible" {
+		// No API key — open the AI Setup dialog for first-time configuration.
+		// Reset aiGenerating on the LogPage since we're not actually generating.
+		pctx := a.ctx
+		return func() tea.Msg {
+			return showDialogMsg{model: dialog.NewAISetup(pctx)}
+		}
+	}
+
+	// Build provider config with resolved key.
+	aiCfg := cfg.AI
+	aiCfg.APIKey = apiKey
+
+	repo := a.ctx.Repo
+	isCopilot := cfg.AI.Provider == "copilot"
+	return func() tea.Msg {
+		// For Copilot, the saved credential is the GitHub OAuth token.
+		// We need to exchange it for a short-lived Copilot bearer token
+		// before each generation (the bearer token expires frequently).
+		if isCopilot && aiCfg.APIKey != "" {
+			exchCtx, exchCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer exchCancel()
+			cpToken, err := ai.ExchangeForCopilotToken(exchCtx, aiCfg.APIKey)
+			if err != nil {
+				return pages.AICommitErrorMsg{Err: fmt.Errorf("copilot token refresh: %w", err)}
+			}
+			aiCfg.APIKey = cpToken.Token
+		}
+
+		// Get staged diff as raw text for the AI prompt.
+		diff, err := repo.DiffStagedRaw()
+		if err != nil {
+			return pages.AICommitErrorMsg{Err: fmt.Errorf("get staged diff: %w", err)}
+		}
+		if strings.TrimSpace(diff) == "" {
+			return pages.AICommitErrorMsg{Err: fmt.Errorf("no staged changes")}
+		}
+
+		// Get diff stat for file-level summary.
+		stat, _ := repo.DiffStatStagedRaw()
+
+		// Create provider and generate.
+		provider, err := ai.NewProvider(&aiCfg)
+		if err != nil {
+			return pages.AICommitErrorMsg{Err: err}
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		msg, err := provider.GenerateCommitMessage(ctx, diff, stat)
+		if err != nil {
+			return pages.AICommitErrorMsg{Err: err}
+		}
+
+		return pages.AICommitResultMsg{
+			Summary:     msg.Summary,
+			Description: msg.Description,
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------

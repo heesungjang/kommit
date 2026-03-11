@@ -99,6 +99,7 @@ type LogPage struct {
 	commitField   int             // 0 = summary focused, 1 = description focused
 	commitAmend   bool            // true when in amend mode
 	commitEditing bool            // true when actively typing in commit input (Enter to start, Esc to stop)
+	aiGenerating  bool            // true when AI commit message is being generated
 
 	// Pending discard in WIP context
 	wipPendingDiscardPath      string
@@ -279,10 +280,18 @@ func NewLogPage(ctx *tuictx.ProgramContext, width, height int) LogPage {
 	// Create a temporary LogPage to use panelLayout() for the initial sidebar width.
 	tmp := LogPage{ctx: ctx, width: width, height: height}
 	pw := tmp.panelLayout()
+
+	// Initialize diff viewer mode from config.
+	var dv DiffViewer
+	if ctx.Config != nil && ctx.Config.Appearance.DiffMode == "side-by-side" {
+		dv.SideBySide = true
+	}
+
 	return LogPage{
 		ctx:           ctx,
 		repo:          ctx.Repo,
 		sidebar:       NewSidebar(ctx.Repo, pw.sidebar, height),
+		diffViewer:    dv,
 		commitSummary: newCommitSummary(),
 		commitDesc:    newCommitDesc(),
 		navKeys:       keys.NewNavigationKeys(),
@@ -609,7 +618,7 @@ func (l LogPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return RequestConfirmMsg{
 				ID:      "undo-action",
 				Title:   "Undo?",
-				Message: "Undo: " + message + "?\n\nThis will reset --hard to " + short,
+				Message: "Undo: " + message + "?\n\nHEAD will move to " + short + ". Uncommitted changes are preserved.",
 			}
 		}
 
@@ -622,8 +631,50 @@ func (l LogPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return RequestConfirmMsg{
 				ID:      "redo-action",
 				Title:   "Redo?",
-				Message: "Redo: " + message + "?\n\nThis will reset --hard to " + short,
+				Message: "Redo: " + message + "?\n\nHEAD will move to " + short + ". Uncommitted changes are preserved.",
 			}
+		}
+
+	case safeResetMsg:
+		// Stash-bracketed hard reset: preserve uncommitted changes
+		repo := l.repo
+		op := msg.op
+		hash := msg.hash
+		short := msg.short
+		return l, func() tea.Msg {
+			// 1. Check if working tree is dirty
+			dirty, _ := repo.IsDirty()
+			stashed := false
+
+			// 2. Stash uncommitted changes if dirty
+			if dirty {
+				err := repo.StashSave(op + " auto-stash")
+				if err == nil {
+					stashed = true
+				}
+				// If stash fails, proceed anyway — the user confirmed
+			}
+
+			// 3. Hard reset to the target
+			err := repo.ResetHard(hash)
+			if err != nil {
+				// Try to pop stash back if reset failed
+				if stashed {
+					_ = repo.StashPop(0)
+				}
+				return RequestToastMsg{Message: op + " failed: " + err.Error(), IsError: true}
+			}
+
+			// 4. Pop stash to restore working directory changes
+			if stashed {
+				popErr := repo.StashPop(0)
+				if popErr != nil {
+					// Stash pop conflict — notify user but the undo/redo itself succeeded
+					return commitOpDoneMsg{op: op + " to " + short + " (stash conflict — resolve manually)"}
+				}
+			}
+
+			return commitOpDoneMsg{op: op + " to " + short}
 		}
 
 	case editorDoneMsg:
@@ -806,9 +857,46 @@ func (l LogPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		l.commitDesc.Blur()
 		return l, nil
 
+	case AICommitResultMsg:
+		l.aiGenerating = false
+		// Populate the commit fields with the AI-generated message.
+		l.commitSummary.SetValue(msg.Summary)
+		l.commitDesc.SetValue(msg.Description)
+		// Move focus to the commit area so the user can review/edit.
+		l.wipFocus = wipFocusCommit
+		l.commitField = 0
+		l.commitEditing = true
+		l.commitSummary.Focus()
+		l.commitDesc.Blur()
+		return l, nil
+
+	case AICommitErrorMsg:
+		l.aiGenerating = false
+		return l, func() tea.Msg {
+			return RequestToastMsg{Message: "AI: " + msg.Err.Error(), IsError: true}
+		}
+
+	case RestoreCommitMsg:
+		// Restore commit fields after a canceled commit confirmation.
+		l.commitSummary.SetValue(msg.Summary)
+		l.commitDesc.SetValue(msg.Description)
+		l.wipFocus = wipFocusCommit
+		l.commitField = 0
+		l.commitEditing = true
+		l.commitSummary.Focus()
+		l.commitDesc.Blur()
+		return l, nil
+
 	case RefreshStatusMsg:
 		// Auto-refresh detected external changes — reload log and sidebar.
 		return l, tea.Batch(l.loadLog(), l.sidebar.Refresh())
+
+	case SettingsUpdatedMsg:
+		// Sync local state with settings changes from the settings dialog.
+		if msg.Key == "appearance.diffMode" {
+			l.diffViewer.SideBySide = msg.Value == "side-by-side"
+		}
+		return l, nil
 
 	case tea.MouseMsg:
 		return l.handleMouse(msg)

@@ -61,16 +61,27 @@ func (h Help) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return h, nil
 }
 
-// sectionNames labels each group returned by keys.FullHelp for display.
+// sectionNames labels each base group returned by keys.FullHelp for display.
+// The order must match the base groups in keys.FullHelp: global, panels, navigation.
 var sectionNames = []string{
 	"Global",
-	"Tabs",
 	"Panels",
 	"Navigation",
 }
 
+// contextSectionNames returns labels for all context-specific groups.
+// Most contexts have 1 extra group; ContextLog has 2 (commit ops + remote ops).
+func contextSectionNames(ctx keys.Context) []string {
+	switch ctx {
+	case keys.ContextLog:
+		return []string{"Commit Operations", "Remote"}
+	default:
+		return []string{contextSectionName(ctx)}
+	}
+}
+
 // contextSectionName returns a human-readable label for the context-specific
-// binding group (the 5th group in FullHelp output).
+// binding group (groups beyond the 3 base groups in FullHelp output).
 func contextSectionName(ctx keys.Context) string {
 	switch ctx {
 	case keys.ContextStatus:
@@ -111,6 +122,7 @@ func (h Help) buildContentLines() []string {
 	sectionStyle := lipgloss.NewStyle().Foreground(t.Yellow).Background(t.Surface0).Bold(true)
 
 	groups := keys.FullHelp(h.ctx)
+	contextLabels := contextSectionNames(h.ctx)
 
 	allLines := make([]string, 0, 64)
 	for i, group := range groups {
@@ -119,7 +131,12 @@ func (h Help) buildContentLines() []string {
 		if i < len(sectionNames) {
 			label = sectionNames[i]
 		} else {
-			label = contextSectionName(h.ctx)
+			ci := i - len(sectionNames) // index into context-specific groups
+			if ci < len(contextLabels) {
+				label = contextLabels[ci]
+			} else {
+				label = contextSectionName(h.ctx)
+			}
 		}
 
 		// Convert bindings to entries, skip empty groups.

@@ -208,7 +208,13 @@ func (d *DiffViewer) HandleKeys(msg tea.KeyMsg, navKeys keys.NavigationKeys, rep
 	// Toggle side-by-side / inline diff view
 	case key.Matches(msg, key.NewBinding(key.WithKeys("V"))):
 		d.SideBySide = !d.SideBySide
-		return true, nil
+		mode := "inline"
+		if d.SideBySide {
+			mode = "side-by-side"
+		}
+		return true, func() tea.Msg {
+			return RequestSettingsChangeMsg{Key: "appearance.diffMode", Value: mode}
+		}
 
 	// Hunk navigation
 	case key.Matches(msg, key.NewBinding(key.WithKeys("n", "]"))):

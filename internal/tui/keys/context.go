@@ -77,6 +77,7 @@ func ShortHelp(ctx Context) []key.Binding {
 	common := []key.Binding{
 		Global.Help,
 		Global.CommandPalette,
+		Global.Settings,
 	}
 
 	switch ctx {
@@ -196,6 +197,7 @@ func FullHelp(ctx Context) [][]key.Binding {
 		Global.Search,
 		Global.CommandPalette,
 		Global.CustomCommands,
+		Global.Settings,
 	}
 
 	panelGroup := []key.Binding{

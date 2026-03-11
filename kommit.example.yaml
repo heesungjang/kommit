@@ -179,9 +179,9 @@ customCommands:
 # AI Configuration
 # ---------------------------------------------------------------------------
 ai:
-  # Provider: anthropic, openai, ollama
+  # Provider: copilot, anthropic, openai, openai-compatible
   provider: anthropic
-  model: claude-sonnet-4-20250514
+  model: claude-sonnet-4-6
   # API key (prefer environment variables ANTHROPIC_API_KEY or OPENAI_API_KEY)
   # apiKey: ""
   # Custom base URL for self-hosted models

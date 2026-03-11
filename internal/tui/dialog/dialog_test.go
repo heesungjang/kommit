@@ -2,6 +2,11 @@ package dialog
 
 import (
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/heesungjang/kommit/internal/config"
+	tuictx "github.com/heesungjang/kommit/internal/tui/context"
 )
 
 // ---------------------------------------------------------------------------
@@ -508,4 +513,358 @@ func TestEnsureVisible(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ---------------------------------------------------------------------------
+// ListPicker tests
+// ---------------------------------------------------------------------------
+
+func TestListPickerNew(t *testing.T) {
+	opts := []ListPickerOption{
+		{Label: "Alpha", Value: "a"},
+		{Label: "Beta", Value: "b"},
+		{Label: "Gamma", Value: "c"},
+	}
+	lp := NewListPicker("test-id", "Pick", opts, "b", testCtx())
+	if lp.ID != "test-id" {
+		t.Errorf("ID = %q, want %q", lp.ID, "test-id")
+	}
+	if lp.cursor != 1 {
+		t.Errorf("cursor = %d, want 1 (matching activeValue 'b')", lp.cursor)
+	}
+	if lp.activeValue != "b" {
+		t.Errorf("activeValue = %q, want %q", lp.activeValue, "b")
+	}
+	if len(lp.Options) != 3 {
+		t.Errorf("len(Options) = %d, want 3", len(lp.Options))
+	}
+}
+
+func TestListPickerNew_NoMatch(t *testing.T) {
+	opts := []ListPickerOption{
+		{Label: "One", Value: "1"},
+		{Label: "Two", Value: "2"},
+	}
+	lp := NewListPicker("x", "Pick", opts, "missing", testCtx())
+	if lp.cursor != 0 {
+		t.Errorf("cursor = %d, want 0 (no match defaults to first)", lp.cursor)
+	}
+}
+
+func TestListPickerNavigation(t *testing.T) {
+	opts := []ListPickerOption{
+		{Label: "A", Value: "a"},
+		{Label: "B", Value: "b"},
+		{Label: "C", Value: "c"},
+	}
+	lp := NewListPicker("nav", "Pick", opts, "a", testCtx())
+
+	// Move down
+	m, _ := lp.Update(keyMsg("j"))
+	lp = m.(ListPicker)
+	if lp.cursor != 1 {
+		t.Errorf("after j: cursor = %d, want 1", lp.cursor)
+	}
+
+	// Move down again
+	m, _ = lp.Update(keyMsg("j"))
+	lp = m.(ListPicker)
+	if lp.cursor != 2 {
+		t.Errorf("after j j: cursor = %d, want 2", lp.cursor)
+	}
+
+	// Move down at bottom — stays at 2
+	m, _ = lp.Update(keyMsg("j"))
+	lp = m.(ListPicker)
+	if lp.cursor != 2 {
+		t.Errorf("at bottom j: cursor = %d, want 2", lp.cursor)
+	}
+
+	// Move up
+	m, _ = lp.Update(keyMsg("k"))
+	lp = m.(ListPicker)
+	if lp.cursor != 1 {
+		t.Errorf("after k: cursor = %d, want 1", lp.cursor)
+	}
+}
+
+func TestListPickerSelect(t *testing.T) {
+	opts := []ListPickerOption{
+		{Label: "A", Value: "a"},
+		{Label: "B", Value: "b"},
+	}
+	lp := NewListPicker("sel", "Pick", opts, "a", testCtx())
+
+	// Move to second option and select
+	m, _ := lp.Update(keyMsg("j"))
+	lp = m.(ListPicker)
+	_, cmd := lp.Update(keyMsg("enter"))
+	if cmd == nil {
+		t.Fatal("enter should produce a cmd")
+	}
+	msg := cmd()
+	result, ok := msg.(ListPickerResultMsg)
+	if !ok {
+		t.Fatalf("expected ListPickerResultMsg, got %T", msg)
+	}
+	if result.ID != "sel" {
+		t.Errorf("result.ID = %q, want %q", result.ID, "sel")
+	}
+	if result.Value != "b" {
+		t.Errorf("result.Value = %q, want %q", result.Value, "b")
+	}
+	if result.Index != 1 {
+		t.Errorf("result.Index = %d, want 1", result.Index)
+	}
+}
+
+func TestListPickerCancel(t *testing.T) {
+	opts := []ListPickerOption{
+		{Label: "X", Value: "x"},
+	}
+	lp := NewListPicker("can", "Pick", opts, "x", testCtx())
+	_, cmd := lp.Update(keyMsg("esc"))
+	if cmd == nil {
+		t.Fatal("esc should produce a cmd")
+	}
+	msg := cmd()
+	cancel, ok := msg.(ListPickerCancelMsg)
+	if !ok {
+		t.Fatalf("expected ListPickerCancelMsg, got %T", msg)
+	}
+	if cancel.ID != "can" {
+		t.Errorf("cancel.ID = %q, want %q", cancel.ID, "can")
+	}
+}
+
+func TestListPickerPreview(t *testing.T) {
+	opts := []ListPickerOption{
+		{Label: "A", Value: "a"},
+		{Label: "B", Value: "b"},
+	}
+	lp := NewListPicker("prev", "Pick", opts, "a", testCtx())
+
+	// Move down — should emit preview message
+	_, cmd := lp.Update(keyMsg("j"))
+	if cmd == nil {
+		t.Fatal("j should produce a preview cmd")
+	}
+	msg := cmd()
+	preview, ok := msg.(ListPickerPreviewMsg)
+	if !ok {
+		t.Fatalf("expected ListPickerPreviewMsg, got %T", msg)
+	}
+	if preview.Value != "b" {
+		t.Errorf("preview.Value = %q, want %q", preview.Value, "b")
+	}
+}
+
+func TestListPickerView(t *testing.T) {
+	opts := []ListPickerOption{
+		{Label: "Alpha", Value: "a"},
+		{Label: "Beta", Value: "b"},
+	}
+	lp := NewListPicker("view", "Pick", opts, "a", testCtx())
+	view := lp.View()
+	if view == "" {
+		t.Error("View() should not be empty")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Settings dialog tests
+// ---------------------------------------------------------------------------
+
+func TestSettingsNew(t *testing.T) {
+	cfg := testConfig()
+	s := NewSettings(cfg, testCtx())
+	if len(s.defs) == 0 {
+		t.Fatal("Settings should have at least one setting definition")
+	}
+	if s.cursor != 0 {
+		t.Errorf("cursor = %d, want 0", s.cursor)
+	}
+}
+
+func TestSettingsNavigation(t *testing.T) {
+	cfg := testConfig()
+	s := NewSettings(cfg, testCtx())
+	total := len(s.defs)
+
+	// Move down through all settings
+	var m tea.Model = s
+	for i := 0; i < total-1; i++ {
+		m, _ = m.Update(keyMsg("j"))
+	}
+	s = m.(Settings)
+	if s.cursor != total-1 {
+		t.Errorf("cursor = %d, want %d", s.cursor, total-1)
+	}
+
+	// Move down at bottom — stays
+	m, _ = s.Update(keyMsg("j"))
+	s = m.(Settings)
+	if s.cursor != total-1 {
+		t.Errorf("at bottom j: cursor = %d, want %d", s.cursor, total-1)
+	}
+
+	// Move up
+	m, _ = s.Update(keyMsg("k"))
+	s = m.(Settings)
+	if s.cursor != total-2 {
+		t.Errorf("after k: cursor = %d, want %d", s.cursor, total-2)
+	}
+}
+
+func TestSettingsToggle(t *testing.T) {
+	cfg := testConfig()
+	cfg.Appearance.ShowGraph = true
+	s := NewSettings(cfg, testCtx())
+
+	// Find the showGraph setting index
+	graphIdx := -1
+	for i, def := range s.defs {
+		if def.Key == "appearance.showGraph" {
+			graphIdx = i
+			break
+		}
+	}
+	if graphIdx < 0 {
+		t.Fatal("showGraph setting not found")
+	}
+
+	// Navigate to it
+	var m tea.Model = s
+	for i := 0; i < graphIdx; i++ {
+		m, _ = m.Update(keyMsg("j"))
+	}
+	s = m.(Settings)
+
+	// Toggle it
+	m, cmd := s.Update(keyMsg("enter"))
+	s = m.(Settings)
+	if cmd == nil {
+		t.Fatal("enter on toggle should produce a cmd")
+	}
+	msg := cmd()
+	change, ok := msg.(SettingsChangeMsg)
+	if !ok {
+		t.Fatalf("expected SettingsChangeMsg, got %T", msg)
+	}
+	if change.Key != "appearance.showGraph" {
+		t.Errorf("change.Key = %q, want %q", change.Key, "appearance.showGraph")
+	}
+	if change.Value != "false" {
+		t.Errorf("change.Value = %q, want %q (toggled from true)", change.Value, "false")
+	}
+
+	// Toggle again
+	_, cmd = s.Update(keyMsg("enter"))
+	if cmd == nil {
+		t.Fatal("second enter should produce a cmd")
+	}
+	msg = cmd()
+	change = msg.(SettingsChangeMsg)
+	if change.Value != "true" {
+		t.Errorf("second toggle: change.Value = %q, want %q", change.Value, "true")
+	}
+}
+
+func TestSettingsListPicker(t *testing.T) {
+	cfg := testConfig()
+	s := NewSettings(cfg, testCtx())
+
+	// First setting should be Theme (a list type)
+	if s.defs[0].Key != "theme" {
+		t.Fatalf("first setting is %q, expected 'theme'", s.defs[0].Key)
+	}
+
+	// Enter on theme should open a sub-picker
+	m, _ := s.Update(keyMsg("enter"))
+	s = m.(Settings)
+	if s.subPicker == nil {
+		t.Fatal("enter on list setting should open a sub-picker")
+	}
+}
+
+func TestSettingsClose(t *testing.T) {
+	cfg := testConfig()
+	s := NewSettings(cfg, testCtx())
+
+	_, cmd := s.Update(keyMsg("esc"))
+	if cmd == nil {
+		t.Fatal("esc should produce a close cmd")
+	}
+	msg := cmd()
+	if _, ok := msg.(SettingsCloseMsg); !ok {
+		t.Fatalf("expected SettingsCloseMsg, got %T", msg)
+	}
+}
+
+func TestSettingsCloseWithComma(t *testing.T) {
+	cfg := testConfig()
+	s := NewSettings(cfg, testCtx())
+
+	_, cmd := s.Update(keyMsg(","))
+	if cmd == nil {
+		t.Fatal("comma should produce a close cmd")
+	}
+	msg := cmd()
+	if _, ok := msg.(SettingsCloseMsg); !ok {
+		t.Fatalf("expected SettingsCloseMsg, got %T", msg)
+	}
+}
+
+func TestSettingsView(t *testing.T) {
+	cfg := testConfig()
+	s := NewSettings(cfg, testCtx())
+	view := s.View()
+	if view == "" {
+		t.Error("View() should not be empty")
+	}
+}
+
+func TestSettingsCurrentValue(t *testing.T) {
+	cfg := testConfig()
+	cfg.Theme = "catppuccin-latte"
+	cfg.Appearance.ShowGraph = false
+	s := NewSettings(cfg, testCtx())
+
+	// Theme value
+	v := s.currentValue(s.defs[0])
+	if v != "catppuccin-latte" {
+		t.Errorf("theme value = %q, want %q", v, "catppuccin-latte")
+	}
+
+	// ShowGraph value (should show "off")
+	for _, def := range s.defs {
+		if def.Key == "appearance.showGraph" {
+			v = s.currentValue(def)
+			if v != "off" {
+				t.Errorf("showGraph value = %q, want %q", v, "off")
+			}
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test helpers
+// ---------------------------------------------------------------------------
+
+func testCtx() *tuictx.ProgramContext {
+	cfg := testConfig()
+	return &tuictx.ProgramContext{
+		ScreenWidth:  120,
+		ScreenHeight: 40,
+		Config:       cfg,
+	}
+}
+
+func testConfig() *config.Config {
+	c := config.DefaultConfig()
+	return &c
+}
+
+func keyMsg(k string) tea.KeyMsg {
+	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)}
 }

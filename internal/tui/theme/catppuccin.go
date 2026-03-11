@@ -113,10 +113,47 @@ func CatppuccinMacchiato() Theme {
 	}
 }
 
+// CatppuccinFrappe returns the Catppuccin Frappe (mid-dark) theme.
+func CatppuccinFrappe() Theme {
+	return Theme{
+		Name:      "catppuccin-frappe",
+		Base:      lipgloss.Color("#303446"),
+		Mantle:    lipgloss.Color("#292c3c"),
+		Crust:     lipgloss.Color("#232634"),
+		Surface0:  lipgloss.Color("#414559"),
+		Surface1:  lipgloss.Color("#51576d"),
+		Surface2:  lipgloss.Color("#626880"),
+		Overlay0:  lipgloss.Color("#737994"),
+		Overlay1:  lipgloss.Color("#838ba7"),
+		Text:      lipgloss.Color("#c6d0f5"),
+		Subtext0:  lipgloss.Color("#a5adce"),
+		Subtext1:  lipgloss.Color("#b5bfe2"),
+		Red:       lipgloss.Color("#e78284"),
+		Green:     lipgloss.Color("#a6d189"),
+		Yellow:    lipgloss.Color("#e5c890"),
+		Blue:      lipgloss.Color("#8caaee"),
+		Mauve:     lipgloss.Color("#ca9ee6"),
+		Pink:      lipgloss.Color("#f4b8e4"),
+		Teal:      lipgloss.Color("#81c8be"),
+		Sky:       lipgloss.Color("#99d1db"),
+		Peach:     lipgloss.Color("#ef9f76"),
+		Maroon:    lipgloss.Color("#ea999c"),
+		Lavender:  lipgloss.Color("#babbf1"),
+		Flamingo:  lipgloss.Color("#eebebe"),
+		Rosewater: lipgloss.Color("#f2d5cf"),
+		Sapphire:  lipgloss.Color("#85c1dc"),
+		// Diff backgrounds: 20% accent blended with base #303446
+		DiffAddedLineBg:   lipgloss.Color("#3f4d4d"), // 20% green
+		DiffRemovedLineBg: lipgloss.Color("#4f3b4a"), // 20% red
+		DiffHunkHeaderBg:  lipgloss.Color("#414559"), // Surface0
+	}
+}
+
 // Themes is a map of available themes.
 var Themes = map[string]func() Theme{
 	"catppuccin-mocha":     CatppuccinMocha,
 	"catppuccin-latte":     CatppuccinLatte,
+	"catppuccin-frappe":    CatppuccinFrappe,
 	"catppuccin-macchiato": CatppuccinMacchiato,
 }
 

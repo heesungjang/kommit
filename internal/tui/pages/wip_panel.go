@@ -163,6 +163,15 @@ func (l LogPage) handleWIPDetailKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return l, l.doUndo()
 	}
 
+	// AI commit message — available from any WIP sub-focus when not editing
+	if !l.commitEditing && key.Matches(msg, l.statusKeys.AICommit) {
+		if l.aiGenerating {
+			return l, nil // already generating
+		}
+		l.aiGenerating = true
+		return l, func() tea.Msg { return RequestAICommitMsg{} }
+	}
+
 	// Section jump shortcuts: u/s/c (available when not actively editing text)
 	if !l.commitEditing {
 		switch {
@@ -505,7 +514,8 @@ func (l LogPage) submitCommit() (tea.Model, tea.Cmd) {
 		message = summary + "\n\n" + strings.TrimSpace(desc)
 	}
 	amend := l.commitAmend
-	// Reset fields
+	// Reset fields and exit editing mode.
+	l.commitEditing = false
 	l.commitSummary.SetValue("")
 	l.commitDesc.SetValue("")
 	l.commitSummary.Blur()
@@ -807,7 +817,9 @@ func (l LogPage) renderWIPDetail(width, height int) string {
 
 	// Header: ─○ Commit (or ─○ Amend Commit) with [c] shortcut
 	commitHeaderLabel := "─○ Commit"
-	if l.commitAmend {
+	if l.aiGenerating {
+		commitHeaderLabel = "─○ AI generating..."
+	} else if l.commitAmend {
 		commitHeaderLabel = "─○ Amend Commit"
 	}
 	{
@@ -905,11 +917,12 @@ func (l LogPage) renderWIPDetail(width, height int) string {
 			hintText = "ctrl+s:commit  Tab:summary  Esc:stop"
 		}
 	} else if commitFocused {
-		hintText = "Enter:edit  A:amend"
+		hintText = "Enter:edit  A:amend  ctrl+g:AI"
 	} else {
-		hintText = ""
+		// ctrl+g works from any WIP sub-focus when not editing
+		hintText = "ctrl+g:AI commit"
 	}
-	hintsLine := lipgloss.NewStyle().Background(t.Base).Width(iw).Render(
+	hintsLine := lipgloss.NewStyle().Background(t.Base).Width(iw).PaddingLeft(1).Render(
 		styles.KeyHintStyle().Render(hintText),
 	)
 	hintHeight := strings.Count(hintsLine, "\n") + 1

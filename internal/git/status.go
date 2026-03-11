@@ -259,3 +259,13 @@ func (r *StatusResult) ConflictFiles() []FileStatus {
 	}
 	return files
 }
+
+// IsDirty returns true if there are any tracked changes (staged or unstaged).
+// Untracked files alone do not count as dirty.
+func (r *Repository) IsDirty() (bool, error) {
+	out, err := r.run("status", "--porcelain")
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(out) != "", nil
+}

@@ -14,6 +14,7 @@ type GlobalKeys struct {
 	Search         key.Binding
 	CommandPalette key.Binding
 	CustomCommands key.Binding
+	Settings       key.Binding
 	Panel1         key.Binding
 	Panel2         key.Binding
 	Panel3         key.Binding
@@ -47,6 +48,10 @@ func NewGlobalKeys() GlobalKeys {
 		CustomCommands: key.NewBinding(
 			key.WithKeys(":"),
 			key.WithHelp(":", "custom commands"),
+		),
+		Settings: key.NewBinding(
+			key.WithKeys(","),
+			key.WithHelp(",", "settings"),
 		),
 		Panel1: key.NewBinding(
 			key.WithKeys("1"),
@@ -493,6 +498,7 @@ func init() {
 		"global.search":         &Global.Search,
 		"global.commandPalette": &Global.CommandPalette,
 		"global.customCommands": &Global.CustomCommands,
+		"global.settings":       &Global.Settings,
 		"global.panel1":         &Global.Panel1,
 		"global.panel2":         &Global.Panel2,
 		"global.panel3":         &Global.Panel3,

@@ -59,6 +59,12 @@ func (r *Repository) DiffStaged() (*DiffResult, error) {
 	return parseDiff(out), nil
 }
 
+// DiffStagedRaw returns the raw diff output string for staged changes.
+// This is useful when the caller needs the unparsed text (e.g. for AI prompts).
+func (r *Repository) DiffStagedRaw() (string, error) {
+	return r.run("diff", "--cached", "--no-color")
+}
+
 // DiffFile returns the diff for a specific file (unstaged).
 func (r *Repository) DiffFileUnstaged(path string) (*DiffResult, error) {
 	out, err := r.run("diff", "--no-color", "--", path)
@@ -283,6 +289,12 @@ func (r *Repository) DiffStatStaged() ([]DiffStatEntry, error) {
 		return nil, err
 	}
 	return parseDiffStat(out), nil
+}
+
+// DiffStatStagedRaw returns the raw --stat output for staged changes as a
+// human-readable string (used for AI prompts).
+func (r *Repository) DiffStatStagedRaw() (string, error) {
+	return r.run("diff", "--cached", "--stat")
 }
 
 func parseDiffStat(out string) []DiffStatEntry {
