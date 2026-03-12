@@ -206,26 +206,35 @@ func NewCopilotProvider(bearerToken, model string) *CopilotProvider {
 // GenerateCommitMessage implements the Provider interface.
 func (c *CopilotProvider) GenerateCommitMessage(ctx context.Context, diff, stat string) (*CommitMessage, error) {
 	prompt := buildCommitPrompt(diff, stat)
+	text, err := c.generate(ctx, commitMessageSystemPrompt, prompt)
+	if err != nil {
+		return nil, err
+	}
+	return parseCommitMessage(text), nil
+}
 
+// generate sends a request to the Copilot API with the given system prompt
+// and user prompt, returning the raw response text.
+func (c *CopilotProvider) generate(ctx context.Context, systemPrompt, userPrompt string) (string, error) {
 	reqBody := openAIRequest{
 		Model: c.model,
 		Messages: []openAIMessage{
-			{Role: "system", Content: commitMessageSystemPrompt},
-			{Role: "user", Content: prompt},
+			{Role: "system", Content: systemPrompt},
+			{Role: "user", Content: userPrompt},
 		},
-		MaxTokens:   256,
+		MaxTokens:   1024,
 		Temperature: 0.3,
 	}
 
 	bodyJSON, err := json.Marshal(reqBody)
 	if err != nil {
-		return nil, fmt.Errorf("marshaling request: %w", err)
+		return "", fmt.Errorf("marshaling request: %w", err)
 	}
 
 	apiURL := copilotAPIBaseURL + "/chat/completions"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(bodyJSON))
 	if err != nil {
-		return nil, fmt.Errorf("creating request: %w", err)
+		return "", fmt.Errorf("creating request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.bearerToken)
@@ -235,27 +244,27 @@ func (c *CopilotProvider) GenerateCommitMessage(ctx context.Context, diff, stat 
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("copilot API request: %w", err)
+		return "", fmt.Errorf("copilot API request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("reading copilot response: %w", err)
+		return "", fmt.Errorf("reading copilot response: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("copilot API error (%d): %s", resp.StatusCode, respBody)
+		return "", fmt.Errorf("copilot API error (%d): %s", resp.StatusCode, respBody)
 	}
 
 	var chatResp openAIResponse
 	if err := json.Unmarshal(respBody, &chatResp); err != nil {
-		return nil, fmt.Errorf("decoding copilot response: %w", err)
+		return "", fmt.Errorf("decoding copilot response: %w", err)
 	}
 
 	if len(chatResp.Choices) == 0 {
-		return nil, errors.New("copilot returned no choices")
+		return "", errors.New("copilot returned no choices")
 	}
 
-	return parseCommitMessage(chatResp.Choices[0].Message.Content), nil
+	return chatResp.Choices[0].Message.Content, nil
 }

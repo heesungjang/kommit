@@ -297,6 +297,22 @@ func (r *Repository) DiffStatStagedRaw() (string, error) {
 	return r.run("diff", "--cached", "--stat")
 }
 
+// DiffBranchRaw returns the raw diff between a base ref and HEAD.
+// This is used for PR description generation (e.g. diff from main..HEAD).
+func (r *Repository) DiffBranchRaw(baseRef string) (string, error) {
+	return r.run("diff", "--no-color", baseRef+"...HEAD")
+}
+
+// DiffStatBranchRaw returns the raw --stat output between a base ref and HEAD.
+func (r *Repository) DiffStatBranchRaw(baseRef string) (string, error) {
+	return r.run("diff", "--stat", baseRef+"...HEAD")
+}
+
+// LogBranchOneline returns the one-line log of commits between base and HEAD.
+func (r *Repository) LogBranchOneline(baseRef string) (string, error) {
+	return r.run("log", "--oneline", baseRef+"..HEAD")
+}
+
 func parseDiffStat(out string) []DiffStatEntry {
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	entries := make([]DiffStatEntry, 0, len(lines))

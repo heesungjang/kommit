@@ -269,6 +269,11 @@ const detailTabCount = 3
 var detailTabNames = []string{"Files", "Message", "Stats"}
 
 func (l LogPage) handleDetailKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// PR detail view — limited keybindings
+	if l.viewingPR && l.viewedPR != nil {
+		return l.handlePRDetailKeys(msg)
+	}
+
 	if l.isWIPSelected() {
 		return l.handleWIPDetailKeys(msg)
 	}
@@ -1104,6 +1109,186 @@ func (l LogPage) renderStashDiff(width, height int) string {
 	// Compact status line (key hints shown in global hint bar)
 	hints := lipgloss.NewStyle().Background(t.Base).Width(iw).Render(
 		styles.KeyHintStyle().Render(""),
+	)
+	hintHeight := strings.Count(hints, "\n") + 1
+	emptyLine := bgLine("")
+
+	// Budget: panel height minus title, title gap, empty line, and hints.
+	contentBudget := ph - 3 - hintHeight
+	if contentBudget < 1 {
+		contentBudget = 1
+	}
+
+	// Pad content to exactly contentBudget lines so hints are pinned to the bottom
+	contentLines := strings.Split(content, "\n")
+	if len(contentLines) > contentBudget {
+		contentLines = contentLines[:contentBudget]
+	}
+	for len(contentLines) < contentBudget {
+		contentLines = append(contentLines, bgLine(""))
+	}
+	content = strings.Join(contentLines, "\n")
+
+	full := lipgloss.JoinVertical(lipgloss.Left, titleStr, titleGap, content, emptyLine, hints)
+	// Clip to panel height so all panels stay the same outer height.
+	if cl := strings.Split(full, "\n"); len(cl) > ph {
+		full = strings.Join(cl[:ph], "\n")
+	}
+	return styles.ClipPanel(styles.PanelStyleColor(l.borderAnim.Color(anim.BorderRight, t.Surface1, t.Blue)).Width(width).Height(ph).Render(full), height)
+}
+
+// handlePRDetailKeys handles keyboard input when the PR detail view is active.
+func (l LogPage) handlePRDetailKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, key.NewBinding(key.WithKeys("o"))):
+		// Open PR in browser
+		if l.viewedPR != nil && l.viewedPR.URL != "" {
+			prURL := l.viewedPR.URL
+			return l, func() tea.Msg {
+				var cmd *exec.Cmd
+				switch runtime.GOOS {
+				case "darwin":
+					cmd = exec.Command("open", prURL)
+				case "windows":
+					cmd = exec.Command("cmd", "/c", "start", prURL)
+				default:
+					cmd = exec.Command("xdg-open", prURL)
+				}
+				if err := cmd.Run(); err != nil {
+					return RequestToastMsg{Message: "Failed to open browser: " + err.Error(), IsError: true}
+				}
+				return RequestToastMsg{Message: "Opened PR in browser"}
+			}
+		}
+	case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
+		// Exit PR view
+		l.viewingPR = false
+		l.viewedPR = nil
+		return l, nil
+	}
+	return l, nil
+}
+
+// renderPRDetail renders the pull request detail in the right panel.
+func (l LogPage) renderPRDetail(width, height int) string {
+	focused := l.focus == focusLogDetail
+	iw := width - styles.PanelPaddingWidth
+	ph := height - styles.PanelBorderHeight
+	t := theme.Active
+	pr := l.viewedPR
+
+	titleStr := styles.PanelTitle(
+		fmt.Sprintf("PR #%d", pr.Number),
+		"3", focused, iw,
+	)
+
+	bgLine := func(s string) string {
+		return lipgloss.NewStyle().Background(t.Base).MaxWidth(iw).Width(iw).Render(s)
+	}
+
+	var sections []string
+
+	// PR title with status icon
+	stateColor := t.Green
+	stateLabel := "Open"
+	switch pr.State {
+	case "closed":
+		stateColor = t.Red
+		stateLabel = "Closed"
+	case "merged":
+		stateColor = t.Mauve
+		stateLabel = "Merged"
+	}
+	if pr.Draft {
+		stateColor = t.Overlay0
+		stateLabel = "Draft"
+	}
+
+	stateBadge := lipgloss.NewStyle().
+		Foreground(t.Base).Background(stateColor).
+		Bold(true).Padding(0, 1).
+		Render(stateLabel)
+
+	sections = append(sections, bgLine(
+		lipgloss.NewStyle().Foreground(t.Text).Background(t.Base).Bold(true).
+			Render(pr.Title),
+	))
+	sections = append(sections, bgLine(stateBadge))
+	sections = append(sections, bgLine(""))
+
+	// Meta info
+	metaStyle := lipgloss.NewStyle().Foreground(t.Subtext0).Background(t.Base)
+	valStyle := lipgloss.NewStyle().Foreground(t.Text).Background(t.Base)
+
+	sections = append(sections, bgLine(
+		metaStyle.Render("Author   ")+valStyle.Render(pr.Author),
+	))
+	sections = append(sections, bgLine(
+		metaStyle.Render("Branch   ")+
+			lipgloss.NewStyle().Foreground(t.Sapphire).Background(t.Base).Render(pr.HeadRef)+
+			metaStyle.Render(" → ")+
+			lipgloss.NewStyle().Foreground(t.Green).Background(t.Base).Render(pr.BaseRef),
+	))
+
+	if pr.Additions > 0 || pr.Deletions > 0 {
+		sections = append(sections, bgLine(
+			metaStyle.Render("Changes  ")+
+				lipgloss.NewStyle().Foreground(t.Green).Background(t.Base).Render(fmt.Sprintf("+%d", pr.Additions))+" "+
+				lipgloss.NewStyle().Foreground(t.Red).Background(t.Base).Render(fmt.Sprintf("-%d", pr.Deletions)),
+		))
+	}
+
+	if len(pr.Labels) > 0 {
+		labelStr := strings.Join(pr.Labels, ", ")
+		sections = append(sections, bgLine(
+			metaStyle.Render("Labels   ")+
+				lipgloss.NewStyle().Foreground(t.Yellow).Background(t.Base).Render(labelStr),
+		))
+	}
+
+	if !pr.CreatedAt.IsZero() {
+		sections = append(sections, bgLine(
+			metaStyle.Render("Created  ")+valStyle.Render(pr.CreatedAt.Format("Jan 02, 2006 15:04")),
+		))
+	}
+	if !pr.UpdatedAt.IsZero() {
+		sections = append(sections, bgLine(
+			metaStyle.Render("Updated  ")+valStyle.Render(pr.UpdatedAt.Format("Jan 02, 2006 15:04")),
+		))
+	}
+
+	// Body / description
+	if pr.Body != "" {
+		sections = append(sections, bgLine(""))
+		sections = append(sections, bgLine(
+			lipgloss.NewStyle().Foreground(t.Subtext0).Background(t.Base).Bold(true).Render("Description"),
+		))
+		sections = append(sections, bgLine(""))
+		bodyLines := strings.Split(pr.Body, "\n")
+		for _, bl := range bodyLines {
+			// Truncate long lines
+			if len(bl) > iw {
+				bl = bl[:iw-1] + "…"
+			}
+			sections = append(sections, bgLine(
+				lipgloss.NewStyle().Foreground(t.Text).Background(t.Base).Render(bl),
+			))
+		}
+	}
+
+	// URL hint
+	sections = append(sections, bgLine(""))
+	sections = append(sections, bgLine(
+		lipgloss.NewStyle().Foreground(t.Overlay0).Background(t.Base).Italic(true).
+			Render(pr.URL),
+	))
+
+	titleGap := lipgloss.NewStyle().Background(t.Base).Width(iw).Render("")
+	content := lipgloss.JoinVertical(lipgloss.Left, sections...)
+
+	// Compact status line
+	hints := lipgloss.NewStyle().Background(t.Base).Width(iw).Render(
+		styles.KeyHintStyle().Render("o:Open in Browser"),
 	)
 	hintHeight := strings.Count(hints, "\n") + 1
 	emptyLine := bgLine("")

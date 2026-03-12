@@ -127,16 +127,43 @@ func (d *DiffViewer) SetContent(path, diff string, isWIP, isStaged bool) {
 	}
 }
 
+// isInvisibleHeader returns true for diff metadata lines that are never
+// rendered in the viewport (diff --git, index, ---, +++). These lines are
+// skipped during rendering and should also be skipped when scrolling so
+// the user doesn't press j/k through invisible lines.
+func isInvisibleHeader(line string) bool {
+	return strings.HasPrefix(line, "diff --git") ||
+		strings.HasPrefix(line, "index ") ||
+		strings.HasPrefix(line, "--- ") ||
+		strings.HasPrefix(line, "+++ ")
+}
+
+// countVisibleLines counts non-header lines up to (but not including) index n.
+func countVisibleLines(lines []string, n int) int {
+	count := 0
+	for i := 0; i < n && i < len(lines); i++ {
+		if !isInvisibleHeader(lines[i]) {
+			count++
+		}
+	}
+	return count
+}
+
 // maxScroll returns the maximum scroll offset.
 func (d *DiffViewer) maxScroll() int {
 	ms := len(d.Lines) - 10
 	if ms < 0 {
 		ms = 0
 	}
+	// Don't land on invisible header lines.
+	for ms > 0 && ms < len(d.Lines) && isInvisibleHeader(d.Lines[ms]) {
+		ms--
+	}
 	return ms
 }
 
-// clampScrollY ensures ScrollY is within valid bounds.
+// clampScrollY ensures ScrollY is within valid bounds and not on an
+// invisible header line.
 func (d *DiffViewer) clampScrollY() {
 	ms := d.maxScroll()
 	if d.ScrollY > ms {
@@ -144,6 +171,14 @@ func (d *DiffViewer) clampScrollY() {
 	}
 	if d.ScrollY < 0 {
 		d.ScrollY = 0
+	}
+	// Skip forward past invisible header lines.
+	for d.ScrollY < len(d.Lines) && isInvisibleHeader(d.Lines[d.ScrollY]) {
+		d.ScrollY++
+	}
+	// Re-clamp in case we overshot.
+	if d.ScrollY > ms {
+		d.ScrollY = ms
 	}
 }
 
@@ -165,11 +200,19 @@ func (d *DiffViewer) HandleKeys(msg tea.KeyMsg, navKeys keys.NavigationKeys, rep
 	case key.Matches(msg, navKeys.Down):
 		if d.ScrollY < ms {
 			d.ScrollY++
+			// Skip invisible header lines so each j press scrolls visible content.
+			for d.ScrollY < len(d.Lines) && d.ScrollY < ms && isInvisibleHeader(d.Lines[d.ScrollY]) {
+				d.ScrollY++
+			}
 		}
 		return true, nil
 	case key.Matches(msg, navKeys.Up):
 		if d.ScrollY > 0 {
 			d.ScrollY--
+			// Skip invisible header lines backwards.
+			for d.ScrollY > 0 && isInvisibleHeader(d.Lines[d.ScrollY]) {
+				d.ScrollY--
+			}
 		}
 		return true, nil
 	case key.Matches(msg, navKeys.PageDown):
@@ -182,6 +225,7 @@ func (d *DiffViewer) HandleKeys(msg tea.KeyMsg, navKeys keys.NavigationKeys, rep
 		return true, nil
 	case key.Matches(msg, navKeys.Home):
 		d.ScrollY = 0
+		d.clampScrollY()
 		return true, nil
 	case key.Matches(msg, navKeys.End):
 		d.ScrollY = ms
@@ -771,11 +815,6 @@ func (d *DiffViewer) Render(width, height int, focused bool, borderAnim anim.Bor
 		startLine = 0
 	}
 
-	endLine := startLine + contentHeight
-	if endLine > len(d.Lines) {
-		endLine = len(d.Lines)
-	}
-
 	// --- Line number computation ---
 	const gutterWidth = 11 // "NNNN NNNN │" = 4+1+4+1+1 = 11
 	contentWidth := iw - gutterWidth
@@ -788,8 +827,12 @@ func (d *DiffViewer) Render(width, height int, focused bool, borderAnim anim.Bor
 	inHunk := false
 	hunkIdx := -1
 
+	// Iterate through all diff lines, collecting visible sections.
+	// The loop continues until we have contentHeight visible lines or
+	// exhaust the diff. This ensures skipped header lines (diff --git,
+	// index, ---, +++) don't waste viewport slots.
 	var sections []string
-	for i := 0; i < endLine; i++ {
+	for i := 0; i < len(d.Lines) && len(sections) < contentHeight; i++ {
 		line := ""
 		if i < len(d.Lines) {
 			line = d.Lines[i]
@@ -941,7 +984,9 @@ func (d *DiffViewer) Render(width, height int, focused bool, borderAnim anim.Bor
 			if statusParts != "" {
 				statusParts += "  "
 			}
-			statusParts += fmt.Sprintf("line %d/%d", startLine+1, len(d.Lines))
+			visStart := countVisibleLines(d.Lines, startLine) + 1
+			visTotal := countVisibleLines(d.Lines, len(d.Lines))
+			statusParts += fmt.Sprintf("line %d/%d", visStart, visTotal)
 		}
 	}
 	statusLine := lipgloss.NewStyle().Background(t.Base).Width(iw).Render(

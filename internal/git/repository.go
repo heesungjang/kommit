@@ -3,6 +3,7 @@ package git
 import (
 	"bytes"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -80,6 +81,46 @@ func (r *Repository) runWithStdin(input string, args ...string) error {
 	}
 
 	return nil
+}
+
+// runWithEnv executes a git command with additional environment variables.
+// The extra env vars are appended to the current process's environment.
+func (r *Repository) runWithEnv(env []string, args ...string) (string, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = r.path
+	cmd.Env = append(os.Environ(), env...)
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return stdout.String(), fmt.Errorf("git %s: %s: %w", strings.Join(args, " "), stderr.String(), err)
+	}
+
+	return stdout.String(), nil
+}
+
+// RunAuthenticated executes a git command with GIT_ASKPASS configured to
+// provide credentials from the given username and token. This is used for
+// push/pull/fetch operations that need authentication.
+func (r *Repository) RunAuthenticated(username, token string, args ...string) (string, error) {
+	if username == "" || token == "" {
+		return r.run(args...)
+	}
+
+	askpassScript, cleanup, err := createAskpassScript(username, token)
+	if err != nil {
+		// Fall back to unauthenticated if we can't create the script.
+		return r.run(args...)
+	}
+	defer cleanup()
+
+	env := []string{
+		"GIT_ASKPASS=" + askpassScript,
+		"GIT_TERMINAL_PROMPT=0",
+	}
+	return r.runWithEnv(env, args...)
 }
 
 // Head returns the current HEAD reference (branch name or commit hash).

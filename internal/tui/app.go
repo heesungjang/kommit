@@ -12,8 +12,10 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/heesungjang/kommit/internal/ai"
+	"github.com/heesungjang/kommit/internal/auth"
 	"github.com/heesungjang/kommit/internal/config"
 	"github.com/heesungjang/kommit/internal/git"
+	"github.com/heesungjang/kommit/internal/hosting"
 	"github.com/heesungjang/kommit/internal/tui/components"
 	tuictx "github.com/heesungjang/kommit/internal/tui/context"
 	"github.com/heesungjang/kommit/internal/tui/customcmd"
@@ -62,6 +64,12 @@ type gitOpDoneMsg struct {
 	err error
 }
 
+// stashDoneMsg is sent when a stash save/pop operation completes.
+type stashDoneMsg struct {
+	op  string // "save" or "pop"
+	err error
+}
+
 // customCmdDoneMsg is sent when a custom command finishes execution.
 type customCmdDoneMsg struct {
 	name   string
@@ -69,6 +77,9 @@ type customCmdDoneMsg struct {
 	err    error
 	show   bool // whether to show output in a toast
 }
+
+// accountsChangedMsg is sent after an account login or logout to refresh state.
+type accountsChangedMsg struct{}
 
 // pollTickMsg is sent periodically to check for external git changes.
 type pollTickMsg struct{}
@@ -89,6 +100,7 @@ type App struct {
 	ctx       *tuictx.ProgramContext // shared context (dimensions, theme, config, repo)
 	repo      *git.Repository
 	mainView  tea.Model // the LogPage — our single unified view
+	actionBar components.ActionBar
 	hintBar   components.HintBar
 	statusBar components.StatusBar
 	keys      keys.GlobalKeys
@@ -115,6 +127,12 @@ type App struct {
 
 	// Pending commit — held while the confirm dialog is shown.
 	pendingCommitMsg *dialog.CommitRequestMsg
+
+	// Pending push error — held while the force-push retry dialog is shown.
+	pendingPushErr error
+
+	// Pending retry op — the git operation to retry after a successful login.
+	pendingRetryOp string
 }
 
 // NewApp creates a new App rooted at the given repository.
@@ -134,6 +152,7 @@ func NewApp(repo *git.Repository, cfg *config.Config) App {
 		ctx:       ctx,
 		repo:      repo,
 		mainView:  pages.NewLogPage(ctx, 80, 24), // initial size; updated on WindowSizeMsg
+		actionBar: components.NewActionBar(),
 		hintBar:   components.NewHintBar(),
 		statusBar: components.NewStatusBar(),
 		keys:      keys.NewGlobalKeys(),
@@ -143,9 +162,12 @@ func NewApp(repo *git.Repository, cfg *config.Config) App {
 
 // Init initializes the application.
 func (a App) Init() tea.Cmd {
+	// Resolve logged-in username for the action bar.
+	a.actionBar = a.actionBar.SetUsername(a.resolveUsername())
 	return tea.Batch(
 		a.mainView.Init(),
 		a.loadBranchInfo(),
+		a.loadPullRequests(),
 		a.schedulePoll(),
 	)
 }
@@ -161,8 +183,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.width = msg.Width
 		a.height = msg.Height
 		// Update the shared context so all components see the new size.
-		chromeHeight := 2 // hint bar + status bar
+		chromeHeight := 3 // action bar + hint bar + status bar
 		a.ctx.SetScreenSize(msg.Width, msg.Height, chromeHeight)
+		a.actionBar = a.actionBar.SetWidth(msg.Width)
 		a.hintBar = a.hintBar.SetWidth(msg.Width)
 		a.statusBar = a.statusBar.SetSize(msg.Width)
 		a.toast = a.toast.SetWidth(msg.Width)
@@ -300,6 +323,62 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return pages.AICommitErrorMsg{Err: fmt.Errorf("Copilot login canceled")}
 		}
 
+	// -- Account login dialog -----------------------------------------------
+	case dialog.RequestAccountLoginMsg:
+		// Open the account login dialog (from settings or auto-prompt).
+		// Keep the settings dialog state so we return to it after login.
+		provider := msg.Provider
+		pctx := a.ctx
+		dlg := dialog.NewAccountLoginForProvider(provider, pctx)
+		a.dialog = dlg
+		a.showDialog = true
+		return a, dlg.Init()
+
+	case dialog.RequestAccountLogoutMsg:
+		// Remove the account and refresh.
+		host := msg.Host
+		return a, func() tea.Msg {
+			_ = auth.RemoveAccount(host)
+			return accountsChangedMsg{}
+		}
+
+	case dialog.AccountLoginResultMsg:
+		a.showDialog = false
+		a.dialog = nil
+		acct := msg.Account
+		a.actionBar = a.actionBar.SetUsername(acct.Username)
+
+		// If there's a pending retry op (auto-prompt from auth failure), retry it.
+		if a.pendingRetryOp != "" {
+			op := a.pendingRetryOp
+			a.pendingRetryOp = ""
+			var toastCmd tea.Cmd
+			a.toast, toastCmd = a.toast.ShowSuccess("Logged in as @" + acct.Username + " — retrying " + op + "...")
+			return a, tea.Batch(toastCmd, a.doGitOp(op, false))
+		}
+
+		return a, func() tea.Msg {
+			return accountsChangedMsg{}
+		}
+
+	case dialog.AccountLoginCancelMsg:
+		a.showDialog = false
+		a.dialog = nil
+		// If there was a pending retry op, show the original error.
+		if a.pendingRetryOp != "" {
+			op := a.pendingRetryOp
+			a.pendingRetryOp = ""
+			var toastCmd tea.Cmd
+			a.toast, toastCmd = a.toast.ShowError(capitalize(op) + " failed: authentication required")
+			return a, toastCmd
+		}
+		return a, nil
+
+	case accountsChangedMsg:
+		// Refresh action bar username and re-open settings if it was open.
+		a.actionBar = a.actionBar.SetUsername(a.resolveUsername())
+		return a, a.openSettings()
+
 	// -- Settings change (theme swap, toggles, etc.) -------------------------
 	case dialog.SettingsChangeMsg:
 		return a, a.applySettingsChange(msg)
@@ -359,6 +438,50 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return a, func() tea.Msg {
 					return pages.RestoreCommitMsg{Summary: summary, Description: desc}
 				}
+			}
+			return a, nil
+		}
+		// Handle stash save confirmation.
+		if msg.ID == "stash-save" {
+			if msg.Confirmed {
+				repo := a.repo
+				var toastCmd tea.Cmd
+				a.toast, toastCmd = a.toast.ShowInfo("Stashing changes...")
+				return a, tea.Batch(toastCmd, func() tea.Msg {
+					err := repo.StashSave("")
+					return stashDoneMsg{op: "save", err: err}
+				})
+			}
+			return a, nil
+		}
+		// Handle stash pop confirmation.
+		if msg.ID == "stash-pop" {
+			if msg.Confirmed {
+				repo := a.repo
+				var toastCmd tea.Cmd
+				a.toast, toastCmd = a.toast.ShowInfo("Popping stash...")
+				return a, tea.Batch(toastCmd, func() tea.Msg {
+					err := repo.StashPop(0)
+					return stashDoneMsg{op: "pop", err: err}
+				})
+			}
+			return a, nil
+		}
+		// Handle force-push retry dialog (smart force push after rejection).
+		if msg.ID == "gitop-force-push-retry" {
+			if msg.Confirmed {
+				a.pendingPushErr = nil
+				var toastCmd tea.Cmd
+				a.toast, toastCmd = a.toast.ShowInfo("Force pushing...")
+				return a, tea.Batch(toastCmd, a.doGitOp("push", true))
+			}
+			// User declined force push — show the original rejection as toast.
+			origErr := a.pendingPushErr
+			a.pendingPushErr = nil
+			if origErr != nil {
+				var cmd tea.Cmd
+				a.toast, cmd = a.toast.ShowError("Push failed: " + friendlyGitError("push", origErr))
+				return a, cmd
 			}
 			return a, nil
 		}
@@ -505,12 +628,67 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case gitOpDoneMsg:
 		if msg.err != nil {
+			// Smart force push: if a normal push was rejected, offer force push.
+			if msg.op == "push" && isPushRejected(msg.err) {
+				a.pendingPushErr = msg.err
+				dlg := dialog.NewConfirm(
+					"gitop-force-push-retry",
+					"Push Rejected",
+					"Remote has new commits.\nForce push with --force-with-lease?",
+					a.ctx,
+				)
+				a.dialog = dlg
+				a.showDialog = true
+				cmds = append(cmds, dlg.Init())
+				cmds = append(cmds, func() tea.Msg { return pages.RefreshStatusMsg{} })
+				return a, tea.Batch(cmds...)
+			}
+
+			// Auto-prompt login on auth failure when no account exists.
+			if isAuthError(msg.err) && !a.hasAccountForOrigin() {
+				provider := a.detectOriginProvider()
+				if provider != "" {
+					a.pendingRetryOp = msg.op
+					dlg := dialog.NewAccountLoginForProvider(provider, a.ctx)
+					a.dialog = dlg
+					a.showDialog = true
+					return a, dlg.Init()
+				}
+			}
+
 			var cmd tea.Cmd
 			a.toast, cmd = a.toast.ShowError(capitalize(msg.op) + " failed: " + friendlyGitError(msg.op, msg.err))
 			cmds = append(cmds, cmd)
 		} else {
 			var cmd tea.Cmd
 			a.toast, cmd = a.toast.ShowSuccess(capitalize(msg.op) + " complete")
+			cmds = append(cmds, cmd)
+		}
+		cmds = append(cmds, func() tea.Msg { return pages.RefreshStatusMsg{} })
+		return a, tea.Batch(cmds...)
+
+	// -- Stash operations (WIP panel — confirm before executing) -------------
+	case pages.RequestStashSaveMsg:
+		dlg := dialog.NewConfirm("stash-save", "Stash?", "Stash all uncommitted changes?", a.ctx)
+		a.dialog = dlg
+		a.showDialog = true
+		return a, dlg.Init()
+
+	case pages.RequestStashPopMsg:
+		dlg := dialog.NewConfirm("stash-pop", "Pop Stash?", "Apply and remove the latest stash entry?", a.ctx)
+		a.dialog = dlg
+		a.showDialog = true
+		return a, dlg.Init()
+
+	case stashDoneMsg:
+		label := "Stash " + msg.op
+		if msg.err != nil {
+			var cmd tea.Cmd
+			a.toast, cmd = a.toast.ShowError(label + " failed: " + msg.err.Error())
+			cmds = append(cmds, cmd)
+		} else {
+			var cmd tea.Cmd
+			a.toast, cmd = a.toast.ShowSuccess(label + " complete")
 			cmds = append(cmds, cmd)
 		}
 		cmds = append(cmds, func() tea.Msg { return pages.RefreshStatusMsg{} })
@@ -602,6 +780,50 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.mainView, cmd = a.mainView.Update(msg)
 		return a, cmd
 
+	// -- Create PR request from sidebar/command palette ----------------------
+	case pages.RequestCreatePRMsg:
+		return a, a.openCreatePRDialog()
+
+	case dialog.CreatePRSubmitMsg:
+		a.showDialog = false
+		a.dialog = nil
+		return a, a.createPullRequest(msg)
+
+	case dialog.CreatePRCancelMsg:
+		a.showDialog = false
+		a.dialog = nil
+		return a, nil
+
+	case dialog.CreatePRRequestAIMsg:
+		return a, a.generatePRDescription(msg.BaseBranch)
+
+	case dialog.CreatePRAIResultMsg:
+		if a.dialog != nil {
+			var cmd tea.Cmd
+			a.dialog, cmd = a.dialog.Update(msg)
+			return a, cmd
+		}
+		return a, nil
+
+	case dialog.CreatePRAIErrorMsg:
+		if a.dialog != nil {
+			var cmd tea.Cmd
+			a.dialog, cmd = a.dialog.Update(msg)
+			return a, cmd
+		}
+		return a, nil
+
+	case pages.PRCreatedMsg:
+		var cmd tea.Cmd
+		a.toast, cmd = a.toast.ShowSuccess(fmt.Sprintf("PR #%d created", msg.Number))
+		cmds = append(cmds, cmd, a.loadPullRequests())
+		return a, tea.Batch(cmds...)
+
+	case pages.PRCreateErrorMsg:
+		var cmd tea.Cmd
+		a.toast, cmd = a.toast.ShowError("Create PR failed: " + msg.Err.Error())
+		return a, cmd
+
 	// -- Settings change request from pages (e.g. V key toggle) ------------
 	case pages.RequestSettingsChangeMsg:
 		return a, a.applySettingsChange(dialog.SettingsChangeMsg{
@@ -624,13 +846,14 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case branchInfoMsg:
 		a.statusBar = a.statusBar.SetBranch(msg.branch).SetAheadBehind(msg.ahead, msg.behind).
 			SetBisecting(msg.bisecting).SetRebasing(msg.rebasing)
+		a.actionBar = a.actionBar.SetAheadBehind(msg.ahead, msg.behind)
 		return a, nil
 
 	// -- Refresh after mutations ---------------------------------------------
 	case pages.RefreshStatusMsg:
 		var cmd tea.Cmd
 		a.mainView, cmd = a.mainView.Update(msg)
-		cmds = append(cmds, cmd, a.loadBranchInfo())
+		cmds = append(cmds, cmd, a.loadBranchInfo(), a.loadPullRequests())
 		return a, tea.Batch(cmds...)
 
 	// -- Auto-refresh polling ------------------------------------------------
@@ -759,11 +982,12 @@ func (a App) View() string {
 	} else if sb.IsComparing() {
 		hb = hb.SetExtra("Select a commit to compare")
 	}
+	actionBarView := a.actionBar.SetContext(keys.ActiveContext).View()
 	hintBarView := hb.View()
 	statusBar := sb.View()
 
 	// Height available for the main view.
-	pageHeight := a.height - lipgloss.Height(hintBarView) - lipgloss.Height(statusBar)
+	pageHeight := a.height - lipgloss.Height(actionBarView) - lipgloss.Height(hintBarView) - lipgloss.Height(statusBar)
 	if pageHeight < 0 {
 		pageHeight = 0
 	}
@@ -775,12 +999,12 @@ func (a App) View() string {
 		Background(t.Base).
 		Render(pageView)
 
-	// Compose the layout: main view + hint bar + status bar.
+	// Compose the layout: action bar + main view + hint bar + status bar.
 	layout := lipgloss.NewStyle().
 		Width(a.width).
 		Height(a.height).
 		Background(t.Base).
-		Render(lipgloss.JoinVertical(lipgloss.Left, pageView, hintBarView, statusBar))
+		Render(lipgloss.JoinVertical(lipgloss.Left, actionBarView, pageView, hintBarView, statusBar))
 
 	// Overlay dialog if active — composite on top of the layout so the app
 	// remains visible behind the dialog (same technique used by toasts).
@@ -826,7 +1050,7 @@ func (a App) View() string {
 
 // pageHeight returns the height available for the main view.
 func (a App) pageHeight() int {
-	h := a.height - 2 // hint bar (1 line) + status bar (1 line)
+	h := a.height - 3 // action bar (1 line) + hint bar (1 line) + status bar (1 line)
 	if h < 0 {
 		return 0
 	}
@@ -850,9 +1074,15 @@ func (a App) loadBranchInfo() tea.Cmd {
 }
 
 // overlayAt composites |overlay| on top of |base| at character position (x, y).
+// It detects the overlay's background color and re-injects it after every SGR
+// reset within the overlay lines, preventing transparent cells from letting the
+// base content bleed through.
 func overlayAt(base, overlay string, x, y, _ int) string {
 	baseLines := strings.Split(base, "\n")
 	overlayLines := strings.Split(overlay, "\n")
+
+	// Detect the overlay's background color SGR from the rendered content.
+	bgSGR := extractBgSGR(overlay)
 
 	for i, oLine := range overlayLines {
 		row := y + i
@@ -866,10 +1096,171 @@ func overlayAt(base, overlay string, x, y, _ int) string {
 		left := ansi.Truncate(bLine, x, "")
 		right := ansi.TruncateLeft(bLine, x+oWidth, "")
 
-		baseLines[row] = left + oLine + right
+		// Fill background on every printable cell that lacks one so
+		// transparent cells don't let the base content bleed through.
+		if bgSGR != "" {
+			oLine = fillBgCells(oLine, bgSGR)
+		}
+
+		baseLines[row] = left + "\033[0m" + bgSGR + oLine + right
 	}
 
 	return strings.Join(baseLines, "\n")
+}
+
+// extractBgSGR scans an ANSI string for the first background color SGR
+// parameter and returns it as a standalone SGR sequence (e.g. "\033[48;2;49;50;68m").
+// Returns "" if no background color is found.
+func extractBgSGR(s string) string {
+	for i := 0; i < len(s); i++ {
+		// Look for ESC [ ... m sequences (CSI SGR).
+		if s[i] != '\033' || i+1 >= len(s) || s[i+1] != '[' {
+			continue
+		}
+		// Found ESC[, now collect params until 'm' or a non-param byte.
+		j := i + 2
+		for j < len(s) && ((s[j] >= '0' && s[j] <= '9') || s[j] == ';') {
+			j++
+		}
+		if j >= len(s) || s[j] != 'm' {
+			i = j
+			continue
+		}
+		// s[i+2:j] is the params string, s[j] == 'm'.
+		params := s[i+2 : j]
+		if bg := extractBgFromParams(params); bg != "" {
+			return "\033[" + bg + "m"
+		}
+		i = j
+	}
+	return ""
+}
+
+// extractBgFromParams extracts the background color portion from a
+// semicolon-separated SGR parameter string. Returns the background params
+// (e.g. "48;2;49;50;68") or "" if no background is present.
+func extractBgFromParams(params string) string {
+	parts := strings.Split(params, ";")
+	for idx := 0; idx < len(parts); idx++ {
+		p := parts[idx]
+		// Basic 3-bit / 4-bit background: 40-47 (not 48=extended, not 49=default)
+		if len(p) == 2 && p[0] == '4' && p[1] >= '0' && p[1] <= '7' {
+			return p
+		}
+		if len(p) == 3 && p[0] == '1' && p[1] == '0' && p[2] >= '0' && p[2] <= '7' {
+			return p
+		}
+		// Extended background: 48;5;N or 48;2;R;G;B
+		if p == "48" && idx+1 < len(parts) {
+			if parts[idx+1] == "5" && idx+2 < len(parts) {
+				// 256-color: 48;5;N
+				return parts[idx] + ";" + parts[idx+1] + ";" + parts[idx+2]
+			}
+			if parts[idx+1] == "2" && idx+4 < len(parts) {
+				// True color: 48;2;R;G;B
+				return parts[idx] + ";" + parts[idx+1] + ";" + parts[idx+2] + ";" + parts[idx+3] + ";" + parts[idx+4]
+			}
+		}
+	}
+	return ""
+}
+
+// fillBgCells walks an ANSI string and ensures every printable cell has the
+// given background color active. It tracks the current SGR state and injects
+// bgSGR before any run of printable characters that lacks an explicit
+// background. This handles all transparent cells — not just those after resets.
+func fillBgCells(line, bgSGR string) string {
+	var buf strings.Builder
+	buf.Grow(len(line) + 256)
+
+	hasBg := false
+	i := 0
+	for i < len(line) {
+		// Check for CSI sequence: ESC [
+		if line[i] == '\033' && i+1 < len(line) && line[i+1] == '[' {
+			// Collect parameter bytes (0x30-0x3F) and intermediate bytes (0x20-0x2F)
+			// until a final byte (0x40-0x7E).
+			j := i + 2
+			for j < len(line) && ((line[j] >= '0' && line[j] <= '?') || (line[j] >= ' ' && line[j] <= '/')) {
+				j++
+			}
+			if j < len(line) {
+				seq := line[i : j+1]
+				if line[j] == 'm' {
+					// SGR sequence — update background tracking state.
+					hasBg = updateBgState(line[i+2:j], hasBg)
+				}
+				buf.WriteString(seq)
+				i = j + 1
+				continue
+			}
+			// Unterminated sequence — copy ESC and continue.
+			buf.WriteByte(line[i])
+			i++
+			continue
+		}
+
+		// Skip other ESC sequences (OSC, etc.) — copy through.
+		if line[i] == '\033' {
+			buf.WriteByte(line[i])
+			i++
+			continue
+		}
+
+		// Control characters — copy through without bg injection.
+		if line[i] < ' ' {
+			buf.WriteByte(line[i])
+			i++
+			continue
+		}
+
+		// Printable character — inject bgSGR if no background is active.
+		if !hasBg {
+			buf.WriteString(bgSGR)
+			hasBg = true
+		}
+		buf.WriteByte(line[i])
+		i++
+	}
+	return buf.String()
+}
+
+// updateBgState parses a semicolon-separated SGR parameter string and returns
+// whether a background color is active after applying the parameters.
+func updateBgState(params string, hasBg bool) bool {
+	// Empty params means implicit reset ("\033[m").
+	if params == "" {
+		return false
+	}
+
+	parts := strings.Split(params, ";")
+	for idx := 0; idx < len(parts); idx++ {
+		p := parts[idx]
+		switch {
+		case p == "0" || p == "":
+			// Explicit reset or empty sub-param — clears all attributes.
+			hasBg = false
+		case p == "49":
+			// Default background color — clears background.
+			hasBg = false
+		case len(p) == 2 && p[0] == '4' && p[1] >= '0' && p[1] <= '7':
+			// Basic background: 40-47.
+			hasBg = true
+		case p == "48":
+			// Extended background (48;5;N or 48;2;R;G;B) — skip sub-params.
+			hasBg = true
+			if idx+1 < len(parts) && parts[idx+1] == "5" {
+				idx += 2 // skip 5;N
+			} else if idx+1 < len(parts) && parts[idx+1] == "2" {
+				idx += 4 // skip 2;R;G;B
+			}
+		case len(p) == 3 && p[0] == '1' && p[1] == '0' && p[2] >= '0' && p[2] <= '7':
+			// Bright background: 100-107.
+			hasBg = true
+		}
+		// All other params (foreground, bold, etc.) don't affect bg state.
+	}
+	return hasBg
 }
 
 // doCommit runs the commit asynchronously.
@@ -893,35 +1284,77 @@ func (a App) doCommitAmend(message string) tea.Cmd {
 // doGitOp runs a push/pull/fetch operation asynchronously.
 func (a App) doGitOp(op string, force bool) tea.Cmd {
 	repo := a.repo
+
+	// Resolve credentials for the origin remote.
+	gitUser, gitToken := a.resolveGitCredentials()
+
 	return func() tea.Msg {
 		var err error
 		switch op {
 		case "push":
 			if force {
-				err = repo.ForcePush("", "")
+				if gitUser != "" {
+					err = repo.ForcePushAuth("", "", gitUser, gitToken)
+				} else {
+					err = repo.ForcePush("", "")
+				}
 			} else {
 				// Auto-detect missing upstream and set it.
 				branch, brErr := repo.CurrentBranch()
 				if brErr == nil && branch != "" && branch != "HEAD" {
 					hasUp, _ := repo.HasUpstream(branch)
 					if !hasUp {
-						err = repo.PushSetUpstream("origin", branch)
+						if gitUser != "" {
+							err = repo.PushSetUpstreamAuth("origin", branch, gitUser, gitToken)
+						} else {
+							err = repo.PushSetUpstream("origin", branch)
+						}
 						if err == nil {
 							return gitOpDoneMsg{op: op, err: nil}
 						}
 					}
 				}
 				if err == nil {
-					err = repo.Push("", "")
+					if gitUser != "" {
+						err = repo.PushAuth("", "", gitUser, gitToken)
+					} else {
+						err = repo.Push("", "")
+					}
 				}
 			}
 		case "pull":
-			err = repo.Pull("", "")
+			if gitUser != "" {
+				err = repo.PullAuth("", "", gitUser, gitToken)
+			} else {
+				err = repo.Pull("", "")
+			}
 		case "fetch":
-			err = repo.Fetch()
+			if gitUser != "" {
+				err = repo.FetchAuth(gitUser, gitToken)
+			} else {
+				err = repo.Fetch()
+			}
 		}
 		return gitOpDoneMsg{op: op, err: err}
 	}
+}
+
+// resolveGitCredentials looks up the saved account matching the current repo's
+// origin remote and returns the git username and token for authentication.
+// Returns empty strings if no matching account is found.
+func (a App) resolveGitCredentials() (username, token string) {
+	if a.repo == nil {
+		return "", ""
+	}
+	remoteURL, err := a.repo.RemoteURL("origin")
+	if err != nil || remoteURL == "" {
+		return "", ""
+	}
+	acct := auth.AccountForRemote(remoteURL)
+	if acct == nil || acct.Token == "" {
+		return "", ""
+	}
+	return acct.GitUser, acct.Token
 }
 
 // schedulePoll returns a Cmd that sends pollTickMsg after pollInterval.
@@ -994,6 +1427,73 @@ func friendlyGitError(op string, err error) string {
 		}
 	}
 	return msg
+}
+
+// isPushRejected returns true if the push error indicates a non-fast-forward
+// rejection, which means force push could resolve the issue.
+func isPushRejected(err error) bool {
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "rejected") ||
+		strings.Contains(lower, "non-fast-forward") ||
+		strings.Contains(lower, "failed to push some refs")
+}
+
+// isAuthError returns true if a git error indicates an authentication failure.
+func isAuthError(err error) bool {
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "authentication") ||
+		strings.Contains(lower, "permission denied") ||
+		strings.Contains(lower, "could not read username") ||
+		strings.Contains(lower, "invalid credentials") ||
+		strings.Contains(lower, "401") ||
+		strings.Contains(lower, "403")
+}
+
+// hasAccountForOrigin returns true if there's a saved account matching the
+// current repo's origin remote.
+func (a App) hasAccountForOrigin() bool {
+	if a.repo == nil {
+		return false
+	}
+	remoteURL, err := a.repo.RemoteURL("origin")
+	if err != nil || remoteURL == "" {
+		return false
+	}
+	return auth.AccountForRemote(remoteURL) != nil
+}
+
+// detectOriginProvider detects the hosting provider for the origin remote.
+func (a App) detectOriginProvider() auth.HostProvider {
+	if a.repo == nil {
+		return ""
+	}
+	remoteURL, err := a.repo.RemoteURL("origin")
+	if err != nil || remoteURL == "" {
+		return ""
+	}
+	host := auth.HostFromRemoteURL(remoteURL)
+	return auth.ProviderForHost(host)
+}
+
+// ---------------------------------------------------------------------------
+// Accounts
+// ---------------------------------------------------------------------------
+
+// resolveUsername returns the username for the hosting provider matching the
+// current repo's origin remote. Returns empty string if no account matches.
+func (a App) resolveUsername() string {
+	if a.repo == nil {
+		return ""
+	}
+	remoteURL, err := a.repo.RemoteURL("origin")
+	if err != nil || remoteURL == "" {
+		return ""
+	}
+	acct := auth.AccountForRemote(remoteURL)
+	if acct == nil {
+		return ""
+	}
+	return acct.Username
 }
 
 // ---------------------------------------------------------------------------
@@ -1230,6 +1730,11 @@ func (a App) dispatchPaletteAction(action string) tea.Cmd {
 		return nil
 	}
 
+	// Handle specific actions that need direct dispatch.
+	if action == "pr.create" {
+		return a.openCreatePRDialog()
+	}
+
 	// For key binding actions, we synthesize the key press.
 	binding := keys.LookupBinding(action)
 	if binding == nil {
@@ -1416,5 +1921,169 @@ func (a App) executeCustomCommand(idx int) tea.Cmd {
 			err:    runErr,
 			show:   showOutput,
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Pull Requests
+// ---------------------------------------------------------------------------
+
+// loadPullRequests fetches open PRs from the hosting provider in the background.
+// It checks the origin remote, resolves the hosting account, and calls the API.
+// The result is a SidebarPRsLoadedMsg which the LogPage routes to the sidebar.
+func (a App) loadPullRequests() tea.Cmd {
+	repo := a.repo
+	return func() tea.Msg {
+		if repo == nil {
+			return pages.SidebarPRsLoadedMsg{}
+		}
+
+		remoteURL, err := repo.RemoteURL("origin")
+		if err != nil || remoteURL == "" {
+			return pages.SidebarPRsLoadedMsg{}
+		}
+
+		// Only GitHub is supported for now.
+		host := auth.HostFromRemoteURL(remoteURL)
+		provider := auth.ProviderForHost(host)
+		if provider != auth.ProviderGitHub {
+			return pages.SidebarPRsLoadedMsg{}
+		}
+
+		acct := auth.GetAccount(host)
+		if acct == nil {
+			return pages.SidebarPRsLoadedMsg{}
+		}
+
+		ref, err := hosting.RepoRefFromRemoteURL(remoteURL)
+		if err != nil {
+			return pages.SidebarPRsLoadedMsg{Err: err}
+		}
+
+		client := hosting.NewGitHubClient(acct.Token)
+		prs, err := client.ListPullRequests(ref, "open")
+		return pages.SidebarPRsLoadedMsg{PRs: prs, Err: err}
+	}
+}
+
+// openCreatePRDialog opens the Create PR dialog pre-filled with the current
+// branch and the repository's default branch.
+func (a App) openCreatePRDialog() tea.Cmd {
+	repo := a.repo
+	pctx := a.ctx
+	return func() tea.Msg {
+		headBranch, err := repo.Head()
+		if err != nil {
+			return pages.PRCreateErrorMsg{Err: fmt.Errorf("cannot determine current branch: %w", err)}
+		}
+
+		// Determine the default branch (target for the PR).
+		baseBranch := "main" // fallback
+		remoteURL, err := repo.RemoteURL("origin")
+		if err == nil && remoteURL != "" {
+			host := auth.HostFromRemoteURL(remoteURL)
+			acct := auth.GetAccount(host)
+			if acct != nil {
+				ref, refErr := hosting.RepoRefFromRemoteURL(remoteURL)
+				if refErr == nil {
+					client := hosting.NewGitHubClient(acct.Token)
+					if defaultBranch, dbErr := client.GetDefaultBranch(ref); dbErr == nil {
+						baseBranch = defaultBranch
+					}
+				}
+			}
+		}
+
+		return showDialogMsg{model: dialog.NewCreatePR(headBranch, baseBranch, pctx)}
+	}
+}
+
+// createPullRequest calls the GitHub API to create a pull request.
+func (a App) createPullRequest(msg dialog.CreatePRSubmitMsg) tea.Cmd {
+	repo := a.repo
+	return func() tea.Msg {
+		remoteURL, err := repo.RemoteURL("origin")
+		if err != nil || remoteURL == "" {
+			return pages.PRCreateErrorMsg{Err: fmt.Errorf("no origin remote configured")}
+		}
+
+		host := auth.HostFromRemoteURL(remoteURL)
+		acct := auth.GetAccount(host)
+		if acct == nil {
+			return pages.PRCreateErrorMsg{Err: fmt.Errorf("not logged in — log in via Settings > Accounts")}
+		}
+
+		ref, err := hosting.RepoRefFromRemoteURL(remoteURL)
+		if err != nil {
+			return pages.PRCreateErrorMsg{Err: err}
+		}
+
+		client := hosting.NewGitHubClient(acct.Token)
+		pr, err := client.CreatePullRequest(ref, hosting.CreatePRRequest{
+			Title: msg.Title,
+			Body:  msg.Body,
+			Head:  msg.Head,
+			Base:  msg.Base,
+			Draft: msg.Draft,
+		})
+		if err != nil {
+			return pages.PRCreateErrorMsg{Err: err}
+		}
+
+		return pages.PRCreatedMsg{Number: pr.Number, URL: pr.URL}
+	}
+}
+
+// generatePRDescription uses the AI provider to generate a PR title and body
+// from the branch diff against the given base branch.
+func (a App) generatePRDescription(baseBranch string) tea.Cmd {
+	cfg := a.ctx.Config
+	repo := a.repo
+	isCopilot := cfg != nil && cfg.AI.Provider == "copilot"
+
+	return func() tea.Msg {
+		if cfg == nil {
+			return dialog.CreatePRAIErrorMsg{Err: fmt.Errorf("no configuration loaded")}
+		}
+
+		apiKey := ai.GetAPIKey(cfg.AI.Provider, cfg.AI.APIKey)
+		if apiKey == "" && cfg.AI.Provider != "openai-compatible" {
+			return dialog.CreatePRAIErrorMsg{Err: fmt.Errorf("no AI provider configured — set up in Settings > AI")}
+		}
+
+		// For Copilot, exchange for bearer token.
+		aiCfg := cfg.AI
+		aiCfg.APIKey = apiKey
+		if isCopilot && aiCfg.APIKey != "" {
+			exchCtx, exchCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer exchCancel()
+			cpToken, err := ai.ExchangeForCopilotToken(exchCtx, aiCfg.APIKey)
+			if err != nil {
+				return dialog.CreatePRAIErrorMsg{Err: fmt.Errorf("copilot token refresh: %w", err)}
+			}
+			aiCfg.APIKey = cpToken.Token
+		}
+
+		// Get branch diff.
+		diff, err := repo.DiffBranchRaw(baseBranch)
+		if err != nil {
+			return dialog.CreatePRAIErrorMsg{Err: fmt.Errorf("get branch diff: %w", err)}
+		}
+		if strings.TrimSpace(diff) == "" {
+			return dialog.CreatePRAIErrorMsg{Err: fmt.Errorf("no changes between %s and HEAD", baseBranch)}
+		}
+
+		stat, _ := repo.DiffStatBranchRaw(baseBranch)
+		commitLog, _ := repo.LogBranchOneline(baseBranch)
+
+		genCtx, genCancel := context.WithTimeout(context.Background(), 45*time.Second)
+		defer genCancel()
+
+		desc, err := ai.GeneratePRDescription(genCtx, &aiCfg, aiCfg.APIKey, diff, stat, commitLog)
+		if err != nil {
+			return dialog.CreatePRAIErrorMsg{Err: err}
+		}
+
+		return dialog.CreatePRAIResultMsg{Title: desc.Title, Body: desc.Body}
 	}
 }

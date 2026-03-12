@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/heesungjang/kommit/internal/ai"
+	"github.com/heesungjang/kommit/internal/auth"
 	"github.com/heesungjang/kommit/internal/config"
 	tuictx "github.com/heesungjang/kommit/internal/tui/context"
 	"github.com/heesungjang/kommit/internal/tui/theme"
@@ -29,6 +30,18 @@ type SettingsChangeMsg struct {
 	Preview bool   // if true, this is a live preview — do not persist to disk
 }
 
+// RequestAccountLoginMsg is sent when the user requests to log into
+// a hosting provider from the settings dialog.
+type RequestAccountLoginMsg struct {
+	Provider auth.HostProvider
+}
+
+// RequestAccountLogoutMsg is sent when the user requests to log out of
+// a hosting provider from the settings dialog.
+type RequestAccountLogoutMsg struct {
+	Host string
+}
+
 // ---------------------------------------------------------------------------
 // Setting definition
 // ---------------------------------------------------------------------------
@@ -39,16 +52,18 @@ type settingKind int
 const (
 	settingList   settingKind = iota // opens a list picker
 	settingToggle                    // boolean toggle (enter flips it)
+	settingAction                    // action button (enter triggers a message)
 )
 
 // settingDef describes a single setting row in the dialog.
 type settingDef struct {
-	Key         string              // config key, e.g. "theme"
-	Label       string              // display label
-	Section     string              // section header, e.g. "APPEARANCE"
-	Kind        settingKind         // how to edit
-	Options     []string            // for settingList: option values
-	OptionLabel func(string) string // optional: map value -> display label
+	Key            string              // config key, e.g. "theme"
+	Label          string              // display label
+	Section        string              // section header, e.g. "APPEARANCE"
+	Kind           settingKind         // how to edit
+	Options        []string            // for settingList: option values
+	OptionLabel    func(string) string // optional: map value -> display label
+	ActionProvider auth.HostProvider   // for settingAction: which hosting provider
 }
 
 // ---------------------------------------------------------------------------
@@ -70,12 +85,18 @@ type Settings struct {
 	subPicker    *ListPicker
 	subPickerKey string // the setting key the sub-picker is editing
 	preOpenValue string // value before the sub-picker opened (for cancel restore)
+
+	// Accounts: cached account data for display.
+	accounts map[string]auth.Account
 }
 
 // NewSettings creates a new settings dialog from the current config.
 func NewSettings(cfg *config.Config, ctx *tuictx.ProgramContext) Settings {
 	// Build the available theme names.
 	themeNames := themeOptionNames()
+
+	// Load accounts for the Accounts section.
+	accounts, _ := auth.LoadAccounts()
 
 	defs := []settingDef{
 		{
@@ -138,15 +159,45 @@ func NewSettings(cfg *config.Config, ctx *tuictx.ProgramContext) Settings {
 				return v
 			},
 		},
+		// Accounts section — one row per hosting provider.
+		{
+			Key:            "account.github",
+			Label:          "GitHub",
+			Section:        "ACCOUNTS",
+			Kind:           settingAction,
+			ActionProvider: auth.ProviderGitHub,
+		},
+		{
+			Key:            "account.gitlab",
+			Label:          "GitLab",
+			Section:        "ACCOUNTS",
+			Kind:           settingAction,
+			ActionProvider: auth.ProviderGitLab,
+		},
+		{
+			Key:            "account.azure",
+			Label:          "Azure DevOps",
+			Section:        "ACCOUNTS",
+			Kind:           settingAction,
+			ActionProvider: auth.ProviderAzureDevOps,
+		},
+		{
+			Key:            "account.bitbucket",
+			Label:          "Bitbucket",
+			Section:        "ACCOUNTS",
+			Kind:           settingAction,
+			ActionProvider: auth.ProviderBitbucket,
+		},
 	}
 
 	return Settings{
-		Base:    NewBaseWithContext("Settings", ",: settings  enter: change  esc: close", 48, 30, ctx),
-		cfg:     cfg,
-		ctx:     ctx,
-		defs:    defs,
-		cursor:  0,
-		changed: make(map[string]string),
+		Base:     NewBaseWithContext("Settings", ",: settings  enter: change  esc: close", 48, 30, ctx),
+		cfg:      cfg,
+		ctx:      ctx,
+		defs:     defs,
+		cursor:   0,
+		changed:  make(map[string]string),
+		accounts: accounts,
 	}
 }
 
@@ -204,12 +255,45 @@ func (s Settings) View() string {
 // currentValue returns the display value for a setting, reflecting any
 // accumulated changes.
 func (s Settings) currentValue(def settingDef) string {
+	// Account action rows have dynamic values.
+	if def.Kind == settingAction {
+		return s.accountDisplayValue(def)
+	}
 	// Check if there's an accumulated change.
 	if v, ok := s.changed[def.Key]; ok {
 		return s.formatValue(def, v)
 	}
 	// Read from config.
 	return s.formatValue(def, s.rawValue(def))
+}
+
+// accountDisplayValue returns the display string for an account row.
+func (s Settings) accountDisplayValue(def settingDef) string {
+	host := hostForProvider(def.ActionProvider)
+	acct, ok := s.accounts[host]
+	if !ok || acct.Token == "" {
+		return "Not connected"
+	}
+	if acct.Username != "" {
+		return "@" + acct.Username
+	}
+	return "Connected"
+}
+
+// hostForProvider returns the default host for a hosting provider.
+func hostForProvider(p auth.HostProvider) string {
+	switch p {
+	case auth.ProviderGitHub:
+		return "github.com"
+	case auth.ProviderGitLab:
+		return "gitlab.com"
+	case auth.ProviderAzureDevOps:
+		return "dev.azure.com"
+	case auth.ProviderBitbucket:
+		return "bitbucket.org"
+	default:
+		return ""
+	}
 }
 
 // rawValue reads the raw string value from config for a setting.
@@ -308,6 +392,12 @@ func (s Settings) buildContentLines() []string {
 		label := prefix + def.Label
 		value := s.currentValue(def)
 
+		// For account action rows, show a colored status + action hint.
+		if def.Kind == settingAction {
+			lines = append(lines, s.buildAccountLine(def, label, value, w, selected, bg, fg))
+			continue
+		}
+
 		// Truncate value if too long.
 		maxValueW := w/2 - 2
 		if maxValueW < 8 {
@@ -393,6 +483,24 @@ func (s Settings) activateSetting() (tea.Model, tea.Cmd) {
 		settingKey := def.Key
 		return s, func() tea.Msg {
 			return SettingsChangeMsg{Key: settingKey, Value: newVal}
+		}
+
+	case settingAction:
+		// Account action: Login or Logout.
+		host := hostForProvider(def.ActionProvider)
+		acct, connected := s.accounts[host]
+		if connected && acct.Token != "" {
+			// Logout: remove the account.
+			hostStr := host
+			return s, func() tea.Msg {
+				return RequestAccountLogoutMsg{Host: hostStr}
+			}
+		}
+		// Login: open the account login dialog.
+		_ = acct
+		provider := def.ActionProvider
+		return s, func() tea.Msg {
+			return RequestAccountLoginMsg{Provider: provider}
 		}
 
 	case settingList:
@@ -492,6 +600,83 @@ func (s Settings) updateSubPicker(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return s, cmd
 	}
 	return s, nil
+}
+
+// ---------------------------------------------------------------------------
+// Account line rendering
+// ---------------------------------------------------------------------------
+
+// buildAccountLine renders a single account row with status and action hint.
+// Format: "  GitHub     @username  [Logout]"  or  "  GitHub     Not connected  [Login]"
+func (s Settings) buildAccountLine(def settingDef, label, value string, w int, selected bool, bg, fg lipgloss.Color) string {
+	t := theme.Active
+
+	labelStyle := lipgloss.NewStyle().Foreground(fg).Background(bg)
+	labelRendered := labelStyle.Render(label)
+
+	// Determine connected state and action label.
+	host := hostForProvider(def.ActionProvider)
+	_, connected := s.accounts[host]
+	if connected {
+		acct := s.accounts[host]
+		connected = acct.Token != ""
+	}
+
+	var statusFg lipgloss.Color
+	actionLabel := "[Login]"
+	if connected {
+		actionLabel = "[Logout]"
+		if selected {
+			statusFg = t.Base
+		} else {
+			statusFg = t.Green
+		}
+	} else {
+		if selected {
+			statusFg = t.Base
+		} else {
+			statusFg = t.Overlay0
+		}
+	}
+
+	statusRendered := lipgloss.NewStyle().Foreground(statusFg).Background(bg).Render(value)
+
+	var actionFg lipgloss.Color
+	if selected {
+		actionFg = t.Base
+	} else if connected {
+		actionFg = t.Red
+	} else {
+		actionFg = t.Blue
+	}
+	actionRendered := lipgloss.NewStyle().Foreground(actionFg).Background(bg).Render(actionLabel)
+
+	// Layout: label + gap + status + " " + action + trailing
+	labelW := lipgloss.Width(labelRendered)
+	statusW := lipgloss.Width(statusRendered)
+	actionW := lipgloss.Width(actionRendered)
+
+	gap := w - labelW - statusW - actionW - 3 // 2 spaces + 1 trailing
+	if gap < 1 {
+		gap = 1
+	}
+	gapStr := lipgloss.NewStyle().Background(bg).Render(strings.Repeat(" ", gap))
+	spacer := lipgloss.NewStyle().Background(bg).Render("  ")
+	trailing := lipgloss.NewStyle().Background(bg).Render(" ")
+
+	line := labelRendered + gapStr + statusRendered + spacer + actionRendered + trailing
+
+	lineW := lipgloss.Width(line)
+	if lineW < w {
+		line += lipgloss.NewStyle().Background(bg).Render(strings.Repeat(" ", w-lineW))
+	}
+	return line
+}
+
+// RefreshAccounts reloads accounts from disk. Called after login/logout.
+func (s *Settings) RefreshAccounts() {
+	accounts, _ := auth.LoadAccounts()
+	s.accounts = accounts
 }
 
 // ---------------------------------------------------------------------------

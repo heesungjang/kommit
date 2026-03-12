@@ -85,6 +85,12 @@ type RequestSettingsChangeMsg struct {
 	Value string // new value
 }
 
+// RequestStashSaveMsg asks the app shell to stash current working changes.
+type RequestStashSaveMsg struct{}
+
+// RequestStashPopMsg asks the app shell to pop the most recent stash.
+type RequestStashPopMsg struct{}
+
 // RequestAICommitMsg asks the app shell to generate an AI commit message
 // from the currently staged changes.
 type RequestAICommitMsg struct{}
@@ -106,6 +112,20 @@ type AICommitErrorMsg struct {
 type RestoreCommitMsg struct {
 	Summary     string
 	Description string
+}
+
+// RequestCreatePRMsg asks the app shell to open the Create PR dialog.
+type RequestCreatePRMsg struct{}
+
+// PRCreatedMsg is sent when a PR is successfully created.
+type PRCreatedMsg struct {
+	Number int
+	URL    string
+}
+
+// PRCreateErrorMsg is sent when PR creation fails.
+type PRCreateErrorMsg struct {
+	Err error
 }
 
 // RequestCustomCmdMenuMsg asks the app shell to show the custom commands menu

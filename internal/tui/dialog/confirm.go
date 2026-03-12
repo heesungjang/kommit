@@ -114,7 +114,9 @@ func (c Confirm) buildContentLines() []string {
 			BorderBackground(t.Surface0)
 	}
 
-	btnSep := lipgloss.NewStyle().Background(t.Surface0).Render("  ")
+	// The separator must match the button height (3 lines due to borders)
+	// to avoid JoinHorizontal padding artifacts.
+	btnSep := lipgloss.NewStyle().Background(t.Surface0).Render("  \n  \n  ")
 	buttons := lipgloss.JoinHorizontal(lipgloss.Top,
 		yesStyle.Render("Yes"),
 		btnSep,

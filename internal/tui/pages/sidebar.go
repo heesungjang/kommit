@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/heesungjang/kommit/internal/git"
+	"github.com/heesungjang/kommit/internal/hosting"
 	"github.com/heesungjang/kommit/internal/tui/keys"
 	"github.com/heesungjang/kommit/internal/tui/styles"
 	"github.com/heesungjang/kommit/internal/tui/theme"
@@ -38,6 +39,23 @@ type SidebarViewStashMsg struct {
 	Index int
 }
 
+// SidebarPRsLoadedMsg delivers fetched pull requests to the sidebar.
+// This is sent by the app/LogPage since the sidebar doesn't have API tokens.
+type SidebarPRsLoadedMsg struct {
+	PRs []hosting.PullRequest
+	Err error
+}
+
+// SidebarViewPRMsg requests the main view to show PR details in the right panel.
+type SidebarViewPRMsg struct {
+	PR hosting.PullRequest
+}
+
+// SidebarOpenPRInBrowserMsg requests opening a PR URL in the system browser.
+type SidebarOpenPRInBrowserMsg struct {
+	URL string
+}
+
 // ---------------------------------------------------------------------------
 // Section types
 // ---------------------------------------------------------------------------
@@ -49,6 +67,7 @@ const (
 	sectionRemote
 	sectionTags
 	sectionStash
+	sectionPR
 	sectionCount // sentinel — number of sections
 )
 
@@ -65,6 +84,7 @@ type Sidebar struct {
 	remoteBranches []git.BranchInfo
 	tags           []git.TagInfo
 	stashes        []git.StashEntry
+	pullRequests   []hosting.PullRequest
 
 	// Section collapsed state
 	collapsed [sectionCount]bool
@@ -78,6 +98,7 @@ type Sidebar struct {
 	pendingDeleteBranch string
 	pendingDeleteTag    string
 	pendingDropStash    int
+	pendingPopStash     int
 	pendingRebaseBranch string
 
 	// State
@@ -89,6 +110,7 @@ type Sidebar struct {
 	navKeys    keys.NavigationKeys
 	branchKeys keys.BranchKeys
 	stashKeys  keys.StashKeys
+	prKeys     keys.PRKeys
 
 	// Dimensions
 	width  int
@@ -102,10 +124,12 @@ func NewSidebar(repo *git.Repository, width, height int) Sidebar {
 		navKeys:          keys.NewNavigationKeys(),
 		branchKeys:       keys.NewBranchKeys(),
 		stashKeys:        keys.NewStashKeys(),
+		prKeys:           keys.NewPRKeys(),
 		width:            width,
 		height:           height,
 		loading:          true,
 		pendingDropStash: -1,
+		pendingPopStash:  -1,
 	}
 }
 
@@ -126,6 +150,7 @@ const (
 	itemRemoteBranch
 	itemTag
 	itemStash
+	itemPR
 )
 
 type sidebarItem struct {
@@ -173,6 +198,15 @@ func (s Sidebar) visibleItems() []sidebarItem {
 				msg = e.Ref
 			}
 			items = append(items, sidebarItem{kind: itemStash, section: sectionStash, index: i, label: msg})
+		}
+	}
+
+	// PULL REQUESTS section
+	items = append(items, sidebarItem{kind: itemSectionHeader, section: sectionPR, label: fmt.Sprintf("PULL REQUESTS (%d)", len(s.pullRequests))})
+	if !s.collapsed[sectionPR] {
+		for i, pr := range s.pullRequests {
+			lbl := fmt.Sprintf("%s #%d %s", pr.StatusIcon(), pr.Number, pr.Title)
+			items = append(items, sidebarItem{kind: itemPR, section: sectionPR, index: i, label: lbl})
 		}
 	}
 
@@ -237,6 +271,14 @@ func (s Sidebar) Update(msg tea.Msg) (Sidebar, tea.Cmd) {
 		}
 		return s, nil
 
+	case SidebarPRsLoadedMsg:
+		if msg.Err != nil {
+			// Non-fatal — just leave the PR list empty
+			return s, nil
+		}
+		s.pullRequests = msg.PRs
+		return s, nil
+
 	case sidebarOpDoneMsg:
 		if msg.err != nil {
 			return s, func() tea.Msg {
@@ -292,6 +334,13 @@ func (s Sidebar) HandleDialogResult(msg tea.Msg) (Sidebar, tea.Cmd) {
 				return s, s.deleteBranch(name)
 			}
 			s.pendingDeleteBranch = ""
+		case "sidebar-stash-pop":
+			if msg.Confirmed && s.pendingPopStash >= 0 {
+				idx := s.pendingPopStash
+				s.pendingPopStash = -1
+				return s, s.stashPop(idx)
+			}
+			s.pendingPopStash = -1
 		case "sidebar-stash-drop":
 			if msg.Confirmed && s.pendingDropStash >= 0 {
 				idx := s.pendingDropStash
@@ -374,9 +423,12 @@ func (s Sidebar) handleKey(msg tea.KeyMsg) (Sidebar, tea.Cmd) {
 	case key.Matches(msg, key.NewBinding(key.WithKeys("enter", " "))):
 		return s.handleActivate()
 
-	// Branch / Tag actions — routed by current section
+	// Branch / Tag / PR actions — routed by current section
 	case key.Matches(msg, s.branchKeys.New):
 		cur := s.currentItem()
+		if cur != nil && cur.section == sectionPR {
+			return s, func() tea.Msg { return RequestCreatePRMsg{} }
+		}
 		if cur != nil && cur.section == sectionTags {
 			return s, func() tea.Msg {
 				return RequestTextInputMsg{ID: "sidebar-new-tag", Title: "New Tag (at HEAD)", Placeholder: "tag-name"}
@@ -397,6 +449,19 @@ func (s Sidebar) handleKey(msg tea.KeyMsg) (Sidebar, tea.Cmd) {
 		return s.handleMerge()
 	case key.Matches(msg, s.branchKeys.Rebase):
 		return s.handleRebase()
+
+	// PR actions
+	case key.Matches(msg, s.prKeys.OpenBrowser):
+		cur := s.currentItem()
+		if cur != nil && cur.kind == itemPR && cur.index < len(s.pullRequests) {
+			pr := s.pullRequests[cur.index]
+			if pr.URL != "" {
+				prURL := pr.URL
+				return s, func() tea.Msg {
+					return SidebarOpenPRInBrowserMsg{URL: prURL}
+				}
+			}
+		}
 
 	// Stash actions
 	case key.Matches(msg, s.stashKeys.Save):
@@ -456,6 +521,14 @@ func (s Sidebar) handleActivate() (Sidebar, tea.Cmd) {
 	if item.kind == itemStash && item.index < len(s.stashes) {
 		return s, func() tea.Msg {
 			return SidebarViewStashMsg{Index: s.stashes[item.index].Index}
+		}
+	}
+
+	// Pull Request: view details in right panel
+	if item.kind == itemPR && item.index < len(s.pullRequests) {
+		pr := s.pullRequests[item.index]
+		return s, func() tea.Msg {
+			return SidebarViewPRMsg{PR: pr}
 		}
 	}
 
@@ -549,7 +622,15 @@ func (s Sidebar) handleStashPop() (Sidebar, tea.Cmd) {
 	if item == nil || item.kind != itemStash || item.index >= len(s.stashes) {
 		return s, nil
 	}
-	return s, s.stashPop(s.stashes[item.index].Index)
+	e := s.stashes[item.index]
+	s.pendingPopStash = e.Index
+	return s, func() tea.Msg {
+		return RequestConfirmMsg{
+			ID:      "sidebar-stash-pop",
+			Title:   "Pop Stash?",
+			Message: fmt.Sprintf("Apply and remove stash entry '%s'?\n\nThis will modify your working tree.", e.Ref),
+		}
+	}
 }
 
 func (s Sidebar) handleStashApply() (Sidebar, tea.Cmd) {
@@ -702,6 +783,16 @@ func (s Sidebar) View(focused bool, borderColor lipgloss.Color, searching bool, 
 			text := prefix + truncate(item.label, iw-2)
 			line = lipgloss.NewStyle().
 				Foreground(t.Peach).Background(bg).Width(iw).
+				Render(text)
+
+		case itemPR:
+			prefix := "  "
+			if selected {
+				prefix = "▸ "
+			}
+			text := prefix + truncate(item.label, iw-2)
+			line = lipgloss.NewStyle().
+				Foreground(t.Sapphire).Background(bg).Width(iw).
 				Render(text)
 		}
 
@@ -954,6 +1045,11 @@ func (s Sidebar) StashCount() int {
 	return len(s.stashes)
 }
 
+// PRCount returns the number of pull requests.
+func (s Sidebar) PRCount() int {
+	return len(s.pullRequests)
+}
+
 // Filter returns the current client-side filter string.
 func (s Sidebar) Filter() string {
 	return s.filter
@@ -988,6 +1084,8 @@ func (s Sidebar) CurrentSectionName() string {
 		return "tags"
 	case sectionStash:
 		return "stash"
+	case sectionPR:
+		return "pr"
 	default:
 		return ""
 	}

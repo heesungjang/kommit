@@ -114,6 +114,57 @@ func (r *Repository) FetchRemote(remote string) error {
 	return err
 }
 
+// PushAuth pushes the current branch using the provided credentials.
+func (r *Repository) PushAuth(remote, branch, username, token string) error {
+	args := []string{"push"}
+	if remote != "" {
+		args = append(args, remote)
+	}
+	if branch != "" {
+		args = append(args, branch)
+	}
+	_, err := r.RunAuthenticated(username, token, args...)
+	return err
+}
+
+// PushSetUpstreamAuth pushes and sets upstream with credentials.
+func (r *Repository) PushSetUpstreamAuth(remote, branch, username, token string) error {
+	_, err := r.RunAuthenticated(username, token, "push", "-u", remote, branch)
+	return err
+}
+
+// ForcePushAuth force pushes with --force-with-lease using credentials.
+func (r *Repository) ForcePushAuth(remote, branch, username, token string) error {
+	args := []string{"push", "--force-with-lease"}
+	if remote != "" {
+		args = append(args, remote)
+	}
+	if branch != "" {
+		args = append(args, branch)
+	}
+	_, err := r.RunAuthenticated(username, token, args...)
+	return err
+}
+
+// PullAuth pulls using credentials.
+func (r *Repository) PullAuth(remote, branch, username, token string) error {
+	args := []string{"pull"}
+	if remote != "" {
+		args = append(args, remote)
+	}
+	if branch != "" {
+		args = append(args, branch)
+	}
+	_, err := r.RunAuthenticated(username, token, args...)
+	return err
+}
+
+// FetchAuth fetches from all remotes using credentials.
+func (r *Repository) FetchAuth(username, token string) error {
+	_, err := r.RunAuthenticated(username, token, "fetch", "--all", "--prune")
+	return err
+}
+
 // AddRemote adds a new remote.
 func (r *Repository) AddRemote(name, url string) error {
 	_, err := r.run("remote", "add", name, url)

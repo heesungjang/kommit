@@ -53,11 +53,20 @@ type anthropicError struct {
 // GenerateCommitMessage implements Provider.
 func (p *AnthropicProvider) GenerateCommitMessage(ctx context.Context, diff, stat string) (*CommitMessage, error) {
 	userPrompt := buildCommitPrompt(diff, stat)
+	text, err := p.generate(ctx, commitMessageSystemPrompt, userPrompt)
+	if err != nil {
+		return nil, err
+	}
+	return parseCommitMessage(text), nil
+}
 
+// generate sends a request to the Anthropic Messages API with the given
+// system prompt and user prompt, returning the raw response text.
+func (p *AnthropicProvider) generate(ctx context.Context, systemPrompt, userPrompt string) (string, error) {
 	reqBody := anthropicRequest{
 		Model:     p.model,
-		MaxTokens: 512,
-		System:    commitMessageSystemPrompt,
+		MaxTokens: 1024,
+		System:    systemPrompt,
 		Messages: []anthropicMessage{
 			{Role: "user", Content: userPrompt},
 		},
@@ -65,13 +74,13 @@ func (p *AnthropicProvider) GenerateCommitMessage(ctx context.Context, diff, sta
 
 	body, err := json.Marshal(reqBody)
 	if err != nil {
-		return nil, fmt.Errorf("marshal request: %w", err)
+		return "", fmt.Errorf("marshal request: %w", err)
 	}
 
 	url := p.baseURL + "/v1/messages"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
+		return "", fmt.Errorf("create request: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -80,30 +89,30 @@ func (p *AnthropicProvider) GenerateCommitMessage(ctx context.Context, diff, sta
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("send request: %w", err)
+		return "", fmt.Errorf("send request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("read response: %w", err)
+		return "", fmt.Errorf("read response: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
 		var errResp anthropicResponse
 		if json.Unmarshal(respBody, &errResp) == nil && errResp.Error != nil {
-			return nil, fmt.Errorf("anthropic API error (%d): %s", resp.StatusCode, errResp.Error.Message)
+			return "", fmt.Errorf("anthropic API error (%d): %s", resp.StatusCode, errResp.Error.Message)
 		}
-		return nil, fmt.Errorf("anthropic API error (%d): %s", resp.StatusCode, string(respBody))
+		return "", fmt.Errorf("anthropic API error (%d): %s", resp.StatusCode, string(respBody))
 	}
 
 	var result anthropicResponse
 	if err := json.Unmarshal(respBody, &result); err != nil {
-		return nil, fmt.Errorf("decode response: %w", err)
+		return "", fmt.Errorf("decode response: %w", err)
 	}
 
 	if len(result.Content) == 0 {
-		return nil, fmt.Errorf("anthropic returned empty response")
+		return "", fmt.Errorf("anthropic returned empty response")
 	}
 
 	// Concatenate all text blocks.
@@ -114,5 +123,5 @@ func (p *AnthropicProvider) GenerateCommitMessage(ctx context.Context, diff, sta
 		}
 	}
 
-	return parseCommitMessage(text), nil
+	return text, nil
 }

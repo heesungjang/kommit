@@ -101,7 +101,6 @@ func ShortHelp(ctx Context) []key.Binding {
 			CommitOps.ResetMenu,
 			CommitOps.BisectMenu,
 			CommitOps.CompareRef,
-			CommitOps.Undo,
 			Global.Search,
 		}, common...)
 
@@ -119,7 +118,6 @@ func ShortHelp(ctx Context) []key.Binding {
 			Navigation.Up,
 			Navigation.Down,
 			Branch.Checkout,
-			Branch.New,
 			Branch.Delete,
 			Branch.Rename,
 			Branch.Merge,
@@ -142,8 +140,6 @@ func ShortHelp(ctx Context) []key.Binding {
 		return append([]key.Binding{
 			Navigation.Up,
 			Navigation.Down,
-			Stash.Save,
-			Stash.Pop,
 			Stash.Apply,
 			Stash.Drop,
 		}, common...)
@@ -152,19 +148,14 @@ func ShortHelp(ctx Context) []key.Binding {
 		return append([]key.Binding{
 			Navigation.Up,
 			Navigation.Down,
-			RemoteOps.Fetch,
-			RemoteOps.Push,
-			RemoteOps.Pull,
 		}, common...)
 
 	case ContextPR:
 		return append([]key.Binding{
 			Navigation.Up,
 			Navigation.Down,
+			PR.OpenBrowser,
 			PR.Create,
-			PR.Approve,
-			PR.Merge,
-			PR.Comment,
 		}, common...)
 
 	case ContextDialog:
@@ -235,6 +226,8 @@ func FullHelp(ctx Context) [][]key.Binding {
 			Status.AICommit,
 			Status.Undo,
 			Status.Refresh,
+			Status.StashSave,
+			Status.StashPop,
 		})
 
 	case ContextBranches:

@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/heesungjang/kommit/internal/ai"
 	"github.com/heesungjang/kommit/internal/git"
 	"github.com/heesungjang/kommit/internal/tui/anim"
 	"github.com/heesungjang/kommit/internal/tui/dialog"
@@ -172,6 +173,14 @@ func (l LogPage) handleWIPDetailKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return l, func() tea.Msg { return RequestAICommitMsg{} }
 	}
 
+	// Stash save/pop — available from any WIP sub-focus when not editing
+	if !l.commitEditing && key.Matches(msg, l.statusKeys.StashSave) {
+		return l, func() tea.Msg { return RequestStashSaveMsg{} }
+	}
+	if !l.commitEditing && key.Matches(msg, l.statusKeys.StashPop) {
+		return l, func() tea.Msg { return RequestStashPopMsg{} }
+	}
+
 	// Section jump shortcuts: u/s/c (available when not actively editing text)
 	if !l.commitEditing {
 		switch {
@@ -197,7 +206,7 @@ func (l LogPage) handleWIPDetailKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Commit area selected but not editing — handle Enter/A to start editing
+	// Commit area selected but not editing — handle Enter/A/D to start editing or clear
 	if l.wipFocus == wipFocusCommit && !l.commitEditing {
 		switch {
 		case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
@@ -214,6 +223,12 @@ func (l LogPage) handleWIPDetailKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			l.commitSummary.Focus()
 			l.commitDesc.Blur()
 			return l, l.loadAmendPrefill()
+		case key.Matches(msg, key.NewBinding(key.WithKeys("D"))):
+			// Clear both commit summary and description fields
+			l.commitSummary.SetValue("")
+			l.commitDesc.SetValue("")
+			l.commitAmend = false
+			return l, nil
 		}
 		return l, nil
 	}
@@ -910,6 +925,16 @@ func (l LogPage) renderWIPDetail(width, height int) string {
 	// ---------------------------------------------------------------
 	// Build the context-dependent hint line (placed OUTSIDE the commit box)
 	// ---------------------------------------------------------------
+
+	// Resolve the active AI model name for display in AI-related hints.
+	aiModel := ""
+	if l.ctx != nil && l.ctx.Config != nil {
+		aiModel = l.ctx.Config.AI.Model
+		if aiModel == "" {
+			aiModel = ai.DefaultModel(l.ctx.Config.AI.Provider)
+		}
+	}
+
 	var hintText string
 	if commitFocused && l.commitEditing {
 		hintText = "Enter:commit  Tab:desc  Esc:stop"
@@ -917,10 +942,16 @@ func (l LogPage) renderWIPDetail(width, height int) string {
 			hintText = "ctrl+s:commit  Tab:summary  Esc:stop"
 		}
 	} else if commitFocused {
-		hintText = "Enter:edit  A:amend  ctrl+g:AI"
+		hintText = "Enter:edit  A:amend  D:clear  ctrl+g:AI"
+		if aiModel != "" {
+			hintText += " · " + aiModel
+		}
 	} else {
 		// ctrl+g works from any WIP sub-focus when not editing
 		hintText = "ctrl+g:AI commit"
+		if aiModel != "" {
+			hintText += " · " + aiModel
+		}
 	}
 	hintsLine := lipgloss.NewStyle().Background(t.Base).Width(iw).PaddingLeft(1).Render(
 		styles.KeyHintStyle().Render(hintText),

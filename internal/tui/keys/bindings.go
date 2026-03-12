@@ -154,6 +154,8 @@ type StatusKeys struct {
 	AICommit    key.Binding
 	Undo        key.Binding
 	Refresh     key.Binding
+	StashSave   key.Binding
+	StashPop    key.Binding
 }
 
 // NewStatusKeys returns populated status page keybindings.
@@ -210,6 +212,14 @@ func NewStatusKeys() StatusKeys {
 		Refresh: key.NewBinding(
 			key.WithKeys("r"),
 			key.WithHelp("r", "refresh"),
+		),
+		StashSave: key.NewBinding(
+			key.WithKeys("W"),
+			key.WithHelp("W", "stash save"),
+		),
+		StashPop: key.NewBinding(
+			key.WithKeys("X"),
+			key.WithHelp("X", "stash pop"),
 		),
 	}
 }
@@ -450,6 +460,7 @@ type PRKeys struct {
 	Merge         key.Binding
 	Comment       key.Binding
 	AIDescription key.Binding
+	OpenBrowser   key.Binding
 }
 
 // NewPRKeys returns populated pull request page keybindings.
@@ -474,6 +485,10 @@ func NewPRKeys() PRKeys {
 		AIDescription: key.NewBinding(
 			key.WithKeys("ctrl+g"),
 			key.WithHelp("ctrl+g", "AI description"),
+		),
+		OpenBrowser: key.NewBinding(
+			key.WithKeys("o"),
+			key.WithHelp("o", "open in browser"),
 		),
 	}
 }
@@ -530,6 +545,8 @@ func init() {
 		"status.aiCommit":    &Status.AICommit,
 		"status.undo":        &Status.Undo,
 		"status.refresh":     &Status.Refresh,
+		"status.stashSave":   &Status.StashSave,
+		"status.stashPop":    &Status.StashPop,
 
 		// Branches
 		"branch.new":      &Branch.New,
@@ -578,6 +595,7 @@ func init() {
 		"pr.merge":         &PR.Merge,
 		"pr.comment":       &PR.Comment,
 		"pr.aiDescription": &PR.AIDescription,
+		"pr.openBrowser":   &PR.OpenBrowser,
 	}
 }
 

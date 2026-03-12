@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/heesungjang/kommit/internal/git"
+	"github.com/heesungjang/kommit/internal/hosting"
 	"github.com/heesungjang/kommit/internal/tui/anim"
 	"github.com/heesungjang/kommit/internal/tui/components"
 	tuictx "github.com/heesungjang/kommit/internal/tui/context"
@@ -120,6 +122,10 @@ type LogPage struct {
 	viewingStash     bool
 	stashDiffIndex   int
 	stashDiffContent string
+
+	// Pull Request detail display
+	viewingPR bool
+	viewedPR  *hosting.PullRequest
 
 	// Center diff viewer — shows file diffs, hunk navigation, visual mode
 	diffViewer DiffViewer
@@ -328,6 +334,8 @@ func (l *LogPage) updateContext() {
 			keys.ActiveContext = keys.ContextStash
 		case "remote":
 			keys.ActiveContext = keys.ContextRemotes
+		case "pr":
+			keys.ActiveContext = keys.ContextPR
 		default:
 			keys.ActiveContext = keys.ContextBranches
 		}
@@ -820,8 +828,41 @@ func (l LogPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		l.sidebar, cmd = l.sidebar.Update(msg)
 		return l, cmd
+	case SidebarOpenPRInBrowserMsg:
+		prURL := msg.URL
+		return l, func() tea.Msg {
+			var cmd *exec.Cmd
+			switch runtime.GOOS {
+			case "linux":
+				cmd = exec.Command("xdg-open", prURL)
+			case "windows":
+				cmd = exec.Command("cmd", "/c", "start", prURL)
+			default:
+				cmd = exec.Command("open", prURL)
+			}
+			if err := cmd.Run(); err != nil {
+				return RequestToastMsg{Message: "Failed to open browser: " + err.Error(), IsError: true}
+			}
+			return RequestToastMsg{Message: "Opened PR in browser"}
+		}
+
+	case SidebarPRsLoadedMsg:
+		l.sidebar, _ = l.sidebar.Update(msg)
+		return l, nil
+
+	case SidebarViewPRMsg:
+		// Switch right panel to PR detail view
+		l.viewingStash = false
+		l.viewingPR = true
+		l.viewedPR = &msg.PR
+		l.diffViewer.Active = false
+		l.diffViewer.Lines = nil
+		l.diffViewer.Path = ""
+		return l, nil
+
 	case SidebarViewStashMsg:
 		// Switch right panel to stash diff view
+		l.viewingPR = false
 		l.viewingStash = true
 		l.stashDiffIndex = msg.Index
 		l.stashDiffContent = ""
@@ -1018,9 +1059,11 @@ func (l LogPage) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return l, nil
 	}
 
-	// When selecting a commit in the list, clear stash view mode
+	// When selecting a commit in the list, clear stash/PR view mode
 	if l.focus == focusLogList {
 		l.viewingStash = false
+		l.viewingPR = false
+		l.viewedPR = nil
 	}
 
 	// Global push/pull/fetch — available when center or right panel is focused
@@ -1172,6 +1215,8 @@ func (l LogPage) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		case zoneCenter:
 			l.focus = focusLogList
 			l.viewingStash = false
+			l.viewingPR = false
+			l.viewedPR = nil
 			itemY := msg.Y - 2
 			if itemY >= 0 {
 				ph := l.height - styles.PanelBorderHeight
@@ -1248,7 +1293,9 @@ func (l LogPage) View() string {
 	}
 
 	var rightPane string
-	if l.viewingStash {
+	if l.viewingPR && l.viewedPR != nil {
+		rightPane = l.renderPRDetail(pw.right, l.height)
+	} else if l.viewingStash {
 		rightPane = l.renderStashDiff(pw.right, l.height)
 	} else {
 		rightPane = l.renderCommitDetail(pw.right, l.height)
