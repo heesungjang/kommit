@@ -3,6 +3,8 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -94,6 +96,14 @@ type pollResultMsg struct {
 // App model
 // ---------------------------------------------------------------------------
 
+// activePage tracks which page is currently shown.
+type activePage int
+
+const (
+	pageLog       activePage = iota // normal repo view
+	pageWorkspace                   // workspace overview
+)
+
 // App is the root Bubble Tea model. It renders a single unified view
 // (sidebar | commit graph | context detail) plus a status bar and overlays.
 type App struct {
@@ -106,6 +116,10 @@ type App struct {
 	keys      keys.GlobalKeys
 	width     int
 	height    int
+
+	// Page management
+	page          activePage
+	workspacePage tea.Model // the WorkspacePage — workspace overview
 
 	// Dialog overlay (commit message, confirm, help, etc.)
 	dialog     tea.Model
@@ -136,6 +150,7 @@ type App struct {
 }
 
 // NewApp creates a new App rooted at the given repository.
+// If repo is nil the app starts in workspace mode.
 func NewApp(repo *git.Repository, cfg *config.Config) App {
 	ctx := tuictx.New(cfg, repo)
 	// Set the package-level Active theme so existing code that reads
@@ -147,23 +162,44 @@ func NewApp(repo *git.Repository, cfg *config.Config) App {
 		keys.ApplyOverrides(cfg.Keybinds.Custom)
 	}
 
-	keys.ActiveContext = keys.ContextLog
-	return App{
+	a := App{
 		ctx:       ctx,
 		repo:      repo,
-		mainView:  pages.NewLogPage(ctx, 80, 24), // initial size; updated on WindowSizeMsg
 		actionBar: components.NewActionBar(),
 		hintBar:   components.NewHintBar(),
 		statusBar: components.NewStatusBar(),
 		keys:      keys.NewGlobalKeys(),
 		toast:     components.NewToast(),
 	}
+
+	// Always create the workspace page so it's available for switching.
+	wsPage := pages.NewWorkspacePage(ctx, 80, 24)
+	a.workspacePage = wsPage
+
+	if repo != nil {
+		// Normal mode: open directly to repo view.
+		keys.ActiveContext = keys.ContextLog
+		a.page = pageLog
+		a.mainView = pages.NewLogPage(ctx, 80, 24)
+	} else {
+		// Workspace mode: no repo provided, show workspace overview.
+		keys.ActiveContext = keys.ContextWorkspace
+		a.page = pageWorkspace
+		// mainView stays nil — we use workspacePage in this mode.
+	}
+
+	return a
 }
 
 // Init initializes the application.
 func (a App) Init() tea.Cmd {
 	// Resolve logged-in username for the action bar.
 	a.actionBar = a.actionBar.SetUsername(a.resolveUsername())
+
+	if a.page == pageWorkspace {
+		return a.workspacePage.Init()
+	}
+
 	return tea.Batch(
 		a.mainView.Init(),
 		a.loadBranchInfo(),
@@ -189,14 +225,65 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.hintBar = a.hintBar.SetWidth(msg.Width)
 		a.statusBar = a.statusBar.SetSize(msg.Width)
 		a.toast = a.toast.SetWidth(msg.Width)
-		// Propagate to main view with adjusted height (minus status bar).
+		// Propagate to active page with adjusted height (minus chrome).
 		pageMsg := tea.WindowSizeMsg{
 			Width:  msg.Width,
 			Height: a.pageHeight(),
 		}
-		var cmd tea.Cmd
-		a.mainView, cmd = a.mainView.Update(pageMsg)
-		cmds = append(cmds, cmd)
+		if a.page == pageWorkspace && a.workspacePage != nil {
+			var cmd tea.Cmd
+			a.workspacePage, cmd = a.workspacePage.Update(pageMsg)
+			cmds = append(cmds, cmd)
+		}
+		if a.mainView != nil {
+			var cmd tea.Cmd
+			a.mainView, cmd = a.mainView.Update(pageMsg)
+			cmds = append(cmds, cmd)
+		}
+		return a, tea.Batch(cmds...)
+
+	// -- Switch to repo (async result) ----------------------------------------
+	case switchToRepoMsg:
+		a.repo = msg.repo
+		a.ctx.Repo = msg.repo
+		a.page = pageLog
+		keys.ActiveContext = keys.ContextLog
+		// Track in recent repos.
+		a.ctx.Config.AddRecentRepo(msg.path)
+		_ = config.Save(a.ctx.Config)
+		// Reconstruct LogPage with the new repo.
+		a.mainView = pages.NewLogPage(a.ctx, a.width, a.pageHeight())
+		return a, tea.Batch(
+			a.mainView.Init(),
+			a.loadBranchInfo(),
+			a.loadPullRequests(),
+			a.schedulePoll(),
+		)
+
+	// -- Switch back to already-loaded repo view (from workspace) ------------
+	case backToRepoMsg:
+		if a.repo != nil && a.mainView != nil {
+			a.page = pageLog
+			keys.ActiveContext = keys.ContextLog
+		}
+		return a, nil
+
+	// -- Switch to workspace view ---------------------------------------------
+	case showWorkspaceMsg:
+		a.page = pageWorkspace
+		keys.ActiveContext = keys.ContextWorkspace
+		if wp, ok := a.workspacePage.(interface{ Sync() }); ok {
+			wp.Sync()
+		}
+		// Resize workspace page to current dimensions.
+		if a.workspacePage != nil {
+			var cmd tea.Cmd
+			a.workspacePage, cmd = a.workspacePage.Update(tea.WindowSizeMsg{
+				Width:  a.width,
+				Height: a.pageHeight(),
+			})
+			cmds = append(cmds, cmd, a.workspacePage.Init())
+		}
 		return a, tea.Batch(cmds...)
 
 	// -- Toast dismiss -------------------------------------------------------
@@ -385,9 +472,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// -- Settings updated — forward to main view even while dialog is open --
 	case pages.SettingsUpdatedMsg:
-		var cmd tea.Cmd
-		a.mainView, cmd = a.mainView.Update(msg)
-		return a, cmd
+		if a.mainView != nil {
+			var cmd tea.Cmd
+			a.mainView, cmd = a.mainView.Update(msg)
+			return a, cmd
+		}
+		return a, nil
 
 	// -- Confirm dialog result -----------------------------------------------
 	case dialog.ConfirmResultMsg:
@@ -416,6 +506,23 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			return a, nil
+		}
+		// Handle workspace confirmations (delete workspace, remove repo).
+		if strings.HasPrefix(msg.ID, "workspace-delete-") && msg.Confirmed {
+			idxStr := strings.TrimPrefix(msg.ID, "workspace-delete-")
+			idx := 0
+			_, _ = fmt.Sscanf(idxStr, "%d", &idx)
+			return a, func() tea.Msg {
+				return pages.RequestDeleteWorkspaceMsg{WorkspaceIndex: idx}
+			}
+		}
+		if strings.HasPrefix(msg.ID, "workspace-removerepo-") && msg.Confirmed {
+			idxStr := strings.TrimPrefix(msg.ID, "workspace-removerepo-")
+			var wsIdx, rIdx int
+			_, _ = fmt.Sscanf(idxStr, "%d-%d", &wsIdx, &rIdx)
+			return a, func() tea.Msg {
+				return pages.RequestRemoveRepoFromWorkspaceMsg{WorkspaceIndex: wsIdx, RepoIndex: rIdx}
+			}
 		}
 		// Handle commit confirmation.
 		if msg.ID == "commit" {
@@ -503,9 +610,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, tea.Batch(toastCmd, a.doGitOp(op, force))
 		}
 		// Forward all other confirmations to the main view
-		var cmd tea.Cmd
-		a.mainView, cmd = a.mainView.Update(msg)
-		cmds = append(cmds, cmd)
+		if a.mainView != nil {
+			var cmd tea.Cmd
+			a.mainView, cmd = a.mainView.Update(msg)
+			cmds = append(cmds, cmd)
+		}
 		return a, tea.Batch(cmds...)
 
 	// -- Commit dialog -------------------------------------------------------
@@ -578,9 +687,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.ID == "custom-commands" {
 			return a, a.executeCustomCommand(msg.Index)
 		}
-		var cmd tea.Cmd
-		a.mainView, cmd = a.mainView.Update(msg)
-		cmds = append(cmds, cmd)
+		if a.mainView != nil {
+			var cmd tea.Cmd
+			a.mainView, cmd = a.mainView.Update(msg)
+			cmds = append(cmds, cmd)
+		}
 		return a, tea.Batch(cmds...)
 
 	case dialog.MenuCancelMsg:
@@ -701,22 +812,30 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.showDialog = true
 		return a, dlg.Init()
 
-	// -- Text input result — close dialog, route to main view ---------------
+	// -- Text input result — close dialog, route appropriately ---------------
 	case dialog.TextInputResultMsg:
 		a.showDialog = false
 		a.dialog = nil
-		var cmd tea.Cmd
-		a.mainView, cmd = a.mainView.Update(msg)
-		cmds = append(cmds, cmd)
+		// Handle workspace-related text input results.
+		if strings.HasPrefix(msg.ID, "workspace-") {
+			return a, a.handleWorkspaceTextInput(msg.ID, msg.Value)
+		}
+		if a.mainView != nil {
+			var cmd tea.Cmd
+			a.mainView, cmd = a.mainView.Update(msg)
+			cmds = append(cmds, cmd)
+		}
 		return a, tea.Batch(cmds...)
 
-	// -- Text input cancel — close dialog, route to main view ---------------
+	// -- Text input cancel — close dialog, route appropriately ---------------
 	case dialog.TextInputCancelMsg:
 		a.showDialog = false
 		a.dialog = nil
-		var cmd tea.Cmd
-		a.mainView, cmd = a.mainView.Update(msg)
-		cmds = append(cmds, cmd)
+		if a.mainView != nil {
+			var cmd tea.Cmd
+			a.mainView, cmd = a.mainView.Update(msg)
+			cmds = append(cmds, cmd)
+		}
 		return a, tea.Batch(cmds...)
 
 	// -- Custom command done --------------------------------------------------
@@ -771,14 +890,20 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// -- AI commit result — route back to main view ----------------------
 	case pages.AICommitResultMsg:
-		var cmd tea.Cmd
-		a.mainView, cmd = a.mainView.Update(msg)
-		return a, cmd
+		if a.mainView != nil {
+			var cmd tea.Cmd
+			a.mainView, cmd = a.mainView.Update(msg)
+			return a, cmd
+		}
+		return a, nil
 
 	case pages.AICommitErrorMsg:
-		var cmd tea.Cmd
-		a.mainView, cmd = a.mainView.Update(msg)
-		return a, cmd
+		if a.mainView != nil {
+			var cmd tea.Cmd
+			a.mainView, cmd = a.mainView.Update(msg)
+			return a, cmd
+		}
+		return a, nil
 
 	// -- Create PR request from sidebar/command palette ----------------------
 	case pages.RequestCreatePRMsg:
@@ -851,9 +976,154 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// -- Refresh after mutations ---------------------------------------------
 	case pages.RefreshStatusMsg:
-		var cmd tea.Cmd
-		a.mainView, cmd = a.mainView.Update(msg)
-		cmds = append(cmds, cmd, a.loadBranchInfo(), a.loadPullRequests())
+		if a.mainView != nil {
+			var cmd tea.Cmd
+			a.mainView, cmd = a.mainView.Update(msg)
+			cmds = append(cmds, cmd, a.loadBranchInfo(), a.loadPullRequests())
+		}
+		return a, tea.Batch(cmds...)
+
+	// -- Workspace: open a repo -----------------------------------------------
+	case pages.RequestOpenRepoMsg:
+		return a, a.switchToRepo(msg.Path)
+
+	// -- Workspace: show workspace page ---------------------------------------
+	case pages.RequestShowWorkspaceMsg:
+		return a, a.switchToWorkspace()
+
+	// -- Workspace: new workspace (from text input result) --------------------
+	case pages.RequestNewWorkspaceMsg:
+		if msg.Name != "" {
+			cfg := a.ctx.Config
+			cfg.Workspaces = append(cfg.Workspaces, config.WorkspaceEntry{Name: msg.Name})
+			_ = config.Save(cfg)
+			if wp, ok := a.workspacePage.(interface{ Sync() }); ok {
+				wp.Sync()
+			}
+			var toastCmd tea.Cmd
+			a.toast, toastCmd = a.toast.ShowSuccess("Workspace \"" + msg.Name + "\" created")
+			return a, toastCmd
+		}
+		return a, nil
+
+	// -- Workspace: delete workspace ------------------------------------------
+	case pages.RequestDeleteWorkspaceMsg:
+		cfg := a.ctx.Config
+		idx := msg.WorkspaceIndex
+		if idx >= 0 && idx < len(cfg.Workspaces) {
+			name := cfg.Workspaces[idx].Name
+			cfg.Workspaces = append(cfg.Workspaces[:idx], cfg.Workspaces[idx+1:]...)
+			_ = config.Save(cfg)
+			if wp, ok := a.workspacePage.(interface{ Sync() }); ok {
+				wp.Sync()
+			}
+			var toastCmd tea.Cmd
+			a.toast, toastCmd = a.toast.ShowSuccess("Workspace \"" + name + "\" deleted")
+			return a, toastCmd
+		}
+		return a, nil
+
+	// -- Workspace: rename workspace ------------------------------------------
+	case pages.RequestRenameWorkspaceMsg:
+		cfg := a.ctx.Config
+		idx := msg.WorkspaceIndex
+		if idx >= 0 && idx < len(cfg.Workspaces) && msg.NewName != "" {
+			cfg.Workspaces[idx].Name = msg.NewName
+			_ = config.Save(cfg)
+			if wp, ok := a.workspacePage.(interface{ Sync() }); ok {
+				wp.Sync()
+			}
+		}
+		return a, nil
+
+	// -- Workspace: add repo to workspace ------------------------------------
+	case pages.RequestAddRepoToWorkspaceMsg:
+		cfg := a.ctx.Config
+		idx := msg.WorkspaceIndex
+		if idx >= 0 && idx < len(cfg.Workspaces) && msg.RepoPath != "" {
+			// Expand ~ in the path.
+			repoPath := expandPath(msg.RepoPath)
+			// Validate it's a git repo.
+			if _, err := git.Open(repoPath); err != nil {
+				var toastCmd tea.Cmd
+				a.toast, toastCmd = a.toast.ShowError("Not a git repository: " + repoPath)
+				return a, toastCmd
+			}
+			// Check for duplicate.
+			for _, existing := range cfg.Workspaces[idx].Repos {
+				if existing == repoPath {
+					var toastCmd tea.Cmd
+					a.toast, toastCmd = a.toast.ShowError("Repository already in workspace")
+					return a, toastCmd
+				}
+			}
+			cfg.Workspaces[idx].Repos = append(cfg.Workspaces[idx].Repos, repoPath)
+			_ = config.Save(cfg)
+			if wp, ok := a.workspacePage.(interface{ Sync() }); ok {
+				wp.Sync()
+			}
+			var toastCmd tea.Cmd
+			a.toast, toastCmd = a.toast.ShowSuccess("Added to workspace")
+			return a, toastCmd
+		}
+		return a, nil
+
+	// -- Workspace: remove repo from workspace --------------------------------
+	case pages.RequestRemoveRepoFromWorkspaceMsg:
+		cfg := a.ctx.Config
+		wsIdx := msg.WorkspaceIndex
+		rIdx := msg.RepoIndex
+		if wsIdx >= 0 && wsIdx < len(cfg.Workspaces) {
+			repos := cfg.Workspaces[wsIdx].Repos
+			if rIdx >= 0 && rIdx < len(repos) {
+				cfg.Workspaces[wsIdx].Repos = append(repos[:rIdx], repos[rIdx+1:]...)
+				_ = config.Save(cfg)
+				if wp, ok := a.workspacePage.(interface{ Sync() }); ok {
+					wp.Sync()
+				}
+			}
+		}
+		return a, nil
+
+	// -- Workspace: fetch all repos in a workspace ----------------------------
+	case pages.RequestWorkspaceFetchAllMsg:
+		cfg := a.ctx.Config
+		idx := msg.WorkspaceIndex
+		if idx >= 0 && idx < len(cfg.Workspaces) {
+			var toastCmd tea.Cmd
+			a.toast, toastCmd = a.toast.ShowInfo("Fetching all repos...")
+			return a, tea.Batch(toastCmd, a.doWorkspaceBulkOp("fetch", cfg.Workspaces[idx].Repos))
+		}
+		return a, nil
+
+	// -- Workspace: pull all repos in a workspace -----------------------------
+	case pages.RequestWorkspacePullAllMsg:
+		cfg := a.ctx.Config
+		idx := msg.WorkspaceIndex
+		if idx >= 0 && idx < len(cfg.Workspaces) {
+			var toastCmd tea.Cmd
+			a.toast, toastCmd = a.toast.ShowInfo("Pulling all repos...")
+			return a, tea.Batch(toastCmd, a.doWorkspaceBulkOp("pull", cfg.Workspaces[idx].Repos))
+		}
+		return a, nil
+
+	// -- Workspace: bulk op done ----------------------------------------------
+	case pages.WorkspaceBulkOpDoneMsg:
+		if msg.Failed > 0 {
+			var toastCmd tea.Cmd
+			a.toast, toastCmd = a.toast.ShowError(fmt.Sprintf("%s: %d/%d failed", capitalize(msg.Op), msg.Failed, msg.Total))
+			cmds = append(cmds, toastCmd)
+		} else {
+			var toastCmd tea.Cmd
+			a.toast, toastCmd = a.toast.ShowSuccess(fmt.Sprintf("%s: %d repos done", capitalize(msg.Op), msg.Total))
+			cmds = append(cmds, toastCmd)
+		}
+		// Forward to workspace page to refresh statuses.
+		if a.page == pageWorkspace && a.workspacePage != nil {
+			var cmd tea.Cmd
+			a.workspacePage, cmd = a.workspacePage.Update(msg)
+			cmds = append(cmds, cmd)
+		}
 		return a, tea.Batch(cmds...)
 
 	// -- Auto-refresh polling ------------------------------------------------
@@ -879,10 +1149,16 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil // clicks on status bar — ignore
 		}
 
-		// All mouse events go to the main view (no tab bar to intercept).
-		var cmd tea.Cmd
-		a.mainView, cmd = a.mainView.Update(msg)
-		cmds = append(cmds, cmd)
+		// Route mouse events to the active page.
+		if a.page == pageWorkspace && a.workspacePage != nil {
+			var cmd tea.Cmd
+			a.workspacePage, cmd = a.workspacePage.Update(msg)
+			cmds = append(cmds, cmd)
+		} else if a.mainView != nil {
+			var cmd tea.Cmd
+			a.mainView, cmd = a.mainView.Update(msg)
+			cmds = append(cmds, cmd)
+		}
 		return a, tea.Batch(cmds...)
 
 	// -- Key events ----------------------------------------------------------
@@ -908,10 +1184,25 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Global shortcuts.
 			switch {
 			case key.Matches(msg, a.keys.Quit):
+				// In workspace mode, quit directly without confirmation.
+				if a.page == pageWorkspace && a.repo == nil {
+					return a, tea.Quit
+				}
 				dlg := dialog.NewConfirm("quit", "Quit?", "Are you sure you want to quit?", a.ctx)
 				a.dialog = dlg
 				a.showDialog = true
 				return a, dlg.Init()
+			case key.Matches(msg, a.keys.ToggleWorkspace):
+				if a.page == pageWorkspace {
+					// Switch back to repo view if we have a repo loaded.
+					if a.repo != nil {
+						a.page = pageLog
+						keys.ActiveContext = keys.ContextLog
+					}
+					return a, nil
+				}
+				// Switch to workspace view.
+				return a, a.switchToWorkspace()
 			case key.Matches(msg, a.keys.Help):
 				kctx := keys.ActiveContext
 				pctx := a.ctx
@@ -931,12 +1222,16 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	}
 
-	// -- Fallthrough: route to dialog or main view ---------------------------
+	// -- Fallthrough: route to dialog or active page --------------------------
 	if a.showDialog && a.dialog != nil {
 		updated, cmd := a.dialog.Update(msg)
 		a.dialog = updated
 		cmds = append(cmds, cmd)
-	} else {
+	} else if a.page == pageWorkspace && a.workspacePage != nil {
+		var cmd tea.Cmd
+		a.workspacePage, cmd = a.workspacePage.Update(msg)
+		cmds = append(cmds, cmd)
+	} else if a.mainView != nil {
 		var cmd tea.Cmd
 		a.mainView, cmd = a.mainView.Update(msg)
 		cmds = append(cmds, cmd)
@@ -992,7 +1287,13 @@ func (a App) View() string {
 		pageHeight = 0
 	}
 
-	pageView := a.mainView.View()
+	// Render the active page.
+	var pageView string
+	if a.page == pageWorkspace && a.workspacePage != nil {
+		pageView = a.workspacePage.View()
+	} else if a.mainView != nil {
+		pageView = a.mainView.View()
+	}
 	pageView = lipgloss.NewStyle().
 		Width(a.width).
 		Height(pageHeight).
@@ -1060,6 +1361,9 @@ func (a App) pageHeight() int {
 // loadBranchInfo returns a Cmd that refreshes the status bar with branch info.
 func (a App) loadBranchInfo() tea.Cmd {
 	repo := a.repo
+	if repo == nil {
+		return nil
+	}
 	return func() tea.Msg {
 		branch, _ := repo.Head()
 		ahead, behind, _ := repo.AheadBehind()
@@ -1367,6 +1671,9 @@ func (a App) schedulePoll() tea.Cmd {
 // checkFingerprint runs a lightweight git status check in the background.
 func (a App) checkFingerprint() tea.Cmd {
 	repo := a.repo
+	if repo == nil {
+		return nil
+	}
 	prev := a.lastFingerprint
 	return func() tea.Msg {
 		fp := repo.StatusFingerprint()
@@ -2032,6 +2339,155 @@ func (a App) createPullRequest(msg dialog.CreatePRSubmitMsg) tea.Cmd {
 
 		return pages.PRCreatedMsg{Number: pr.Number, URL: pr.URL}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Workspace helpers
+// ---------------------------------------------------------------------------
+
+// switchToRepo opens a repository and switches to the log page. If path is
+// empty, it switches back to the last opened repo (if one is loaded).
+func (a App) switchToRepo(path string) tea.Cmd {
+	if path == "" {
+		// Switch back to current repo view if we have one.
+		if a.repo != nil {
+			// Return a command that sends backToRepoMsg so the switch
+			// happens in the Update() method (not on a value-receiver copy).
+			return func() tea.Msg { return backToRepoMsg{} }
+		}
+		return nil
+	}
+
+	repoPath := expandPath(path)
+	return func() tea.Msg {
+		repo, err := git.Open(repoPath)
+		if err != nil {
+			return pages.RequestToastMsg{Message: "Cannot open: " + err.Error(), IsError: true}
+		}
+		return switchToRepoMsg{repo: repo, path: repoPath}
+	}
+}
+
+// backToRepoMsg tells the app to switch back to the log page for the
+// currently loaded repo (without reopening it).
+type backToRepoMsg struct{}
+
+// switchToRepoMsg carries a successfully opened repo from the background.
+type switchToRepoMsg struct {
+	repo *git.Repository
+	path string
+}
+
+// switchToWorkspace switches to the workspace page.
+func (a App) switchToWorkspace() tea.Cmd {
+	return func() tea.Msg {
+		return showWorkspaceMsg{}
+	}
+}
+
+type showWorkspaceMsg struct{}
+
+// doWorkspaceBulkOp runs fetch or pull on a list of repo paths concurrently.
+// It attempts to resolve credentials for each repo's origin remote so that
+// private repos are supported.
+func (a App) doWorkspaceBulkOp(op string, paths []string) tea.Cmd {
+	return func() tea.Msg {
+		type result struct {
+			path string
+			err  error
+		}
+		ch := make(chan result, len(paths))
+		for _, p := range paths {
+			go func(repoPath string) {
+				repo, err := git.Open(repoPath)
+				if err != nil {
+					ch <- result{path: repoPath, err: err}
+					return
+				}
+				// Try to resolve credentials for this repo's origin.
+				user, token := "", ""
+				if remoteURL, urlErr := repo.RemoteURL("origin"); urlErr == nil && remoteURL != "" {
+					if acct := auth.AccountForRemote(remoteURL); acct != nil && acct.Token != "" {
+						user, token = acct.GitUser, acct.Token
+					}
+				}
+				switch op {
+				case "fetch":
+					if token != "" {
+						err = repo.FetchAuth(user, token)
+					} else {
+						err = repo.Fetch()
+					}
+				case "pull":
+					if token != "" {
+						err = repo.PullAuth("", "", user, token)
+					} else {
+						err = repo.Pull("", "")
+					}
+				}
+				ch <- result{path: repoPath, err: err}
+			}(p)
+		}
+
+		var errors []string
+		for range paths {
+			r := <-ch
+			if r.err != nil {
+				errors = append(errors, r.path+": "+r.err.Error())
+			}
+		}
+
+		return pages.WorkspaceBulkOpDoneMsg{
+			Op:     op,
+			Total:  len(paths),
+			Failed: len(errors),
+			Errors: errors,
+		}
+	}
+}
+
+// handleWorkspaceTextInput processes text input results for workspace operations.
+func (a App) handleWorkspaceTextInput(id, value string) tea.Cmd {
+	switch {
+	case id == "workspace-new":
+		return func() tea.Msg {
+			return pages.RequestNewWorkspaceMsg{Name: value}
+		}
+	case strings.HasPrefix(id, "workspace-rename-"):
+		idxStr := strings.TrimPrefix(id, "workspace-rename-")
+		idx := 0
+		_, _ = fmt.Sscanf(idxStr, "%d", &idx)
+		return func() tea.Msg {
+			return pages.RequestRenameWorkspaceMsg{WorkspaceIndex: idx, NewName: value}
+		}
+	case strings.HasPrefix(id, "workspace-addrepo-"):
+		idxStr := strings.TrimPrefix(id, "workspace-addrepo-")
+		idx := 0
+		_, _ = fmt.Sscanf(idxStr, "%d", &idx)
+		return func() tea.Msg {
+			return pages.RequestAddRepoToWorkspaceMsg{WorkspaceIndex: idx, RepoPath: value}
+		}
+	}
+	return nil
+}
+
+// expandPath expands ~ to the user's home directory.
+func expandPath(path string) string {
+	if strings.HasPrefix(path, "~/") || path == "~" {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			if path == "~" {
+				return home
+			}
+			return filepath.Join(home, path[2:])
+		}
+	}
+	// Try making it absolute.
+	abs, err := filepath.Abs(path)
+	if err == nil {
+		return abs
+	}
+	return path
 }
 
 // generatePRDescription uses the AI provider to generate a PR title and body

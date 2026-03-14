@@ -7,6 +7,7 @@ import (
 )
 
 // Run launches the opengit TUI, blocking until the user quits.
+// repo may be nil, in which case the app starts in workspace mode.
 func Run(repo *git.Repository, cfg *config.Config) error {
 	app := NewApp(repo, cfg)
 	p := tea.NewProgram(

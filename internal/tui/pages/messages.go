@@ -140,3 +140,61 @@ type RequestCustomCmdMenuMsg struct {
 	Subject   string
 	Author    string
 }
+
+// ---------------------------------------------------------------------------
+// Workspace messages
+// ---------------------------------------------------------------------------
+
+// RequestOpenRepoMsg asks the app shell to switch to a repo by path.
+type RequestOpenRepoMsg struct {
+	Path string
+}
+
+// RequestShowWorkspaceMsg asks the app shell to switch to the workspace view.
+type RequestShowWorkspaceMsg struct{}
+
+// RequestAddRepoToWorkspaceMsg asks the app shell to add a repo to a workspace.
+type RequestAddRepoToWorkspaceMsg struct {
+	WorkspaceIndex int
+	RepoPath       string
+}
+
+// RequestRemoveRepoFromWorkspaceMsg asks the app shell to remove a repo from a workspace.
+type RequestRemoveRepoFromWorkspaceMsg struct {
+	WorkspaceIndex int
+	RepoIndex      int
+}
+
+// RequestNewWorkspaceMsg asks the app shell to create a new workspace.
+type RequestNewWorkspaceMsg struct {
+	Name string
+}
+
+// RequestDeleteWorkspaceMsg asks the app shell to delete a workspace.
+type RequestDeleteWorkspaceMsg struct {
+	WorkspaceIndex int
+}
+
+// RequestRenameWorkspaceMsg asks the app shell to rename a workspace.
+type RequestRenameWorkspaceMsg struct {
+	WorkspaceIndex int
+	NewName        string
+}
+
+// RequestWorkspaceFetchAllMsg asks the app shell to fetch all repos in a workspace.
+type RequestWorkspaceFetchAllMsg struct {
+	WorkspaceIndex int
+}
+
+// RequestWorkspacePullAllMsg asks the app shell to pull all repos in a workspace.
+type RequestWorkspacePullAllMsg struct {
+	WorkspaceIndex int
+}
+
+// WorkspaceBulkOpDoneMsg signals that a bulk workspace operation completed.
+type WorkspaceBulkOpDoneMsg struct {
+	Op     string // "fetch" or "pull"
+	Total  int
+	Failed int
+	Errors []string
+}

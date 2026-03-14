@@ -44,6 +44,8 @@ func ContextLabel(ctx Context) string {
 		return "Detail"
 	case ContextPR:
 		return "Pull Requests"
+	case ContextWorkspace:
+		return "Workspace"
 	case ContextDialog:
 		return "Dialog"
 	default:
@@ -65,6 +67,7 @@ var (
 	Stash      = NewStashKeys()
 	PR         = NewPRKeys()
 	RemoteOps  = NewRemoteOpsKeys()
+	Workspace  = NewWorkspaceKeys()
 )
 
 // ---------------------------------------------------------------------------
@@ -158,6 +161,17 @@ func ShortHelp(ctx Context) []key.Binding {
 			PR.Create,
 		}, common...)
 
+	case ContextWorkspace:
+		return append([]key.Binding{
+			Navigation.Up,
+			Navigation.Down,
+			Workspace.Open,
+			Workspace.NewWorkspace,
+			Workspace.AddRepo,
+			Workspace.FetchAll,
+			Workspace.BackToRepo,
+		}, common...)
+
 	case ContextDialog:
 		return []key.Binding{
 			Navigation.Select,
@@ -189,6 +203,7 @@ func FullHelp(ctx Context) [][]key.Binding {
 		Global.CommandPalette,
 		Global.CustomCommands,
 		Global.Settings,
+		Global.ToggleWorkspace,
 	}
 
 	panelGroup := []key.Binding{
@@ -302,6 +317,20 @@ func FullHelp(ctx Context) [][]key.Binding {
 			PR.Merge,
 			PR.Comment,
 			PR.AIDescription,
+		})
+
+	case ContextWorkspace:
+		return append(base, []key.Binding{
+			Workspace.Open,
+			Workspace.NewWorkspace,
+			Workspace.DeleteWorkspace,
+			Workspace.RenameWorkspace,
+			Workspace.AddRepo,
+			Workspace.RemoveRepo,
+			Workspace.FetchAll,
+			Workspace.PullAll,
+			Workspace.ToggleCollapse,
+			Workspace.BackToRepo,
 		})
 
 	default:

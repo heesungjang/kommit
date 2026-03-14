@@ -9,6 +9,33 @@ type Config struct {
 	Keybinds       KeybindConfig    `json:"keybinds" mapstructure:"keybinds"`
 	Appearance     AppearanceConfig `json:"appearance" mapstructure:"appearance"`
 	CustomCommands []CustomCommand  `json:"customCommands" mapstructure:"customCommands"`
+	Workspaces     []WorkspaceEntry `json:"workspaces" mapstructure:"workspaces"`
+	RecentRepos    []string         `json:"recentRepos" mapstructure:"recentRepos"`
+}
+
+// WorkspaceEntry defines a named group of git repositories.
+type WorkspaceEntry struct {
+	Name  string   `json:"name" mapstructure:"name"`   // display name (e.g. "My Microservices")
+	Repos []string `json:"repos" mapstructure:"repos"` // absolute paths to repo roots
+	Color string   `json:"color" mapstructure:"color"` // optional theme color name (e.g. "blue", "green")
+}
+
+// MaxRecentRepos is the maximum number of recent repos to track.
+const MaxRecentRepos = 10
+
+// AddRecentRepo prepends a repo path to the recent repos list, deduplicating
+// and capping at MaxRecentRepos.
+func (c *Config) AddRecentRepo(path string) {
+	filtered := make([]string, 0, len(c.RecentRepos))
+	for _, p := range c.RecentRepos {
+		if p != path {
+			filtered = append(filtered, p)
+		}
+	}
+	c.RecentRepos = append([]string{path}, filtered...)
+	if len(c.RecentRepos) > MaxRecentRepos {
+		c.RecentRepos = c.RecentRepos[:MaxRecentRepos]
+	}
 }
 
 // CustomCommand defines a user-configured shell command that can be triggered

@@ -10,8 +10,9 @@ import (
 )
 
 var (
-	repoPath string
-	debug    bool
+	repoPath      string
+	debug         bool
+	workspaceMode bool
 )
 
 var rootCmd = &cobra.Command{
@@ -19,7 +20,7 @@ var rootCmd = &cobra.Command{
 	Short: "Terminal-native git client",
 	Long:  "kommit is a beautiful terminal-native git client.",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return app.Run(repoPath, debug)
+		return app.Run(repoPath, debug, workspaceMode)
 	},
 }
 
@@ -34,6 +35,7 @@ var versionCmd = &cobra.Command{
 func init() {
 	rootCmd.PersistentFlags().StringVarP(&repoPath, "repo", "r", ".", "Path to git repository")
 	rootCmd.PersistentFlags().BoolVarP(&debug, "debug", "d", false, "Enable debug logging")
+	rootCmd.PersistentFlags().BoolVarP(&workspaceMode, "workspace", "w", false, "Open workspace overview")
 	rootCmd.AddCommand(versionCmd)
 }
 

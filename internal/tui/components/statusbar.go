@@ -181,6 +181,7 @@ func (sb StatusBar) View() string {
 	if sb.focusLabel != "" {
 		rightParts += lipgloss.NewStyle().Foreground(t.Blue).Bold(true).Render(sb.focusLabel) + "  "
 	}
+	rightParts += styles.KeyStyle().Render("ctrl+w") + styles.KeyHintStyle().Render(":workspaces") + "  "
 	rightParts += styles.KeyStyle().Render("?") + styles.KeyHintStyle().Render(":help")
 	helpHint := rightParts
 

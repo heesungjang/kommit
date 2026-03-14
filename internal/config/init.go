@@ -204,6 +204,27 @@ func yamlMarshal(v any) ([]byte, error) {
 		vp.Set("customCommands", cmds)
 	}
 
+	// Only write workspaces if there are any.
+	if len(cfg.Workspaces) > 0 {
+		ws := make([]map[string]any, len(cfg.Workspaces))
+		for i, w := range cfg.Workspaces {
+			m := map[string]any{
+				"name":  w.Name,
+				"repos": w.Repos,
+			}
+			if w.Color != "" {
+				m["color"] = w.Color
+			}
+			ws[i] = m
+		}
+		vp.Set("workspaces", ws)
+	}
+
+	// Only write recent repos if there are any.
+	if len(cfg.RecentRepos) > 0 {
+		vp.Set("recentRepos", cfg.RecentRepos)
+	}
+
 	// Write to a temp file and read it back to get the YAML bytes.
 	tmpDir, err := os.MkdirTemp("", "kommit-cfg-*")
 	if err != nil {

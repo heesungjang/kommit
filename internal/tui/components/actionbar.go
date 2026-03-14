@@ -60,6 +60,21 @@ var actionGroups = []actionGroup{
 			keys.ContextStatus,
 		}},
 	}},
+	// Workspace operations
+	{buttons: []actionButton{
+		{Icon: "⟳", Label: "Fetch All", Key: "f", Contexts: []keys.Context{
+			keys.ContextWorkspace,
+		}},
+		{Icon: "↓", Label: "Pull All", Key: "P", Contexts: []keys.Context{
+			keys.ContextWorkspace,
+		}},
+		{Icon: "+", Label: "New", Key: "n", Contexts: []keys.Context{
+			keys.ContextWorkspace,
+		}},
+		{Icon: "a", Label: "Add Repo", Key: "a", Contexts: []keys.Context{
+			keys.ContextWorkspace,
+		}},
+	}},
 }
 
 // ActionBar renders a top-level action toolbar with common git operations.

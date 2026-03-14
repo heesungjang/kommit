@@ -8,18 +8,19 @@ import "github.com/charmbracelet/bubbles/key"
 
 // GlobalKeys defines keybindings that are available everywhere in the TUI.
 type GlobalKeys struct {
-	Quit           key.Binding
-	ForceQuit      key.Binding
-	Help           key.Binding
-	Search         key.Binding
-	CommandPalette key.Binding
-	CustomCommands key.Binding
-	Settings       key.Binding
-	Panel1         key.Binding
-	Panel2         key.Binding
-	Panel3         key.Binding
-	NextPanel      key.Binding
-	PrevPanel      key.Binding
+	Quit            key.Binding
+	ForceQuit       key.Binding
+	Help            key.Binding
+	Search          key.Binding
+	CommandPalette  key.Binding
+	CustomCommands  key.Binding
+	Settings        key.Binding
+	Panel1          key.Binding
+	Panel2          key.Binding
+	Panel3          key.Binding
+	NextPanel       key.Binding
+	PrevPanel       key.Binding
+	ToggleWorkspace key.Binding
 }
 
 // NewGlobalKeys returns populated global keybindings.
@@ -72,6 +73,10 @@ func NewGlobalKeys() GlobalKeys {
 		PrevPanel: key.NewBinding(
 			key.WithKeys("shift+tab"),
 			key.WithHelp("shift+tab", "prev panel"),
+		),
+		ToggleWorkspace: key.NewBinding(
+			key.WithKeys("ctrl+w"),
+			key.WithHelp("ctrl+w", "workspaces"),
 		),
 	}
 }
@@ -494,6 +499,70 @@ func NewPRKeys() PRKeys {
 }
 
 // ---------------------------------------------------------------------------
+// Workspace page keybindings
+// ---------------------------------------------------------------------------
+
+// WorkspaceKeys defines keybindings for the workspace overview page.
+type WorkspaceKeys struct {
+	Open            key.Binding
+	AddRepo         key.Binding
+	RemoveRepo      key.Binding
+	NewWorkspace    key.Binding
+	DeleteWorkspace key.Binding
+	RenameWorkspace key.Binding
+	FetchAll        key.Binding
+	PullAll         key.Binding
+	ToggleCollapse  key.Binding
+	BackToRepo      key.Binding
+}
+
+// NewWorkspaceKeys returns populated workspace page keybindings.
+func NewWorkspaceKeys() WorkspaceKeys {
+	return WorkspaceKeys{
+		Open: key.NewBinding(
+			key.WithKeys("enter", "o"),
+			key.WithHelp("enter/o", "open repo"),
+		),
+		AddRepo: key.NewBinding(
+			key.WithKeys("a"),
+			key.WithHelp("a", "add repo"),
+		),
+		RemoveRepo: key.NewBinding(
+			key.WithKeys("x"),
+			key.WithHelp("x", "remove repo"),
+		),
+		NewWorkspace: key.NewBinding(
+			key.WithKeys("n"),
+			key.WithHelp("n", "new workspace"),
+		),
+		DeleteWorkspace: key.NewBinding(
+			key.WithKeys("D"),
+			key.WithHelp("D", "delete workspace"),
+		),
+		RenameWorkspace: key.NewBinding(
+			key.WithKeys("R"),
+			key.WithHelp("R", "rename workspace"),
+		),
+		FetchAll: key.NewBinding(
+			key.WithKeys("f"),
+			key.WithHelp("f", "fetch all"),
+		),
+		PullAll: key.NewBinding(
+			key.WithKeys("P"),
+			key.WithHelp("P", "pull all"),
+		),
+		ToggleCollapse: key.NewBinding(
+			key.WithKeys(" "),
+			key.WithHelp("space", "collapse/expand"),
+		),
+		BackToRepo: key.NewBinding(
+			key.WithKeys("escape"),
+			key.WithHelp("esc", "back to repo"),
+		),
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Rebindable keybinding overrides
 // ---------------------------------------------------------------------------
 
@@ -519,6 +588,7 @@ func init() {
 		"global.panel3":         &Global.Panel3,
 		"global.nextPanel":      &Global.NextPanel,
 		"global.prevPanel":      &Global.PrevPanel,
+		"global.workspace":      &Global.ToggleWorkspace,
 
 		// Navigation
 		"nav.up":       &Navigation.Up,
@@ -596,6 +666,18 @@ func init() {
 		"pr.comment":       &PR.Comment,
 		"pr.aiDescription": &PR.AIDescription,
 		"pr.openBrowser":   &PR.OpenBrowser,
+
+		// Workspace
+		"workspace.open":           &Workspace.Open,
+		"workspace.addRepo":        &Workspace.AddRepo,
+		"workspace.removeRepo":     &Workspace.RemoveRepo,
+		"workspace.new":            &Workspace.NewWorkspace,
+		"workspace.delete":         &Workspace.DeleteWorkspace,
+		"workspace.rename":         &Workspace.RenameWorkspace,
+		"workspace.fetchAll":       &Workspace.FetchAll,
+		"workspace.pullAll":        &Workspace.PullAll,
+		"workspace.toggleCollapse": &Workspace.ToggleCollapse,
+		"workspace.backToRepo":     &Workspace.BackToRepo,
 	}
 }
 

@@ -1,7 +1,9 @@
 package git
 
 import (
+	"bytes"
 	"fmt"
+	"os/exec"
 	"strings"
 )
 
@@ -268,4 +270,93 @@ func (r *Repository) IsDirty() (bool, error) {
 		return false, err
 	}
 	return strings.TrimSpace(out) != "", nil
+}
+
+// RepoQuickStatus holds a lightweight summary of a repo's state, suitable for
+// displaying in a workspace overview without fully opening the repository.
+type RepoQuickStatus struct {
+	Path      string // absolute path to the repo root
+	Branch    string // current branch name (or HEAD if detached)
+	Ahead     int
+	Behind    int
+	Modified  int    // count of modified (staged + unstaged) files
+	Staged    int    // count of staged files
+	Untracked int    // count of untracked files
+	Conflicts int    // count of conflicted files
+	IsClean   bool   // true when working tree is clean
+	Error     string // non-empty if the repo couldn't be read
+}
+
+// QuickStatus returns a lightweight status summary for a git repository at the
+// given path. It shells out to git directly without requiring a full Open().
+// This is designed for workspace overviews where many repos are queried.
+func QuickStatus(path string) RepoQuickStatus {
+	qs := RepoQuickStatus{Path: path}
+
+	cmd := exec.Command("git", "status", "--porcelain=v2", "--branch")
+	cmd.Dir = path
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		qs.Error = strings.TrimSpace(stderr.String())
+		if qs.Error == "" {
+			qs.Error = err.Error()
+		}
+		return qs
+	}
+
+	lines := strings.Split(stdout.String(), "\n")
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(line, "# branch.head "):
+			qs.Branch = strings.TrimPrefix(line, "# branch.head ")
+		case strings.HasPrefix(line, "# branch.ab "):
+			ab := strings.TrimPrefix(line, "# branch.ab ")
+			parts := strings.Fields(ab)
+			if len(parts) >= 2 {
+				_, _ = fmt.Sscanf(parts[0], "+%d", &qs.Ahead)
+				_, _ = fmt.Sscanf(parts[1], "-%d", &qs.Behind)
+			}
+		case strings.HasPrefix(line, "1 "):
+			// Ordinary changed entry
+			parts := strings.SplitN(line, " ", 9)
+			if len(parts) >= 9 {
+				xy := parts[1]
+				if len(xy) >= 2 {
+					if xy[0] != '.' {
+						qs.Staged++
+					}
+					if xy[1] != '.' {
+						qs.Modified++
+					}
+				}
+			}
+		case strings.HasPrefix(line, "2 "):
+			// Rename/copy entry
+			parts := strings.SplitN(line, " ", 10)
+			if len(parts) >= 10 {
+				xy := parts[1]
+				if len(xy) >= 2 {
+					if xy[0] != '.' {
+						qs.Staged++
+					}
+					if xy[1] != '.' {
+						qs.Modified++
+					}
+				}
+			}
+		case strings.HasPrefix(line, "u "):
+			qs.Conflicts++
+		case strings.HasPrefix(line, "? "):
+			qs.Untracked++
+		}
+	}
+
+	qs.IsClean = qs.Modified == 0 && qs.Staged == 0 && qs.Untracked == 0 && qs.Conflicts == 0
+	return qs
 }
