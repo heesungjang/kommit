@@ -13,6 +13,7 @@ import (
 	"github.com/heesungjang/kommit/internal/tui/anim"
 	"github.com/heesungjang/kommit/internal/tui/keys"
 	"github.com/heesungjang/kommit/internal/tui/styles"
+	"github.com/heesungjang/kommit/internal/tui/syntax"
 	"github.com/heesungjang/kommit/internal/tui/theme"
 )
 
@@ -45,6 +46,9 @@ type DiffViewer struct {
 	// Active state
 	Active     bool // true when center panel is showing diff instead of graph
 	SideBySide bool // true to render side-by-side instead of inline
+
+	// Syntax highlighting
+	highlighter *syntax.Highlighter // nil when no lexer found for file type
 }
 
 // Reset clears all diff viewer state, returning to inactive.
@@ -62,6 +66,7 @@ func (d *DiffViewer) Reset() {
 	d.VisualMode = false
 	d.VisualCursor = 0
 	d.VisualAnchor = 0
+	d.highlighter = nil
 }
 
 // ResetScroll resets scroll offsets without clearing content.
@@ -72,7 +77,8 @@ func (d *DiffViewer) ResetScroll() {
 }
 
 // SetContent loads new diff content, parses hunk headers, and activates the viewer.
-func (d *DiffViewer) SetContent(path, diff string, isWIP, isStaged bool) {
+// syntaxTheme is the chroma style name for syntax highlighting (empty = default).
+func (d *DiffViewer) SetContent(path, diff string, isWIP, isStaged bool, syntaxTheme ...string) {
 	d.Path = path
 	d.Lines = strings.Split(diff, "\n")
 	d.Active = true
@@ -125,6 +131,14 @@ func (d *DiffViewer) SetContent(path, diff string, isWIP, isStaged bool) {
 		}
 		d.Hunks = append(d.Hunks, hunk)
 	}
+
+	// Initialize syntax highlighter for this file type.
+	// Pass the full diff lines so chroma can tokenize with multi-line context.
+	sTheme := "catppuccin-mocha"
+	if len(syntaxTheme) > 0 && syntaxTheme[0] != "" {
+		sTheme = syntaxTheme[0]
+	}
+	d.highlighter = syntax.New(path, sTheme, d.Lines)
 }
 
 // isInvisibleHeader returns true for diff metadata lines that are never
@@ -476,6 +490,8 @@ type sideBySideRow struct {
 	newLine string
 	oldNum  int // line number (0 means no number to show)
 	newNum  int
+	oldIdx  int // original index into DiffViewer.Lines (-1 = no mapping)
+	newIdx  int
 	oldType byte // '+', '-', ' ', '@', or 0 for blank
 	newType byte
 	isMeta  bool // similarity/rename metadata line
@@ -509,6 +525,7 @@ func (d *DiffViewer) buildSideBySideRows() []sideBySideRow {
 			rows = append(rows, sideBySideRow{
 				oldLine: line, newLine: line,
 				oldType: ' ', newType: ' ',
+				oldIdx: -1, newIdx: -1,
 				isMeta: true,
 			})
 			i++
@@ -523,6 +540,7 @@ func (d *DiffViewer) buildSideBySideRows() []sideBySideRow {
 				oldLine: stripHunkContext(line),
 				newLine: stripHunkContext(line),
 				oldType: '@', newType: '@',
+				oldIdx: -1, newIdx: -1,
 				isHunk: true,
 			})
 			i++
@@ -533,6 +551,7 @@ func (d *DiffViewer) buildSideBySideRows() []sideBySideRow {
 			rows = append(rows, sideBySideRow{
 				oldLine: line, newLine: line,
 				oldType: ' ', newType: ' ',
+				oldIdx: -1, newIdx: -1,
 			})
 			i++
 			continue
@@ -549,6 +568,7 @@ func (d *DiffViewer) buildSideBySideRows() []sideBySideRow {
 			var removed []struct {
 				text string
 				num  int
+				idx  int // original index into d.Lines
 			}
 			for i < len(d.Lines) {
 				l := d.Lines[i]
@@ -559,7 +579,8 @@ func (d *DiffViewer) buildSideBySideRows() []sideBySideRow {
 				removed = append(removed, struct {
 					text string
 					num  int
-				}{l, oldNum - 1 + 1}) // 1-indexed, but oldNum already incremented
+					idx  int
+				}{l, 0, i})
 				i++
 			}
 			// Fix numbering: oldNum was incremented, the stored number should be the value before increment
@@ -571,6 +592,7 @@ func (d *DiffViewer) buildSideBySideRows() []sideBySideRow {
 			var added []struct {
 				text string
 				num  int
+				idx  int // original index into d.Lines
 			}
 			for i < len(d.Lines) {
 				l := d.Lines[i]
@@ -581,7 +603,8 @@ func (d *DiffViewer) buildSideBySideRows() []sideBySideRow {
 				added = append(added, struct {
 					text string
 					num  int
-				}{l, newNum})
+					idx  int
+				}{l, newNum, i})
 				i++
 			}
 
@@ -591,16 +614,18 @@ func (d *DiffViewer) buildSideBySideRows() []sideBySideRow {
 				maxLen = len(added)
 			}
 			for j := 0; j < maxLen; j++ {
-				row := sideBySideRow{}
+				row := sideBySideRow{oldIdx: -1, newIdx: -1}
 				if j < len(removed) {
 					row.oldLine = removed[j].text
 					row.oldNum = removed[j].num
 					row.oldType = '-'
+					row.oldIdx = removed[j].idx
 				}
 				if j < len(added) {
 					row.newLine = added[j].text
 					row.newNum = added[j].num
 					row.newType = '+'
+					row.newIdx = added[j].idx
 				}
 				rows = append(rows, row)
 			}
@@ -612,6 +637,7 @@ func (d *DiffViewer) buildSideBySideRows() []sideBySideRow {
 			newNum++
 			rows = append(rows, sideBySideRow{
 				newLine: line, newNum: newNum, newType: '+',
+				oldIdx: -1, newIdx: i,
 			})
 			i++
 			continue
@@ -624,6 +650,7 @@ func (d *DiffViewer) buildSideBySideRows() []sideBySideRow {
 			oldLine: line, newLine: line,
 			oldNum: oldNum, newNum: newNum,
 			oldType: ' ', newType: ' ',
+			oldIdx: i, newIdx: i,
 		})
 		i++
 	}
@@ -689,8 +716,8 @@ func (d *DiffViewer) renderSideBySide(iw, contentHeight int) string {
 			leftStr = lipgloss.JoinHorizontal(lipgloss.Top, gutter, metaContent)
 			rightStr = lipgloss.JoinHorizontal(lipgloss.Top, gutter, metaContent)
 		} else {
-			leftStr = d.renderSideBySideHalf(row.oldLine, row.oldNum, row.oldType, sideGutter, sideContentWidth, scrollX)
-			rightStr = d.renderSideBySideHalf(row.newLine, row.newNum, row.newType, sideGutter, sideContentWidth, scrollX)
+			leftStr = d.renderSideBySideHalf(row.oldLine, row.oldNum, row.oldType, row.oldIdx, sideGutter, sideContentWidth, scrollX)
+			rightStr = d.renderSideBySideHalf(row.newLine, row.newNum, row.newType, row.newIdx, sideGutter, sideContentWidth, scrollX)
 		}
 
 		divider := divStyle.Render("│")
@@ -716,7 +743,8 @@ func (d *DiffViewer) renderSideBySide(iw, contentHeight int) string {
 }
 
 // renderSideBySideHalf renders one half (left or right) of a side-by-side row.
-func (d *DiffViewer) renderSideBySideHalf(text string, lineNum int, lineType byte, gutterW, contentW, scrollX int) string {
+// lineIdx is the original index into d.Lines for syntax highlighting (-1 = no mapping).
+func (d *DiffViewer) renderSideBySideHalf(text string, lineNum int, lineType byte, lineIdx, gutterW, contentW, scrollX int) string {
 	t := theme.Active
 
 	// Blank filler row (when one side has no corresponding line)
@@ -736,10 +764,8 @@ func (d *DiffViewer) renderSideBySideHalf(text string, lineNum int, lineType byt
 	sep := styles.DiffGutterSepStyle(lineType).Render(" │")
 	gutter := lipgloss.JoinHorizontal(lipgloss.Top, numStyled, sep)
 
-	// Content
-	rendered := expandTabs(text, 4)
-	rendered = horizontalSlice(rendered, scrollX, contentW)
-	contentStr := styles.DiffLineStyle(lineType).Width(contentW).Render(rendered)
+	// Content — use syntax highlighting when available.
+	contentStr := d.renderDiffContent(lineIdx, text, lineType, scrollX, contentW)
 
 	return lipgloss.JoinHorizontal(lipgloss.Top, gutter, contentStr)
 }
@@ -919,9 +945,7 @@ func (d *DiffViewer) Render(width, height int, focused bool, borderAnim anim.Bor
 			sep := styles.DiffGutterSepStyle(lineType).Render(" │")
 			gutterStr = lipgloss.JoinHorizontal(lipgloss.Top, numOldStyled, space, numNewStyled, sep)
 
-			rendered := expandTabs(line, 4)
-			rendered = horizontalSlice(rendered, scrollX, contentWidth)
-			contentStr = styles.DiffLineStyle(lineType).Width(contentWidth).Render(rendered)
+			contentStr = d.renderDiffContent(i, line, lineType, scrollX, contentWidth)
 		} else {
 			gutterStr = styles.DiffGutterSepStyle(' ').Render(strings.Repeat(" ", gutterWidth))
 			rendered := expandTabs(line, 4)
@@ -1140,4 +1164,34 @@ func horizontalSlice(s string, offset, width int) string {
 		return ""
 	}
 	return truncateToWidth(s[start:], width)
+}
+
+// renderDiffContent renders a diff line's content with syntax highlighting
+// when a highlighter is available. lineIdx is the index into d.Lines.
+// The lineType determines the background color. If no highlighter is
+// available, falls back to DiffLineStyle.
+func (d *DiffViewer) renderDiffContent(lineIdx int, raw string, lineType byte, scrollX, contentWidth int) string {
+	if d.highlighter == nil {
+		rendered := expandTabs(raw, 4)
+		rendered = horizontalSlice(rendered, scrollX, contentWidth)
+		return styles.DiffLineStyle(lineType).Width(contentWidth).Render(rendered)
+	}
+
+	t := theme.Active
+	bg := t.Base
+	defaultFG := t.DiffContext()
+	switch lineType {
+	case '+':
+		bg = t.DiffAddedBg()
+		defaultFG = t.DiffAdded()
+	case '-':
+		bg = t.DiffRemovedBg()
+		defaultFG = t.DiffRemoved()
+	}
+
+	return d.highlighter.RenderLine(
+		lineIdx, lineType, bg, defaultFG,
+		scrollX, contentWidth,
+		styles.DiffLineStyle(lineType),
+	)
 }

@@ -338,12 +338,25 @@ func (l LogPage) handleDetailKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if l.diffViewer.ScrollY > maxScroll {
 					l.diffViewer.ScrollY = maxScroll
 				}
+			} else {
+				l.detailFileCursor += 10
+				if l.detailFileCursor >= len(l.detailFiles) {
+					l.detailFileCursor = len(l.detailFiles) - 1
+				}
+				if l.detailFileCursor < 0 {
+					l.detailFileCursor = 0
+				}
 			}
 		case key.Matches(msg, l.navKeys.PageUp):
 			if l.diffViewer.Active {
 				l.diffViewer.ScrollY -= 10
 				if l.diffViewer.ScrollY < 0 {
 					l.diffViewer.ScrollY = 0
+				}
+			} else {
+				l.detailFileCursor -= 10
+				if l.detailFileCursor < 0 {
+					l.detailFileCursor = 0
 				}
 			}
 		case key.Matches(msg, key.NewBinding(key.WithKeys("e"))):

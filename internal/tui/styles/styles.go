@@ -238,7 +238,7 @@ func DiffLineStyle(lineType byte) lipgloss.Style {
 	case '-':
 		return lipgloss.NewStyle().Foreground(t.DiffRemoved()).Background(t.DiffRemovedBg())
 	case '@':
-		return lipgloss.NewStyle().Foreground(t.DiffHunkHeader()).Background(t.DiffHunkBg()).Bold(true)
+		return lipgloss.NewStyle().Foreground(t.DiffHunkHeader()).Background(t.Base).Bold(true)
 	default:
 		return lipgloss.NewStyle().Foreground(t.DiffContext()).Background(t.Base)
 	}
@@ -247,7 +247,7 @@ func DiffLineStyle(lineType byte) lipgloss.Style {
 // DiffCurrentHunkStyle returns the style for the currently selected hunk header.
 func DiffCurrentHunkStyle() lipgloss.Style {
 	t := theme.Active
-	return lipgloss.NewStyle().Foreground(t.Blue).Background(t.DiffHunkBg()).Bold(true)
+	return lipgloss.NewStyle().Foreground(t.Blue).Background(t.Base).Bold(true)
 }
 
 // DiffFileHeaderStyle returns the style for diff file header lines
@@ -272,7 +272,7 @@ func DiffLineNumStyle(lineType byte) lipgloss.Style {
 	case '-':
 		return lipgloss.NewStyle().Foreground(t.DiffRemoved()).Background(t.DiffRemovedBg())
 	case '@':
-		return lipgloss.NewStyle().Foreground(t.DiffLineNum()).Background(t.DiffHunkBg())
+		return lipgloss.NewStyle().Foreground(t.DiffLineNum()).Background(t.Base)
 	default:
 		return lipgloss.NewStyle().Foreground(t.DiffLineNum()).Background(t.Base)
 	}
@@ -288,7 +288,7 @@ func DiffGutterSepStyle(lineType byte) lipgloss.Style {
 	case '-':
 		bg = t.DiffRemovedBg()
 	case '@':
-		bg = t.DiffHunkBg()
+		bg = t.Base
 	default:
 		bg = t.Base
 	}

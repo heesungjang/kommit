@@ -116,8 +116,8 @@ func InitStyles(t theme.Theme) Styles {
 	s.DiffAdded = lipgloss.NewStyle().Foreground(t.DiffAdded()).Background(t.DiffAddedBg())
 	s.DiffRemoved = lipgloss.NewStyle().Foreground(t.DiffRemoved()).Background(t.DiffRemovedBg())
 	s.DiffContext = lipgloss.NewStyle().Foreground(t.DiffContext()).Background(t.Base)
-	s.DiffHunkHeader = lipgloss.NewStyle().Foreground(t.DiffHunkHeader()).Background(t.DiffHunkBg()).Bold(true)
-	s.DiffCurrentHunk = lipgloss.NewStyle().Foreground(t.Blue).Background(t.DiffHunkBg()).Bold(true)
+	s.DiffHunkHeader = lipgloss.NewStyle().Foreground(t.DiffHunkHeader()).Background(t.Base).Bold(true)
+	s.DiffCurrentHunk = lipgloss.NewStyle().Foreground(t.Blue).Background(t.Base).Bold(true)
 	s.DiffFileHeader = lipgloss.NewStyle().Foreground(t.Text).Background(t.Base).Bold(true)
 	s.DiffMeta = lipgloss.NewStyle().Foreground(t.Overlay0).Background(t.Base)
 

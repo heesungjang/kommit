@@ -544,61 +544,11 @@ func (l LogPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case centerDiffMsg:
-		l.diffViewer.Path = msg.path
-		l.diffViewer.Lines = strings.Split(msg.diff, "\n")
-		l.diffViewer.ScrollY = 0
-		l.diffViewer.ScrollX = 0
-		l.diffViewer.Active = true
-		l.diffViewer.IsWIP = msg.isWIP
-		l.diffViewer.IsStaged = msg.isStaged
-		l.diffViewer.CurrentHunkIdx = 0
-
-		// Parse hunk positions and build Hunk structs for staging
-		l.diffViewer.HunkStarts = nil
-		l.diffViewer.Hunks = nil
-		var currentHunk *git.Hunk
-		for i, line := range l.diffViewer.Lines {
-			if strings.HasPrefix(line, "@@") {
-				// Save previous hunk
-				if currentHunk != nil {
-					l.diffViewer.Hunks = append(l.diffViewer.Hunks, *currentHunk)
-				}
-				l.diffViewer.HunkStarts = append(l.diffViewer.HunkStarts, i)
-				oldStart, newStart := parseDiffHunkNums(line)
-				currentHunk = &git.Hunk{
-					Header:   line,
-					StartOld: oldStart,
-					StartNew: newStart,
-				}
-			} else if currentHunk != nil && !strings.HasPrefix(line, "diff --git") && !strings.HasPrefix(line, "--- ") && !strings.HasPrefix(line, "+++ ") && !strings.HasPrefix(line, "index ") {
-				currentHunk.Lines = append(currentHunk.Lines, line)
-			}
+		syntaxTheme := ""
+		if l.ctx != nil && l.ctx.Config != nil {
+			syntaxTheme = l.ctx.Config.Appearance.SyntaxTheme
 		}
-		if currentHunk != nil {
-			l.diffViewer.Hunks = append(l.diffViewer.Hunks, *currentHunk)
-		}
-
-		// Compute CountOld/CountNew for each hunk from its lines
-		for i := range l.diffViewer.Hunks {
-			h := &l.diffViewer.Hunks[i]
-			for _, ln := range h.Lines {
-				if ln == "" {
-					h.CountOld++
-					h.CountNew++
-					continue
-				}
-				switch ln[0] {
-				case '+':
-					h.CountNew++
-				case '-':
-					h.CountOld++
-				default:
-					h.CountOld++
-					h.CountNew++
-				}
-			}
-		}
-
+		l.diffViewer.SetContent(msg.path, msg.diff, msg.isWIP, msg.isStaged, syntaxTheme)
 		return l, nil
 
 	case wipStageResultMsg:
@@ -879,9 +829,11 @@ func (l LogPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			l.diffViewer.Path = ""
 		} else {
 			l.stashDiffContent = msg.diff
-			l.diffViewer.Lines = strings.Split(msg.diff, "\n")
-			l.diffViewer.Path = fmt.Sprintf("stash@{%d}", msg.index)
-			l.diffViewer.Active = true
+			syntaxTheme := ""
+			if l.ctx != nil && l.ctx.Config != nil {
+				syntaxTheme = l.ctx.Config.Appearance.SyntaxTheme
+			}
+			l.diffViewer.SetContent(fmt.Sprintf("stash@{%d}", msg.index), msg.diff, false, false, syntaxTheme)
 		}
 		return l, nil
 
