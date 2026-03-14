@@ -62,8 +62,9 @@ type commitDoneMsg struct {
 
 // gitOpDoneMsg is sent when a push/pull/fetch operation completes.
 type gitOpDoneMsg struct {
-	op  string
-	err error
+	op    string
+	force bool
+	err   error
 }
 
 // stashDoneMsg is sent when a stash save/pop operation completes.
@@ -146,7 +147,8 @@ type App struct {
 	pendingPushErr error
 
 	// Pending retry op — the git operation to retry after a successful login.
-	pendingRetryOp string
+	pendingRetryOp    string
+	pendingRetryForce bool
 }
 
 // NewApp creates a new App rooted at the given repository.
@@ -438,10 +440,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// If there's a pending retry op (auto-prompt from auth failure), retry it.
 		if a.pendingRetryOp != "" {
 			op := a.pendingRetryOp
+			force := a.pendingRetryForce
 			a.pendingRetryOp = ""
+			a.pendingRetryForce = false
 			var toastCmd tea.Cmd
 			a.toast, toastCmd = a.toast.ShowSuccess("Logged in as @" + acct.Username + " — retrying " + op + "...")
-			return a, tea.Batch(toastCmd, a.doGitOp(op, false))
+			return a, tea.Batch(toastCmd, a.doGitOp(op, force))
 		}
 
 		return a, func() tea.Msg {
@@ -455,6 +459,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.pendingRetryOp != "" {
 			op := a.pendingRetryOp
 			a.pendingRetryOp = ""
+			a.pendingRetryForce = false
 			var toastCmd tea.Cmd
 			a.toast, toastCmd = a.toast.ShowError(capitalize(op) + " failed: authentication required")
 			return a, toastCmd
@@ -739,8 +744,23 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case gitOpDoneMsg:
 		if msg.err != nil {
+			// Auto-prompt login on auth failure when no account exists.
+			// Check auth errors BEFORE push-rejected, because permission/auth
+			// errors can also contain "failed to push some refs".
+			if isAuthError(msg.err) && !a.hasAccountForOrigin() {
+				provider := a.detectOriginProvider()
+				if provider != "" {
+					a.pendingRetryOp = msg.op
+					a.pendingRetryForce = msg.force
+					dlg := dialog.NewAccountLoginForProvider(provider, a.ctx)
+					a.dialog = dlg
+					a.showDialog = true
+					return a, dlg.Init()
+				}
+			}
+
 			// Smart force push: if a normal push was rejected, offer force push.
-			if msg.op == "push" && isPushRejected(msg.err) {
+			if msg.op == "push" && !msg.force && isPushRejected(msg.err) {
 				a.pendingPushErr = msg.err
 				dlg := dialog.NewConfirm(
 					"gitop-force-push-retry",
@@ -753,18 +773,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, dlg.Init())
 				cmds = append(cmds, func() tea.Msg { return pages.RefreshStatusMsg{} })
 				return a, tea.Batch(cmds...)
-			}
-
-			// Auto-prompt login on auth failure when no account exists.
-			if isAuthError(msg.err) && !a.hasAccountForOrigin() {
-				provider := a.detectOriginProvider()
-				if provider != "" {
-					a.pendingRetryOp = msg.op
-					dlg := dialog.NewAccountLoginForProvider(provider, a.ctx)
-					a.dialog = dlg
-					a.showDialog = true
-					return a, dlg.Init()
-				}
 			}
 
 			var cmd tea.Cmd
@@ -1597,6 +1605,25 @@ func (a App) doGitOp(op string, force bool) tea.Cmd {
 		var err error
 		switch op {
 		case "push":
+			// Auto-detect missing upstream and set it (for both normal and force push).
+			branch, brErr := repo.CurrentBranch()
+			needsUpstream := false
+			if brErr == nil && branch != "" && branch != "HEAD" {
+				hasUp, _ := repo.HasUpstream(branch)
+				needsUpstream = !hasUp
+			}
+			if needsUpstream {
+				var upErr error
+				if gitUser != "" {
+					upErr = repo.PushSetUpstreamAuth("origin", branch, gitUser, gitToken)
+				} else {
+					upErr = repo.PushSetUpstream("origin", branch)
+				}
+				if upErr == nil {
+					return gitOpDoneMsg{op: op, force: force, err: nil}
+				}
+				// PushSetUpstream failed — fall through to normal/force push.
+			}
 			if force {
 				if gitUser != "" {
 					err = repo.ForcePushAuth("", "", gitUser, gitToken)
@@ -1604,27 +1631,10 @@ func (a App) doGitOp(op string, force bool) tea.Cmd {
 					err = repo.ForcePush("", "")
 				}
 			} else {
-				// Auto-detect missing upstream and set it.
-				branch, brErr := repo.CurrentBranch()
-				if brErr == nil && branch != "" && branch != "HEAD" {
-					hasUp, _ := repo.HasUpstream(branch)
-					if !hasUp {
-						if gitUser != "" {
-							err = repo.PushSetUpstreamAuth("origin", branch, gitUser, gitToken)
-						} else {
-							err = repo.PushSetUpstream("origin", branch)
-						}
-						if err == nil {
-							return gitOpDoneMsg{op: op, err: nil}
-						}
-					}
-				}
-				if err == nil {
-					if gitUser != "" {
-						err = repo.PushAuth("", "", gitUser, gitToken)
-					} else {
-						err = repo.Push("", "")
-					}
+				if gitUser != "" {
+					err = repo.PushAuth("", "", gitUser, gitToken)
+				} else {
+					err = repo.Push("", "")
 				}
 			}
 		case "pull":
@@ -1640,7 +1650,7 @@ func (a App) doGitOp(op string, force bool) tea.Cmd {
 				err = repo.Fetch()
 			}
 		}
-		return gitOpDoneMsg{op: op, err: err}
+		return gitOpDoneMsg{op: op, force: force, err: err}
 	}
 }
 
@@ -1738,12 +1748,21 @@ func friendlyGitError(op string, err error) string {
 }
 
 // isPushRejected returns true if the push error indicates a non-fast-forward
-// rejection, which means force push could resolve the issue.
+// rejection, which means force push could resolve the issue. It excludes
+// permission/auth errors that also contain generic "failed to push" text.
 func isPushRejected(err error) bool {
 	lower := strings.ToLower(err.Error())
-	return strings.Contains(lower, "rejected") ||
-		strings.Contains(lower, "non-fast-forward") ||
-		strings.Contains(lower, "failed to push some refs")
+	// Exclude auth/permission errors — these can't be fixed by force push.
+	if isAuthError(err) ||
+		strings.Contains(lower, "permission") ||
+		strings.Contains(lower, "oauth") ||
+		strings.Contains(lower, "workflow") ||
+		strings.Contains(lower, "scope") {
+		return false
+	}
+	return strings.Contains(lower, "non-fast-forward") ||
+		strings.Contains(lower, "fetch first") ||
+		(strings.Contains(lower, "rejected") && strings.Contains(lower, "failed to push"))
 }
 
 // isAuthError returns true if a git error indicates an authentication failure.
