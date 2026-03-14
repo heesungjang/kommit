@@ -73,7 +73,7 @@ func New(filePath, styleName string, diffLines []string) *Highlighter {
 	// Non-hunk lines (headers, metadata) are mapped to nil token slices.
 	sourceLines := make([]string, len(diffLines))
 	for i, line := range diffLines {
-		if len(line) > 0 {
+		if line != "" {
 			ch := line[0]
 			if ch == '+' || ch == '-' || ch == ' ' {
 				sourceLines[i] = line[1:]
@@ -103,8 +103,8 @@ func New(filePath, styleName string, diffLines []string) *Highlighter {
 		}
 		entry := style.Get(tok.Type)
 		fg := ""
-		if entry.Colour.IsSet() {
-			fg = entry.Colour.String()
+		if entry.Colour.IsSet() { //nolint:misspell // Chroma API uses British spelling
+			fg = entry.Colour.String() //nolint:misspell // Chroma API uses British spelling
 		}
 		bold := entry.Bold == chroma.Yes
 		italic := entry.Italic == chroma.Yes

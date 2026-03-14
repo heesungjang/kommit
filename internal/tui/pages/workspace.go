@@ -158,7 +158,7 @@ func (w *WorkspacePage) Sync() {
 
 // visibleItems builds the flat list of items for the current collapse state.
 func (w WorkspacePage) visibleItems() []wsItem {
-	var items []wsItem
+	items := make([]wsItem, 0, len(w.workspaces)*4) // estimate: header + ~3 repos each
 
 	for i, ws := range w.workspaces {
 		items = append(items, wsItem{
@@ -231,7 +231,8 @@ func (w *WorkspacePage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case WorkspaceBulkOpDoneMsg:
 		// Refresh all statuses after a bulk operation.
-		return w, w.refreshAllStatuses()
+		cmd := w.refreshAllStatuses()
+		return w, cmd
 
 	case tea.KeyMsg:
 		return w.handleKey(msg)
@@ -580,7 +581,7 @@ func (w *WorkspacePage) View() string {
 	leftPanel = styles.ClipPanel(leftPanel, w.height)
 
 	// -- Right panel: repo detail --
-	rightBody := w.renderDetail(rightContentW, contentHeight)
+	rightBody := w.renderDetail(rightContentW)
 	rightTitle := styles.PanelTitle("Detail", "D", w.focus == wsFocusDetail, rightContentW)
 	rightGap := lipgloss.NewStyle().Background(t.Base).Width(rightContentW).Render("")
 	rightContent := rightTitle + "\n" + rightGap + "\n" + rightBody
@@ -833,29 +834,29 @@ func (w WorkspacePage) statusIndicator(path string, bg lipgloss.Color) string {
 // ---------------------------------------------------------------------------
 
 // renderDetail renders the right panel with detailed status for the selected item.
-func (w WorkspacePage) renderDetail(width, height int) string {
+func (w WorkspacePage) renderDetail(width int) string {
 	item := w.currentItem()
 
 	if item == nil {
-		return w.renderCenteredMessage("No item selected", width, height)
+		return w.renderCenteredMessage("No item selected", width)
 	}
 
 	switch item.kind {
 	case wsItemWorkspaceHeader:
-		return w.renderWorkspaceDetail(item, width, height)
+		return w.renderWorkspaceDetail(item, width)
 	case wsItemRepoEntry, wsItemRecentEntry:
-		return w.renderRepoDetail(item, width, height)
+		return w.renderRepoDetail(item, width)
 	case wsItemRecentHeader:
-		return w.renderCenteredMessage("Recent repositories", width, height)
+		return w.renderCenteredMessage("Recent repositories", width)
 	case wsItemSeparator:
-		return w.renderCenteredMessage("", width, height)
+		return w.renderCenteredMessage("", width)
 	}
 
 	return ""
 }
 
 // renderWorkspaceDetail shows an overview of a workspace with mini repo table.
-func (w WorkspacePage) renderWorkspaceDetail(item *wsItem, width, height int) string {
+func (w WorkspacePage) renderWorkspaceDetail(item *wsItem, width int) string {
 	t := theme.Active
 	ws := w.workspaces[item.workspaceIndex]
 
@@ -1025,7 +1026,7 @@ func (w WorkspacePage) renderWorkspaceDetail(item *wsItem, width, height int) st
 }
 
 // renderRepoDetail shows detailed status for a single repo in a structured card.
-func (w WorkspacePage) renderRepoDetail(item *wsItem, width, height int) string {
+func (w WorkspacePage) renderRepoDetail(item *wsItem, width int) string {
 	t := theme.Active
 
 	titleStyle := lipgloss.NewStyle().
@@ -1244,7 +1245,7 @@ func (w WorkspacePage) renderStatBar(qs git.RepoQuickStatus, barWidth int) strin
 }
 
 // renderCenteredMessage renders a centered dim message.
-func (w WorkspacePage) renderCenteredMessage(msg string, width, height int) string {
+func (w WorkspacePage) renderCenteredMessage(msg string, width int) string {
 	t := theme.Active
 	if msg == "" {
 		return ""
@@ -1269,7 +1270,7 @@ type keyHint struct {
 // renderKeyHints renders styled key hints: key in Mauve+Bold, desc in Subtext0.
 func (w WorkspacePage) renderKeyHints(hints []keyHint, bg lipgloss.Color) string {
 	t := theme.Active
-	var parts []string
+	parts := make([]string, 0, len(hints))
 	for _, h := range hints {
 		k := lipgloss.NewStyle().Foreground(t.Mauve).Background(bg).Bold(true).Render(h.key)
 		d := lipgloss.NewStyle().Foreground(t.Subtext0).Background(bg).Render(":" + h.desc)

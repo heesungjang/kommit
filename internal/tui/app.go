@@ -1076,7 +1076,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if wsIdx >= 0 && wsIdx < len(cfg.Workspaces) {
 			repos := cfg.Workspaces[wsIdx].Repos
 			if rIdx >= 0 && rIdx < len(repos) {
-				cfg.Workspaces[wsIdx].Repos = append(repos[:rIdx], repos[rIdx+1:]...)
+				repos = append(repos[:rIdx], repos[rIdx+1:]...)
+				cfg.Workspaces[wsIdx].Repos = repos
 				_ = config.Save(cfg)
 				if wp, ok := a.workspacePage.(interface{ Sync() }); ok {
 					wp.Sync()

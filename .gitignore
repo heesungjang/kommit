@@ -1,7 +1,18 @@
-# Binary
+# Binary / Build
 kommit
 opengit
 dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Go test / coverage
+*.test
+*.out
+*.prof
+coverage.txt
 
 # OS
 .DS_Store
@@ -16,6 +27,10 @@ Thumbs.db
 
 # Debug
 debug.log
+
+# Environment / secrets
+.env
+.env.*
 
 # Config (local)
 .opencode/
