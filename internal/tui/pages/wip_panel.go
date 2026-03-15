@@ -893,43 +893,46 @@ func (l LogPage) renderWIPDetail(width, height int) string {
 	commitInner = append(commitInner, cBgLine("")) // margin bottom
 
 	if l.aiGenerating {
-		// Skeleton loading — pulsing placeholder boxes while AI generates.
+		// Skeleton loading — shimmer sweep while AI generates.
 		inputWidth := ciw - 2
 		if inputWidth < 6 {
 			inputWidth = 6
 		}
 
-		// Pulse cycle: 4 phases (~480ms total at 120ms/tick)
-		// Phase 0,3 = dim (Surface2), phase 1,2 = bright (Overlay0)
-		pulseColors := []lipgloss.Color{t.Surface2, t.Overlay0, t.Overlay0, t.Surface2}
-		phase := l.skeletonTick % len(pulseColors)
-		skelColor := pulseColors[phase]
-
-		skelStyle := lipgloss.NewStyle().Foreground(skelColor).Background(t.Surface0)
 		skelBorder := t.Surface2
+		bg := t.Surface0
 
-		// Summary skeleton — single line of blocks
-		skelSummaryLine := skelStyle.Width(inputWidth).Render(strings.Repeat("█", inputWidth*2/3))
+		// Shimmer position advances 2 chars per tick. The sweep travels
+		// across the bar width plus some padding so there's a brief gap
+		// before the next sweep starts.
+		sweepRange := inputWidth + 12 // bar width + gap
+		shimmerPos := (l.skeletonTick * 2) % sweepRange
+
+		renderShimmer := func(barLen, lineOffset int) string {
+			return renderShimmerBar(barLen, inputWidth, shimmerPos, lineOffset, t.Surface2, t.Overlay1, bg)
+		}
+
+		// Summary skeleton — single shimmer bar
 		summaryBox := lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(skelBorder).
-			BorderBackground(t.Surface0).
-			Background(t.Surface0).
+			BorderBackground(bg).
+			Background(bg).
 			Width(ciw - 2).
-			Render(skelSummaryLine)
+			Render(renderShimmer(inputWidth*2/3, 0))
 		commitInner = append(commitInner, cBgLine(summaryBox))
 
-		// Description skeleton — 3 lines of varying-width blocks
+		// Description skeleton — 3 lines with staggered shimmer
 		descLines := lipgloss.JoinVertical(lipgloss.Left,
-			skelStyle.Width(inputWidth).Render(strings.Repeat("█", inputWidth*4/5)),
-			skelStyle.Width(inputWidth).Render(strings.Repeat("█", inputWidth*3/5)),
-			skelStyle.Width(inputWidth).Render(strings.Repeat("█", inputWidth*2/5)),
+			renderShimmer(inputWidth*4/5, 3),
+			renderShimmer(inputWidth*3/5, 6),
+			renderShimmer(inputWidth*2/5, 9),
 		)
 		descBox := lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(skelBorder).
-			BorderBackground(t.Surface0).
-			Background(t.Surface0).
+			BorderBackground(bg).
+			Background(bg).
 			Width(ciw - 2).
 			Render(descLines)
 		commitInner = append(commitInner, cBgLine(descBox))
@@ -1355,4 +1358,74 @@ func (l LogPage) loadAmendPrefill() tea.Cmd {
 		}
 		return amendPrefillMsg{message: msg}
 	}
+}
+
+// renderShimmerBar renders a skeleton bar of █ characters with a shimmer
+// highlight that sweeps left-to-right. Each character is colored based on its
+// distance from the shimmer center, creating a moving highlight effect.
+//
+//   - barLen: number of █ characters in the bar
+//   - totalWidth: total line width (bar is left-aligned, rest is bg-filled)
+//   - shimmerPos: current shimmer center position (advances each tick)
+//   - lineOffset: per-line stagger so lines shimmer at slightly different times
+//   - dimColor: base color for blocks outside the highlight
+//   - brightColor: peak color at the shimmer center
+//   - bg: background color for padding
+func renderShimmerBar(barLen, totalWidth, shimmerPos, lineOffset int, dimColor, brightColor, bg lipgloss.Color) string {
+	center := shimmerPos - lineOffset
+
+	var b strings.Builder
+	for i := range barLen {
+		dist := center - i
+		if dist < 0 {
+			dist = -dist
+		}
+
+		var fg lipgloss.Color
+		switch {
+		case dist <= 1:
+			fg = brightColor
+		case dist <= 3:
+			fg = lipgloss.Color(blendHex(string(brightColor), string(dimColor), 0.6))
+		default:
+			fg = dimColor
+		}
+		b.WriteString(lipgloss.NewStyle().Foreground(fg).Background(bg).Render("█"))
+	}
+
+	// Pad remaining width with background
+	if pad := totalWidth - barLen; pad > 0 {
+		b.WriteString(lipgloss.NewStyle().Background(bg).Render(strings.Repeat(" ", pad)))
+	}
+	return b.String()
+}
+
+// blendHex blends two hex color strings by ratio t (0.0 = a, 1.0 = b).
+// Expects "#RRGGBB" format. Returns "#RRGGBB".
+func blendHex(a, b string, t float64) string {
+	parseHex := func(s string) (int, int, int) {
+		s = strings.TrimPrefix(s, "#")
+		if len(s) != 6 {
+			return 0, 0, 0
+		}
+		var r, g, bl int
+		_, _ = fmt.Sscanf(s, "%02x%02x%02x", &r, &g, &bl)
+		return r, g, bl
+	}
+
+	r1, g1, b1 := parseHex(a)
+	r2, g2, b2 := parseHex(b)
+
+	lerp := func(from, to int) int {
+		v := float64(from) + (float64(to)-float64(from))*t
+		if v < 0 {
+			v = 0
+		}
+		if v > 255 {
+			v = 255
+		}
+		return int(v)
+	}
+
+	return fmt.Sprintf("#%02x%02x%02x", lerp(r1, r2), lerp(g1, g2), lerp(b1, b2))
 }
