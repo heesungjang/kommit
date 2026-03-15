@@ -36,6 +36,10 @@ const (
 // pollInterval is how often the app checks for external git changes.
 const pollInterval = 2 * time.Second
 
+// autoFetchInterval is how often the app silently fetches from remotes,
+// keeping tracking refs (and ahead/behind counts) up to date.
+const autoFetchInterval = 5 * time.Minute
+
 // ---------------------------------------------------------------------------
 // Messages
 // ---------------------------------------------------------------------------
@@ -91,6 +95,14 @@ type pollTickMsg struct{}
 type pollResultMsg struct {
 	fingerprint string
 	changed     bool
+}
+
+// autoFetchTickMsg triggers a silent background fetch from remotes.
+type autoFetchTickMsg struct{}
+
+// autoFetchDoneMsg carries the result of a background fetch.
+type autoFetchDoneMsg struct {
+	err error
 }
 
 // ---------------------------------------------------------------------------
@@ -207,6 +219,7 @@ func (a App) Init() tea.Cmd {
 		a.loadBranchInfo(),
 		a.loadPullRequests(),
 		a.schedulePoll(),
+		a.scheduleAutoFetch(),
 	)
 }
 
@@ -260,6 +273,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.loadBranchInfo(),
 			a.loadPullRequests(),
 			a.schedulePoll(),
+			a.scheduleAutoFetch(),
 		)
 
 	// -- Switch back to already-loaded repo view (from workspace) ------------
@@ -1147,6 +1161,18 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, a.schedulePoll())
 		return a, tea.Batch(cmds...)
 
+	// -- Background auto-fetch -----------------------------------------------
+	case autoFetchTickMsg:
+		return a, a.doBackgroundFetch()
+
+	case autoFetchDoneMsg:
+		cmds := []tea.Cmd{a.scheduleAutoFetch()}
+		if msg.err == nil {
+			// Refresh ahead/behind counts now that tracking refs are updated.
+			cmds = append(cmds, a.loadBranchInfo())
+		}
+		return a, tea.Batch(cmds...)
+
 	// -- Mouse events --------------------------------------------------------
 	case tea.MouseMsg:
 		if a.showDialog && a.dialog != nil {
@@ -1605,6 +1631,15 @@ func (a App) doGitOp(op string, force bool) tea.Cmd {
 		var err error
 		switch op {
 		case "push":
+			// Fetch before push to ensure tracking refs are up to date.
+			// Without this, pushes fail with "rejected" if another tool
+			// (e.g. GitKraken) pushed to the remote since our last fetch.
+			if gitUser != "" {
+				_ = repo.FetchAuth(gitUser, gitToken)
+			} else {
+				_ = repo.Fetch()
+			}
+
 			// Auto-detect missing upstream and set it (for both normal and force push).
 			branch, brErr := repo.CurrentBranch()
 			needsUpstream := false
@@ -1677,6 +1712,31 @@ func (a App) schedulePoll() tea.Cmd {
 	return tea.Tick(pollInterval, func(_ time.Time) tea.Msg {
 		return pollTickMsg{}
 	})
+}
+
+// scheduleAutoFetch returns a Cmd that sends autoFetchTickMsg after autoFetchInterval.
+func (a App) scheduleAutoFetch() tea.Cmd {
+	return tea.Tick(autoFetchInterval, func(_ time.Time) tea.Msg {
+		return autoFetchTickMsg{}
+	})
+}
+
+// doBackgroundFetch runs a silent fetch from all remotes.
+func (a App) doBackgroundFetch() tea.Cmd {
+	repo := a.repo
+	if repo == nil {
+		return nil
+	}
+	gitUser, gitToken := a.resolveGitCredentials()
+	return func() tea.Msg {
+		var err error
+		if gitUser != "" {
+			err = repo.FetchAuth(gitUser, gitToken)
+		} else {
+			err = repo.Fetch()
+		}
+		return autoFetchDoneMsg{err: err}
+	}
 }
 
 // checkFingerprint runs a lightweight git status check in the background.
