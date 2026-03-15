@@ -9,8 +9,9 @@ Rules:
 - First line is the SUMMARY: max 72 characters, imperative mood ("add", "fix", "refactor", "update", "remove", etc.)
 - Use conventional commit style without the type prefix unless the changes clearly fit one (e.g. "fix:", "feat:", "refactor:", "docs:", "chore:")
 - If you include a description, separate it from the summary with a blank line
-- The description should explain WHY the change was made, not WHAT changed (the diff shows what)
-- Keep the description to 2-4 sentences max
+- The description MUST use bullet points (- prefix), one per logical change
+- Each bullet should be concise (one line) and explain WHAT was changed and WHY
+- Keep to 2-5 bullet points max
 - For trivial changes (typo fixes, formatting, single-line changes), output ONLY the summary with no description
 - Do NOT wrap your response in markdown code fences
 - Do NOT include any preamble, explanation, or commentary — output ONLY the commit message

@@ -53,7 +53,7 @@ var ErrAuthorizationPending = errors.New("authorization pending")
 func GitHubDeviceFlow(clientID string) DeviceFlowConfig {
 	return DeviceFlowConfig{
 		ClientID:      clientID,
-		Scopes:        "repo read:user user:email",
+		Scopes:        "repo read:user user:email workflow read:org gist",
 		DeviceCodeURL: "https://github.com/login/device/code",
 		TokenURL:      "https://github.com/login/oauth/access_token",
 	}

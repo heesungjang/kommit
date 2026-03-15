@@ -989,6 +989,17 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.toast, cmd = a.toast.ShowSuccess(msg.Message)
 		return a, cmd
 
+	// -- Toast request from dialogs -----------------------------------------
+	case dialog.DialogToastMsg:
+		if msg.IsError {
+			var cmd tea.Cmd
+			a.toast, cmd = a.toast.ShowError(msg.Message)
+			return a, cmd
+		}
+		var cmd tea.Cmd
+		a.toast, cmd = a.toast.ShowSuccess(msg.Message)
+		return a, cmd
+
 	// -- Branch info loaded --------------------------------------------------
 	case branchInfoMsg:
 		a.statusBar = a.statusBar.SetBranch(msg.branch).SetAheadBehind(msg.ahead, msg.behind).

@@ -129,7 +129,7 @@ func TestDeviceFlowConfigs(t *testing.T) {
 		if cfg.ClientID != "test-client-id" {
 			t.Errorf("unexpected client ID: %s", cfg.ClientID)
 		}
-		if cfg.Scopes != "repo read:user user:email" {
+		if cfg.Scopes != "repo read:user user:email workflow read:org gist" {
 			t.Errorf("unexpected scopes: %s", cfg.Scopes)
 		}
 	})

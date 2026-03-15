@@ -3,6 +3,8 @@ package dialog
 import (
 	"context"
 	"fmt"
+	"os/exec"
+	"runtime"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -26,6 +28,13 @@ type AccountLoginResultMsg struct {
 
 // AccountLoginCancelMsg is sent when the user cancels.
 type AccountLoginCancelMsg struct{}
+
+// DialogToastMsg is emitted by dialogs to request a toast notification.
+// Handled by the App shell (avoids import cycle with pages package).
+type DialogToastMsg struct {
+	Message string
+	IsError bool
+}
 
 // accountDeviceCodeMsg carries the device code response.
 type accountDeviceCodeMsg struct {
@@ -355,7 +364,8 @@ func (a AccountLogin) updateDeviceCodeStep(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.cancelFn = cancel
 		dc := msg.dc
 		provider := a.provider
-		return a, func() tea.Msg {
+
+		pollCmd := func() tea.Msg {
 			var cfg auth.DeviceFlowConfig
 			switch provider {
 			case auth.ProviderGitHub:
@@ -369,6 +379,8 @@ func (a AccountLogin) updateDeviceCodeStep(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return accountTokenMsg{token: tok.AccessToken}
 		}
+
+		return a, pollCmd
 
 	case accountTokenMsg:
 		a.waiting = false
@@ -386,6 +398,24 @@ func (a AccountLogin) updateDeviceCodeStep(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		switch {
+		case key.Matches(msg, key.NewBinding(key.WithKeys("c"))):
+			// Copy device code to clipboard.
+			if a.dc != nil {
+				code := a.dc.UserCode
+				return a, func() tea.Msg {
+					copyToClipboard(code)
+					return DialogToastMsg{Message: "Copied " + code + " to clipboard"}
+				}
+			}
+		case key.Matches(msg, key.NewBinding(key.WithKeys("o"))):
+			// Open verification URL in browser.
+			if a.dc != nil {
+				url := a.dc.VerificationURI
+				return a, func() tea.Msg {
+					openBrowser(url)
+					return DialogToastMsg{Message: "Opened browser"}
+				}
+			}
 		case key.Matches(msg, key.NewBinding(key.WithKeys("t"))):
 			// Switch to PAT input as fallback.
 			updated, cmd := a.switchToTokenInput()
@@ -450,10 +480,16 @@ func (a AccountLogin) buildDeviceCodeLines() []string {
 		lines = append(lines, step2)
 		lines = append(lines, blank)
 
-		code := lipgloss.NewStyle().
-			Foreground(t.Green).Background(t.Surface0).Width(w).Bold(true).
+		codeText := lipgloss.NewStyle().
+			Foreground(t.Green).Background(t.Surface0).Bold(true).
 			Render("     " + a.dc.UserCode)
-		lines = append(lines, code)
+		copyHint := lipgloss.NewStyle().
+			Foreground(t.Overlay0).Background(t.Surface0).
+			Render("  [c] copy  [o] open")
+		codeLine := lipgloss.NewStyle().
+			Background(t.Surface0).Width(w).
+			Render(codeText + copyHint)
+		lines = append(lines, codeLine)
 		lines = append(lines, blank)
 
 		waiting := lipgloss.NewStyle().
@@ -540,7 +576,7 @@ func (a AccountLogin) buildTokenLines() []string {
 	case auth.ProviderGitHub:
 		scopeHints = []string{
 			"  Create at: github.com/settings/tokens",
-			"  Required scopes: repo, read:user",
+			"  Required scopes: repo, read:user, workflow, read:org, gist",
 		}
 	case auth.ProviderGitLab:
 		scopeHints = []string{
@@ -685,6 +721,41 @@ func providerDisplayName(p auth.HostProvider) string {
 	default:
 		return string(p)
 	}
+}
+
+// copyToClipboard copies text to the system clipboard silently.
+func copyToClipboard(text string) {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("pbcopy")
+	case "linux":
+		if _, err := exec.LookPath("xclip"); err == nil {
+			cmd = exec.Command("xclip", "-selection", "clipboard")
+		} else {
+			cmd = exec.Command("xsel", "--clipboard", "--input")
+		}
+	case "windows":
+		cmd = exec.Command("clip")
+	default:
+		return
+	}
+	cmd.Stdin = strings.NewReader(text)
+	_ = cmd.Run()
+}
+
+// openBrowser opens a URL in the default browser.
+func openBrowser(url string) {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "linux":
+		cmd = exec.Command("xdg-open", url)
+	case "windows":
+		cmd = exec.Command("cmd", "/c", "start", url)
+	default:
+		cmd = exec.Command("open", url)
+	}
+	_ = cmd.Start()
 }
 
 var _ tea.Model = AccountLogin{}

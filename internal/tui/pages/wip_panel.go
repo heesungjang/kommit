@@ -505,6 +505,29 @@ func (l LogPage) handleWIPCommitKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return l, nil
+
+	case key.Matches(msg, key.NewBinding(key.WithKeys("down"))):
+		// In summary field, move focus to description
+		if l.commitField == 0 {
+			l.commitField = 1
+			l.commitSummary.Blur()
+			l.commitDesc.Focus()
+			return l, nil
+		}
+		// In description, let textarea handle cursor movement (fall through)
+
+	case key.Matches(msg, key.NewBinding(key.WithKeys("up"))):
+		// In description field on the first line, move focus back to summary
+		if l.commitField == 1 && l.commitDesc.Line() == 0 {
+			l.commitField = 0
+			l.commitDesc.Blur()
+			l.commitSummary.Focus()
+			return l, nil
+		}
+		// Otherwise let textarea handle cursor movement (fall through)
+		if l.commitField == 0 {
+			return l, nil // No-op in summary
+		}
 	}
 
 	// Forward all other keys to the active input field for typing
