@@ -34,9 +34,10 @@ func (r *Repository) RemoteList() ([]RemoteInfo, error) {
 		if _, ok := remoteMap[name]; !ok {
 			remoteMap[name] = &RemoteInfo{Name: name}
 		}
-		if typ == "fetch" {
+		switch typ {
+		case "fetch":
 			remoteMap[name].FetchURL = url
-		} else if typ == "push" {
+		case "push":
 			remoteMap[name].PushURL = url
 		}
 	}

@@ -127,7 +127,7 @@ func (c Confirm) buildContentLines() []string {
 	// between the message and buttons.
 	emptyLine := lipgloss.NewStyle().Background(t.Surface0).Render("")
 
-	var lines []string
+	lines := make([]string, 0, 8)
 	lines = append(lines, FlattenLines(message)...)
 	lines = append(lines, emptyLine)
 	lines = append(lines, FlattenLines(buttons)...)

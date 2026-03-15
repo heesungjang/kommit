@@ -93,7 +93,7 @@ func (t TextInput) buildContentLines() []string {
 	th := theme.Active
 	emptyLine := lipgloss.NewStyle().Background(th.Surface0).Render("")
 
-	var lines []string
+	lines := make([]string, 0, 4)
 	lines = append(lines, FlattenLines(t.input.View())...)
 	lines = append(lines, emptyLine)
 	return lines

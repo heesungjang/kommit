@@ -1,78 +1,73 @@
-# golangci-lint configuration for kommit
-# https://golangci-lint.run/usage/configuration/
-
+version: "2"
 run:
-  timeout: 5m
   modules-download-mode: readonly
-
 linters:
   enable:
-    # Default linters
-    - errcheck
-    - gosimple
-    - govet
-    - ineffassign
-    - staticcheck
-    - unused
-
-    # Additional quality linters
-    - bodyclose       # check HTTP response body is closed
-    - copyloopvar     # detect loop variable capture issues (Go 1.22+)
-    - durationcheck   # detect incorrect duration multiplication
-    - errname         # check error type naming conventions
-    - gocritic        # opinionated meta-linter with many checks
-    - gofmt           # enforce standard formatting
-    - goimports       # enforce import ordering
-    - misspell        # detect common typos
-    - nilerr          # detect returning nil after checking err != nil
-    - prealloc        # suggest slice pre-allocation
-    - unconvert       # detect unnecessary type conversions
-    - unparam         # detect unused function parameters
-    - wastedassign    # detect wasted assignments
-
-linters-settings:
-  gocritic:
-    enabled-tags:
-      - diagnostic
-      - style
-    disabled-checks:
-      - ifElseChain     # too noisy for switch-style if/else
-
-  errcheck:
-    # Don't report unchecked errors for fmt.Fprint* (common in TUI rendering).
-    exclude-functions:
-      - fmt.Fprint
-      - fmt.Fprintf
-      - fmt.Fprintln
-
-  misspell:
-    locale: US
-
-  govet:
-    enable-all: true
-    disable:
-      - fieldalignment  # not worth the noise for readability-first code
-
+    - bodyclose
+    - copyloopvar
+    - durationcheck
+    - errname
+    - gocritic
+    - misspell
+    - nilerr
+    - prealloc
+    - unconvert
+    - unparam
+    - wastedassign
+  settings:
+    errcheck:
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+    gocritic:
+      disabled-checks:
+        - ifElseChain
+      enabled-tags:
+        - diagnostic
+        - style
+    govet:
+      disable:
+        - fieldalignment
+      enable-all: true
+    misspell:
+      locale: US
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - errcheck
+          - gocritic
+          - unparam
+        path: _test\.go
+      - linters:
+          - errcheck
+          - gocritic
+          - misspell
+          - unparam
+          - unused
+          - wastedassign
+        path: gh-dash/
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
 issues:
-  # Show all issues (don't collapse duplicates).
   max-issues-per-linter: 0
   max-same-issues: 0
-
-  exclude-rules:
-    # Test files can be more relaxed.
-    - path: _test\.go
-      linters:
-        - errcheck
-        - gocritic
-        - unparam
-
-    # The gh-dash reference code is not ours to lint.
-    - path: gh-dash/
-      linters:
-        - errcheck
-        - gocritic
-        - goimports
-        - misspell
-        - unparam
-        - unused
-        - wastedassign
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+      - gh-dash/

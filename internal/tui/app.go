@@ -416,14 +416,14 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.dialog = nil
 		errMsg := msg.Err.Error()
 		return a, func() tea.Msg {
-			return pages.AICommitErrorMsg{Err: fmt.Errorf("Copilot login: %s", errMsg)}
+			return pages.AICommitErrorMsg{Err: fmt.Errorf("copilot login: %s", errMsg)}
 		}
 
 	case dialog.CopilotOAuthCancelMsg:
 		a.showDialog = false
 		a.dialog = nil
 		return a, func() tea.Msg {
-			return pages.AICommitErrorMsg{Err: fmt.Errorf("Copilot login canceled")}
+			return pages.AICommitErrorMsg{Err: fmt.Errorf("copilot login canceled")}
 		}
 
 	// -- Account login dialog -----------------------------------------------
@@ -1166,12 +1166,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.doBackgroundFetch()
 
 	case autoFetchDoneMsg:
-		cmds := []tea.Cmd{a.scheduleAutoFetch()}
+		fetchCmds := []tea.Cmd{a.scheduleAutoFetch()}
 		if msg.err == nil {
 			// Refresh ahead/behind counts now that tracking refs are updated.
-			cmds = append(cmds, a.loadBranchInfo())
+			fetchCmds = append(fetchCmds, a.loadBranchInfo())
 		}
-		return a, tea.Batch(cmds...)
+		return a, tea.Batch(fetchCmds...)
 
 	// -- Mouse events --------------------------------------------------------
 	case tea.MouseMsg:
@@ -1772,7 +1772,14 @@ func friendlyGitError(op string, err error) string {
 	switch op {
 	case "push":
 		switch {
-		case strings.Contains(lower, "rejected"):
+		case strings.Contains(lower, "workflow") && strings.Contains(lower, "scope"):
+			return "Push rejected — token lacks 'workflow' scope for CI file changes."
+		case strings.Contains(lower, "oauth") && strings.Contains(lower, "scope"):
+			return "Push rejected — OAuth token is missing required scopes."
+		case strings.Contains(lower, "rejected") &&
+			!strings.Contains(lower, "workflow") &&
+			!strings.Contains(lower, "scope") &&
+			!strings.Contains(lower, "permission"):
 			return "Push rejected — remote has new commits. Pull first."
 		case strings.Contains(lower, "no upstream"):
 			return "No upstream branch configured."

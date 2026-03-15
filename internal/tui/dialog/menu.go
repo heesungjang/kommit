@@ -111,7 +111,7 @@ func (m Menu) buildContentLines() []string {
 	t := theme.Active
 	w := m.Base.InnerWidth()
 
-	var lines []string
+	lines := make([]string, 0, len(m.Options)*2)
 	for i, opt := range m.Options {
 		selected := i == m.cursor
 		bg := t.Surface0

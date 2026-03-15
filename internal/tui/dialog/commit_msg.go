@@ -116,7 +116,7 @@ func (c CommitMsg) buildContentLines() []string {
 		Background(t.Surface0).
 		Render(fmt.Sprintf("%d file(s) staged", c.stagedCount))
 
-	var lines []string
+	lines := make([]string, 0, 8)
 	lines = append(lines, info)
 	lines = append(lines, emptyLine)
 	lines = append(lines, FlattenLines(c.textarea.View())...)

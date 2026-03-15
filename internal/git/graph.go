@@ -119,9 +119,10 @@ func ComputeGraph(commits []CommitInfo) []GraphRow {
 					}
 					// Draw horizontal connectors between the node and the merge column
 					for k := col + 1; k < newCol; k++ {
-						if cells[k].Char == " " {
+						switch cells[k].Char {
+						case " ":
 							cells[k] = GraphCell{Char: "─", Column: newCol}
-						} else if cells[k].Char == "│" {
+						case "│":
 							cells[k] = GraphCell{Char: "┼", Column: cells[k].Column}
 						}
 					}
@@ -132,9 +133,10 @@ func ComputeGraph(commits []CommitInfo) []GraphRow {
 						minC, maxC = maxC, minC
 					}
 					for k := minC + 1; k < maxC; k++ {
-						if cells[k].Char == " " {
+						switch cells[k].Char {
+						case " ":
 							cells[k] = GraphCell{Char: "─", Column: existingCol}
-						} else if cells[k].Char == "│" {
+						case "│":
 							cells[k] = GraphCell{Char: "┼", Column: cells[k].Column}
 						}
 					}

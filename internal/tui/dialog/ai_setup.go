@@ -278,7 +278,7 @@ func (a AISetup) buildKeyLines() []string {
 	t := theme.Active
 	w := a.Base.InnerWidth()
 
-	var lines []string
+	lines := make([]string, 0, 12)
 
 	// Show which provider was selected.
 	providerLabel := a.provider

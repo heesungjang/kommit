@@ -71,8 +71,8 @@ func (r *Repository) UnstageHunk(path string, hunk Hunk) error {
 
 func buildPatch(oldPath, newPath string, hunk Hunk) string {
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("--- a/%s\n", oldPath))
-	b.WriteString(fmt.Sprintf("+++ b/%s\n", newPath))
+	fmt.Fprintf(&b, "--- a/%s\n", oldPath)
+	fmt.Fprintf(&b, "+++ b/%s\n", newPath)
 	b.WriteString(hunk.Header + "\n")
 	for _, line := range hunk.Lines {
 		b.WriteString(line + "\n")
@@ -174,8 +174,8 @@ func buildPartialPatch(path string, hunk Hunk, selectedIndices map[int]bool, rev
 	header := fmt.Sprintf("@@ -%d,%d +%d,%d @@", hunk.StartOld, oldCount, hunk.StartNew, newCount)
 
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("--- a/%s\n", path))
-	b.WriteString(fmt.Sprintf("+++ b/%s\n", path))
+	fmt.Fprintf(&b, "--- a/%s\n", path)
+	fmt.Fprintf(&b, "+++ b/%s\n", path)
 	b.WriteString(header + "\n")
 	for _, pl := range patchLines {
 		b.WriteString(pl + "\n")

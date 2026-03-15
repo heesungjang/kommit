@@ -1082,7 +1082,7 @@ func (l LogPage) renderWIPDetail(width, height int) string {
 		unstagedHeader = sectionTitle(fmt.Sprintf("▾ Unstaged (%d) %s", len(l.wipUnstaged), scrollTag), "u", unstagedFocused)
 	}
 
-	var unstagedSection []string
+	unstagedSection := make([]string, 0, 2+len(visibleUnstaged))
 	unstagedSection = append(unstagedSection, unstagedHeader)
 	unstagedSection = append(unstagedSection, unstagedMargin)
 	unstagedSection = append(unstagedSection, visibleUnstaged...)
@@ -1149,7 +1149,7 @@ func (l LogPage) renderWIPDetail(width, height int) string {
 		stagedHeader = sectionTitle(fmt.Sprintf("▾ Staged (%d) %s", len(l.wipStaged), scrollTag), "s", stagedFocused)
 	}
 
-	var stagedSection []string
+	stagedSection := make([]string, 0, 2+len(visibleStaged))
 	stagedSection = append(stagedSection, stagedHeader)
 	stagedSection = append(stagedSection, stagedMargin)
 	stagedSection = append(stagedSection, visibleStaged...)
@@ -1157,7 +1157,7 @@ func (l LogPage) renderWIPDetail(width, height int) string {
 	// ---------------------------------------------------------------
 	// Assemble the file area from the two sub-viewports
 	// ---------------------------------------------------------------
-	var fileAreaParts []string
+	fileAreaParts := make([]string, 0, len(unstagedSection)+1+len(stagedSection))
 	fileAreaParts = append(fileAreaParts, unstagedSection...)
 	fileAreaParts = append(fileAreaParts, separator)
 	fileAreaParts = append(fileAreaParts, stagedSection...)

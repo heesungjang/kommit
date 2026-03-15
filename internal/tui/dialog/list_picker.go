@@ -125,7 +125,7 @@ func (lp ListPicker) buildContentLines() []string {
 	t := theme.Active
 	w := lp.Base.InnerWidth()
 
-	var lines []string
+	lines := make([]string, 0, len(lp.Options)*2)
 	for i, opt := range lp.Options {
 		selected := i == lp.cursor
 		isActive := opt.Value == lp.activeValue
