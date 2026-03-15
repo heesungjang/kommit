@@ -102,6 +102,7 @@ type LogPage struct {
 	commitAmend   bool            // true when in amend mode
 	commitEditing bool            // true when actively typing in commit input (Enter to start, Esc to stop)
 	aiGenerating  bool            // true when AI commit message is being generated
+	skeletonTick  int             // counter for skeleton pulse animation during AI generation
 
 	// Pending discard in WIP context
 	wipPendingDiscardPath      string
@@ -399,6 +400,9 @@ func (l LogPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		l.spinner, cmd = l.spinner.Update(msg)
+		if l.aiGenerating {
+			l.skeletonTick++
+		}
 		return l, cmd
 
 	case logLoadedMsg:

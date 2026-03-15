@@ -170,6 +170,7 @@ func (l LogPage) handleWIPDetailKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return l, nil // already generating
 		}
 		l.aiGenerating = true
+		l.skeletonTick = 0
 		l.spinner = l.spinner.SetLabel("Summarizing...").Start()
 		return l, tea.Batch(
 			l.spinner.Tick(),
@@ -892,10 +893,46 @@ func (l LogPage) renderWIPDetail(width, height int) string {
 	commitInner = append(commitInner, cBgLine("")) // margin bottom
 
 	if l.aiGenerating {
-		// Empty body — spinner is shown in the header line.
-		for range 6 {
-			commitInner = append(commitInner, cBgLine(""))
+		// Skeleton loading — pulsing placeholder boxes while AI generates.
+		inputWidth := ciw - 2
+		if inputWidth < 6 {
+			inputWidth = 6
 		}
+
+		// Pulse cycle: 4 phases (~480ms total at 120ms/tick)
+		// Phase 0,3 = dim (Surface2), phase 1,2 = bright (Overlay0)
+		pulseColors := []lipgloss.Color{t.Surface2, t.Overlay0, t.Overlay0, t.Surface2}
+		phase := l.skeletonTick % len(pulseColors)
+		skelColor := pulseColors[phase]
+
+		skelStyle := lipgloss.NewStyle().Foreground(skelColor).Background(t.Surface0)
+		skelBorder := t.Surface2
+
+		// Summary skeleton — single line of blocks
+		skelSummaryLine := skelStyle.Width(inputWidth).Render(strings.Repeat("█", inputWidth*2/3))
+		summaryBox := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(skelBorder).
+			BorderBackground(t.Surface0).
+			Background(t.Surface0).
+			Width(ciw - 2).
+			Render(skelSummaryLine)
+		commitInner = append(commitInner, cBgLine(summaryBox))
+
+		// Description skeleton — 3 lines of varying-width blocks
+		descLines := lipgloss.JoinVertical(lipgloss.Left,
+			skelStyle.Width(inputWidth).Render(strings.Repeat("█", inputWidth*4/5)),
+			skelStyle.Width(inputWidth).Render(strings.Repeat("█", inputWidth*3/5)),
+			skelStyle.Width(inputWidth).Render(strings.Repeat("█", inputWidth*2/5)),
+		)
+		descBox := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(skelBorder).
+			BorderBackground(t.Surface0).
+			Background(t.Surface0).
+			Width(ciw - 2).
+			Render(descLines)
+		commitInner = append(commitInner, cBgLine(descBox))
 	} else {
 		// Summary input — single-line
 		inputWidth := ciw - 2 // -2 for individual input border
