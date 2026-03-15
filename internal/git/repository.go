@@ -116,11 +116,15 @@ func (r *Repository) RunAuthenticated(username, token string, args ...string) (s
 	}
 	defer cleanup()
 
+	// Disable system credential helpers (e.g. osxkeychain) so that
+	// GIT_ASKPASS is used instead of stale cached credentials.
+	authArgs := append([]string{"-c", "credential.helper="}, args...)
+
 	env := []string{
 		"GIT_ASKPASS=" + askpassScript,
 		"GIT_TERMINAL_PROMPT=0",
 	}
-	return r.runWithEnv(env, args...)
+	return r.runWithEnv(env, authArgs...)
 }
 
 // Head returns the current HEAD reference (branch name or commit hash).
