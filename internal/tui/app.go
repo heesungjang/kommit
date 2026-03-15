@@ -319,6 +319,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.dialog = nil
 		return a, nil
 
+	case showCreatePRDialogMsg:
+		d := dialog.NewCreatePR(msg.headBranch, msg.baseBranch, msg.remoteBranches, msg.pctx)
+		a.dialog = d
+		a.showDialog = true
+		return a, tea.Batch(d.Init(), a.loadPRStats(msg.baseBranch), a.checkBranchPushed())
+
 	// -- Command palette result -----------------------------------------------
 	case dialog.CommandPaletteResultMsg:
 		a.showDialog = false
@@ -960,6 +966,20 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, cmd
 		}
 		return a, nil
+
+	case dialog.CreatePRStatsMsg, dialog.CreatePRBranchPushedMsg, dialog.CreatePRPushDoneMsg:
+		if a.dialog != nil {
+			var cmd tea.Cmd
+			a.dialog, cmd = a.dialog.Update(msg)
+			return a, cmd
+		}
+		return a, nil
+
+	case dialog.CreatePRRefreshStatsMsg:
+		return a, a.loadPRStats(msg.BaseBranch)
+
+	case dialog.CreatePRPushRequestMsg:
+		return a, a.pushHeadBranch()
 
 	case pages.PRCreatedMsg:
 		var cmd tea.Cmd
@@ -2362,7 +2382,8 @@ func (a App) loadPullRequests() tea.Cmd {
 }
 
 // openCreatePRDialog opens the Create PR dialog pre-filled with the current
-// branch and the repository's default branch.
+// branch, remote branches, and the repository's default branch. It also kicks
+// off async loading of commit/diff stats and remote push status.
 func (a App) openCreatePRDialog() tea.Cmd {
 	repo := a.repo
 	pctx := a.ctx
@@ -2389,7 +2410,98 @@ func (a App) openCreatePRDialog() tea.Cmd {
 			}
 		}
 
-		return showDialogMsg{model: dialog.NewCreatePR(headBranch, baseBranch, pctx)}
+		// Gather remote branch names (strip "origin/" prefix).
+		var branchNames []string
+		remoteBranches, rbErr := repo.RemoteBranches()
+		if rbErr == nil {
+			for _, b := range remoteBranches {
+				name := strings.TrimPrefix(b.Name, "origin/")
+				if name == "HEAD" {
+					continue
+				}
+				branchNames = append(branchNames, name)
+			}
+		}
+
+		return showCreatePRDialogMsg{
+			headBranch:     headBranch,
+			baseBranch:     baseBranch,
+			remoteBranches: branchNames,
+			pctx:           pctx,
+		}
+	}
+}
+
+// showCreatePRDialogMsg carries all data needed to open the PR dialog and
+// trigger async stat loading.
+type showCreatePRDialogMsg struct {
+	headBranch     string
+	baseBranch     string
+	remoteBranches []string
+	pctx           *tuictx.ProgramContext
+}
+
+// loadPRStats loads commit count and diff stats between the base branch and HEAD.
+func (a App) loadPRStats(baseBranch string) tea.Cmd {
+	repo := a.repo
+	return func() tea.Msg {
+		commitCount, _ := repo.RevListCount(baseBranch, "HEAD")
+		entries, _ := repo.DiffStatBranch(baseBranch, "HEAD")
+
+		filesChanged := len(entries)
+		var additions, deletions int
+		for _, e := range entries {
+			additions += e.Added
+			deletions += e.Removed
+		}
+
+		return dialog.CreatePRStatsMsg{
+			CommitCount:  commitCount,
+			FilesChanged: filesChanged,
+			Additions:    additions,
+			Deletions:    deletions,
+		}
+	}
+}
+
+// checkBranchPushed checks if the head branch exists on the remote.
+func (a App) checkBranchPushed() tea.Cmd {
+	repo := a.repo
+	return func() tea.Msg {
+		head, err := repo.Head()
+		if err != nil {
+			return dialog.CreatePRBranchPushedMsg{Pushed: false}
+		}
+		pushed := repo.HasRemoteBranch("origin", head)
+		return dialog.CreatePRBranchPushedMsg{Pushed: pushed}
+	}
+}
+
+// pushHeadBranch pushes the current HEAD branch to origin using auth.
+func (a App) pushHeadBranch() tea.Cmd {
+	repo := a.repo
+	return func() tea.Msg {
+		head, err := repo.Head()
+		if err != nil {
+			return dialog.CreatePRPushDoneMsg{Err: fmt.Errorf("cannot determine branch: %w", err)}
+		}
+
+		remoteURL, err := repo.RemoteURL("origin")
+		if err != nil || remoteURL == "" {
+			return dialog.CreatePRPushDoneMsg{Err: fmt.Errorf("no origin remote")}
+		}
+
+		host := auth.HostFromRemoteURL(remoteURL)
+		acct := auth.GetAccount(host)
+		if acct == nil {
+			return dialog.CreatePRPushDoneMsg{Err: fmt.Errorf("not logged in")}
+		}
+
+		err = repo.PushSetUpstreamAuth("origin", head, acct.Username, acct.Token)
+		if err != nil {
+			return dialog.CreatePRPushDoneMsg{Err: err}
+		}
+		return dialog.CreatePRPushDoneMsg{}
 	}
 }
 

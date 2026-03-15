@@ -313,6 +313,34 @@ func (r *Repository) LogBranchOneline(baseRef string) (string, error) {
 	return r.run("log", "--oneline", baseRef+"..HEAD")
 }
 
+// DiffStatBranch returns per-file change statistics between two arbitrary refs.
+func (r *Repository) DiffStatBranch(base, target string) ([]DiffStatEntry, error) {
+	out, err := r.run("diff", "--numstat", base+"..."+target)
+	if err != nil {
+		return nil, err
+	}
+	return parseDiffStat(out), nil
+}
+
+// RevListCount returns the number of commits in the range base..head.
+func (r *Repository) RevListCount(base, head string) (int, error) {
+	out, err := r.run("rev-list", "--count", base+".."+head)
+	if err != nil {
+		return 0, err
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(out))
+	if err != nil {
+		return 0, fmt.Errorf("parse rev-list count: %w", err)
+	}
+	return n, nil
+}
+
+// HasRemoteBranch returns true if the given branch exists on the named remote.
+func (r *Repository) HasRemoteBranch(remote, branch string) bool {
+	_, err := r.run("rev-parse", "--verify", remote+"/"+branch)
+	return err == nil
+}
+
 func parseDiffStat(out string) []DiffStatEntry {
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	entries := make([]DiffStatEntry, 0, len(lines))
