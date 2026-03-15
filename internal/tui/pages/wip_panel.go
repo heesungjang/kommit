@@ -2,6 +2,7 @@ package pages
 
 import (
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -899,14 +900,11 @@ func (l LogPage) renderWIPDetail(width, height int) string {
 			inputWidth = 6
 		}
 
-		skelBorder := t.Surface2
 		bg := t.Surface0
 
-		// Shimmer position advances 2 chars per tick. The sweep travels
-		// across the bar width plus some padding so there's a brief gap
-		// before the next sweep starts.
-		sweepRange := inputWidth + 12 // bar width + gap
-		shimmerPos := (l.skeletonTick * 2) % sweepRange
+		// Cosine-eased shimmer position: accelerates through the middle,
+		// decelerates at the edges for a premium feel.
+		shimmerPos := shimmerEasePos(l.skeletonTick, inputWidth)
 
 		renderShimmer := func(barLen, lineOffset int) string {
 			return renderShimmerBar(barLen, inputWidth, shimmerPos, lineOffset, t.Surface2, t.Overlay1, bg)
@@ -915,7 +913,7 @@ func (l LogPage) renderWIPDetail(width, height int) string {
 		// Summary skeleton — single shimmer bar
 		summaryBox := lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(skelBorder).
+			BorderForeground(t.Surface2).
 			BorderBackground(bg).
 			Background(bg).
 			Width(ciw - 2).
@@ -924,13 +922,13 @@ func (l LogPage) renderWIPDetail(width, height int) string {
 
 		// Description skeleton — 3 lines with staggered shimmer
 		descLines := lipgloss.JoinVertical(lipgloss.Left,
-			renderShimmer(inputWidth*4/5, 3),
-			renderShimmer(inputWidth*3/5, 6),
-			renderShimmer(inputWidth*2/5, 9),
+			renderShimmer(inputWidth*4/5, 2),
+			renderShimmer(inputWidth*3/5, 4),
+			renderShimmer(inputWidth*2/5, 6),
 		)
 		descBox := lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(skelBorder).
+			BorderForeground(t.Surface2).
 			BorderBackground(bg).
 			Background(bg).
 			Width(ciw - 2).
@@ -1360,19 +1358,39 @@ func (l LogPage) loadAmendPrefill() tea.Cmd {
 	}
 }
 
-// renderShimmerBar renders a skeleton bar of █ characters with a shimmer
-// highlight that sweeps left-to-right. Each character is colored based on its
-// distance from the shimmer center, creating a moving highlight effect.
-//
-//   - barLen: number of █ characters in the bar
-//   - totalWidth: total line width (bar is left-aligned, rest is bg-filled)
-//   - shimmerPos: current shimmer center position (advances each tick)
-//   - lineOffset: per-line stagger so lines shimmer at slightly different times
-//   - dimColor: base color for blocks outside the highlight
-//   - brightColor: peak color at the shimmer center
-//   - bg: background color for padding
+// shimmerRadius is the half-width of the shimmer highlight in characters.
+// The full highlight spans 2*shimmerRadius+1 characters. A larger radius
+// gives a softer, more premium-feeling sweep.
+const shimmerRadius = 5
+
+// shimmerEasePos returns the shimmer center position for the given tick,
+// using a cosine ease-in-out curve so the highlight accelerates through
+// the middle and glides to a stop at the edges.
+func shimmerEasePos(tick, barWidth int) int {
+	// Total sweep range: bar width + lead-in/out padding.
+	pad := shimmerRadius + 4
+	totalRange := barWidth + 2*pad
+
+	// Period in ticks for one full sweep. At ~120ms/tick this gives
+	// a ~2.4s sweep which feels natural.
+	period := 20
+	phase := tick % period
+
+	// Cosine ease-in-out: maps linear phase [0, period) to [0, totalRange).
+	// cos goes from 1 → -1 over [0, π], so (1-cos)/2 goes 0 → 1.
+	t := float64(phase) / float64(period) // 0.0 → 1.0
+	eased := (1.0 - math.Cos(t*math.Pi)) / 2.0
+	return int(eased*float64(totalRange)) - pad
+}
+
+// renderShimmerBar renders a skeleton bar of █ characters with a smooth
+// shimmer highlight sweeping left-to-right. Each character is individually
+// colored with a cosine-based gradient centered on the shimmer position,
+// creating a soft glowing wave effect.
 func renderShimmerBar(barLen, totalWidth, shimmerPos, lineOffset int, dimColor, brightColor, bg lipgloss.Color) string {
 	center := shimmerPos - lineOffset
+	dimHex := string(dimColor)
+	brightHex := string(brightColor)
 
 	var b strings.Builder
 	for i := range barLen {
@@ -1382,50 +1400,43 @@ func renderShimmerBar(barLen, totalWidth, shimmerPos, lineOffset int, dimColor, 
 		}
 
 		var fg lipgloss.Color
-		switch {
-		case dist <= 1:
-			fg = brightColor
-		case dist <= 3:
-			fg = lipgloss.Color(blendHex(string(brightColor), string(dimColor), 0.6))
-		default:
+		if dist > shimmerRadius {
 			fg = dimColor
+		} else {
+			// Cosine falloff: 1.0 at center → 0.0 at radius edge.
+			ratio := (1.0 + math.Cos(float64(dist)*math.Pi/float64(shimmerRadius))) / 2.0
+			fg = lipgloss.Color(blendHex(dimHex, brightHex, ratio))
 		}
 		b.WriteString(lipgloss.NewStyle().Foreground(fg).Background(bg).Render("█"))
 	}
 
-	// Pad remaining width with background
+	// Pad remaining width with background.
 	if pad := totalWidth - barLen; pad > 0 {
 		b.WriteString(lipgloss.NewStyle().Background(bg).Render(strings.Repeat(" ", pad)))
 	}
 	return b.String()
 }
 
-// blendHex blends two hex color strings by ratio t (0.0 = a, 1.0 = b).
-// Expects "#RRGGBB" format. Returns "#RRGGBB".
-func blendHex(a, b string, t float64) string {
-	parseHex := func(s string) (int, int, int) {
-		s = strings.TrimPrefix(s, "#")
-		if len(s) != 6 {
-			return 0, 0, 0
-		}
-		var r, g, bl int
-		_, _ = fmt.Sscanf(s, "%02x%02x%02x", &r, &g, &bl)
-		return r, g, bl
-	}
-
-	r1, g1, b1 := parseHex(a)
-	r2, g2, b2 := parseHex(b)
+// blendHex blends two hex color strings. ratio 0.0 returns color a,
+// ratio 1.0 returns color b. Expects "#RRGGBB" format.
+func blendHex(a, b string, ratio float64) string {
+	ar, ag, ab := parseHexColor(a)
+	br, bg, bb := parseHexColor(b)
 
 	lerp := func(from, to int) int {
-		v := float64(from) + (float64(to)-float64(from))*t
-		if v < 0 {
-			v = 0
-		}
-		if v > 255 {
-			v = 255
-		}
-		return int(v)
+		v := float64(from) + (float64(to)-float64(from))*ratio
+		return max(0, min(255, int(v)))
 	}
 
-	return fmt.Sprintf("#%02x%02x%02x", lerp(r1, r2), lerp(g1, g2), lerp(b1, b2))
+	return fmt.Sprintf("#%02x%02x%02x", lerp(ar, br), lerp(ag, bg), lerp(ab, bb))
+}
+
+// parseHexColor parses a "#RRGGBB" string into RGB components.
+func parseHexColor(s string) (r, g, b int) {
+	s = strings.TrimPrefix(s, "#")
+	if len(s) != 6 {
+		return 0, 0, 0
+	}
+	_, _ = fmt.Sscanf(s, "%02x%02x%02x", &r, &g, &b)
+	return r, g, b
 }
