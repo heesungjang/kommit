@@ -23,6 +23,7 @@ import (
 	"github.com/heesungjang/kommit/internal/tui/customcmd"
 	"github.com/heesungjang/kommit/internal/tui/dialog"
 	"github.com/heesungjang/kommit/internal/tui/keys"
+	"github.com/heesungjang/kommit/internal/tui/msgs"
 	"github.com/heesungjang/kommit/internal/tui/pages"
 	"github.com/heesungjang/kommit/internal/tui/theme"
 )
@@ -978,19 +979,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			Value: msg.Value,
 		})
 
-	// -- Toast request from pages -------------------------------------------
-	case pages.RequestToastMsg:
-		if msg.IsError {
-			var cmd tea.Cmd
-			a.toast, cmd = a.toast.ShowError(msg.Message)
-			return a, cmd
-		}
-		var cmd tea.Cmd
-		a.toast, cmd = a.toast.ShowSuccess(msg.Message)
-		return a, cmd
-
-	// -- Toast request from dialogs -----------------------------------------
-	case dialog.DialogToastMsg:
+	// -- Toast request (from pages or dialogs) --------------------------------
+	case msgs.ToastMsg:
 		if msg.IsError {
 			var cmd tea.Cmd
 			a.toast, cmd = a.toast.ShowError(msg.Message)

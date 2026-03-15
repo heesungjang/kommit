@@ -1,5 +1,7 @@
 package pages
 
+import "github.com/heesungjang/kommit/internal/tui/msgs"
+
 // This file defines message types that are shared between pages and the app
 // shell. They are used for requesting dialogs, signaling state changes, and
 // triggering git operations from any page or component.
@@ -23,10 +25,8 @@ type RequestConfirmMsg struct {
 }
 
 // RequestToastMsg asks the app shell to display a toast notification.
-type RequestToastMsg struct {
-	Message string
-	IsError bool
-}
+// This is a type alias for msgs.ToastMsg so all packages can use the same type.
+type RequestToastMsg = msgs.ToastMsg
 
 // RequestGitOpMsg requests a push/pull/fetch operation from the app shell.
 type RequestGitOpMsg struct {

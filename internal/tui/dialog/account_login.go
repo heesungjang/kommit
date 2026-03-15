@@ -3,8 +3,6 @@ package dialog
 import (
 	"context"
 	"fmt"
-	"os/exec"
-	"runtime"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -14,7 +12,9 @@ import (
 
 	"github.com/heesungjang/kommit/internal/auth"
 	tuictx "github.com/heesungjang/kommit/internal/tui/context"
+	"github.com/heesungjang/kommit/internal/tui/msgs"
 	"github.com/heesungjang/kommit/internal/tui/theme"
+	"github.com/heesungjang/kommit/internal/tui/utils"
 )
 
 // ---------------------------------------------------------------------------
@@ -30,11 +30,7 @@ type AccountLoginResultMsg struct {
 type AccountLoginCancelMsg struct{}
 
 // DialogToastMsg is emitted by dialogs to request a toast notification.
-// Handled by the App shell (avoids import cycle with pages package).
-type DialogToastMsg struct {
-	Message string
-	IsError bool
-}
+type DialogToastMsg = msgs.ToastMsg
 
 // accountDeviceCodeMsg carries the device code response.
 type accountDeviceCodeMsg struct {
@@ -403,7 +399,9 @@ func (a AccountLogin) updateDeviceCodeStep(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if a.dc != nil {
 				code := a.dc.UserCode
 				return a, func() tea.Msg {
-					copyToClipboard(code)
+					if err := utils.CopyToClipboard(code); err != nil {
+						return DialogToastMsg{Message: "Failed to copy: " + err.Error(), IsError: true}
+					}
 					return DialogToastMsg{Message: "Copied " + code + " to clipboard"}
 				}
 			}
@@ -412,7 +410,9 @@ func (a AccountLogin) updateDeviceCodeStep(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if a.dc != nil {
 				url := a.dc.VerificationURI
 				return a, func() tea.Msg {
-					openBrowser(url)
+					if err := utils.OpenBrowser(url); err != nil {
+						return DialogToastMsg{Message: "Failed to open browser: " + err.Error(), IsError: true}
+					}
 					return DialogToastMsg{Message: "Opened browser"}
 				}
 			}
@@ -721,41 +721,6 @@ func providerDisplayName(p auth.HostProvider) string {
 	default:
 		return string(p)
 	}
-}
-
-// copyToClipboard copies text to the system clipboard silently.
-func copyToClipboard(text string) {
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "darwin":
-		cmd = exec.Command("pbcopy")
-	case "linux":
-		if _, err := exec.LookPath("xclip"); err == nil {
-			cmd = exec.Command("xclip", "-selection", "clipboard")
-		} else {
-			cmd = exec.Command("xsel", "--clipboard", "--input")
-		}
-	case "windows":
-		cmd = exec.Command("clip")
-	default:
-		return
-	}
-	cmd.Stdin = strings.NewReader(text)
-	_ = cmd.Run()
-}
-
-// openBrowser opens a URL in the default browser.
-func openBrowser(url string) {
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "linux":
-		cmd = exec.Command("xdg-open", url)
-	case "windows":
-		cmd = exec.Command("cmd", "/c", "start", url)
-	default:
-		cmd = exec.Command("open", url)
-	}
-	_ = cmd.Start()
 }
 
 var _ tea.Model = AccountLogin{}

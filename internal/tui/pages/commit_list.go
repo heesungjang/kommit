@@ -2,8 +2,6 @@ package pages
 
 import (
 	"fmt"
-	"os/exec"
-	"runtime"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -16,6 +14,7 @@ import (
 	"github.com/heesungjang/kommit/internal/tui/dialog"
 	"github.com/heesungjang/kommit/internal/tui/styles"
 	"github.com/heesungjang/kommit/internal/tui/theme"
+	"github.com/heesungjang/kommit/internal/tui/utils"
 )
 
 // ---------------------------------------------------------------------------
@@ -1158,16 +1157,7 @@ func (l LogPage) handlePRDetailKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if l.viewedPR != nil && l.viewedPR.URL != "" {
 			prURL := l.viewedPR.URL
 			return l, func() tea.Msg {
-				var cmd *exec.Cmd
-				switch runtime.GOOS {
-				case "darwin":
-					cmd = exec.Command("open", prURL)
-				case "windows":
-					cmd = exec.Command("cmd", "/c", "start", prURL)
-				default:
-					cmd = exec.Command("xdg-open", prURL)
-				}
-				if err := cmd.Run(); err != nil {
+				if err := utils.OpenBrowser(prURL); err != nil {
 					return RequestToastMsg{Message: "Failed to open browser: " + err.Error(), IsError: true}
 				}
 				return RequestToastMsg{Message: "Opened PR in browser"}
@@ -1918,24 +1908,7 @@ func (l LogPage) doRedoConfirmed() tea.Cmd {
 // copyToClipboard copies text to the system clipboard and shows a toast.
 func (l LogPage) copyToClipboard(text string) tea.Cmd {
 	return func() tea.Msg {
-		var cmd *exec.Cmd
-		switch runtime.GOOS {
-		case "darwin":
-			cmd = exec.Command("pbcopy")
-		case "linux":
-			// Try xclip first, then xsel
-			if _, err := exec.LookPath("xclip"); err == nil {
-				cmd = exec.Command("xclip", "-selection", "clipboard")
-			} else {
-				cmd = exec.Command("xsel", "--clipboard", "--input")
-			}
-		case "windows":
-			cmd = exec.Command("clip")
-		default:
-			return RequestToastMsg{Message: "Clipboard not supported on this OS", IsError: true}
-		}
-		cmd.Stdin = strings.NewReader(text)
-		if err := cmd.Run(); err != nil {
+		if err := utils.CopyToClipboard(text); err != nil {
 			return RequestToastMsg{Message: "Copy failed: " + err.Error(), IsError: true}
 		}
 		short := text

@@ -6,7 +6,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strconv"
 	"strings"
 
@@ -26,6 +25,7 @@ import (
 	"github.com/heesungjang/kommit/internal/tui/keys"
 	"github.com/heesungjang/kommit/internal/tui/styles"
 	"github.com/heesungjang/kommit/internal/tui/theme"
+	"github.com/heesungjang/kommit/internal/tui/utils"
 )
 
 // ---------------------------------------------------------------------------
@@ -781,16 +781,7 @@ func (l LogPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case SidebarOpenPRInBrowserMsg:
 		prURL := msg.URL
 		return l, func() tea.Msg {
-			var cmd *exec.Cmd
-			switch runtime.GOOS {
-			case "linux":
-				cmd = exec.Command("xdg-open", prURL)
-			case "windows":
-				cmd = exec.Command("cmd", "/c", "start", prURL)
-			default:
-				cmd = exec.Command("open", prURL)
-			}
-			if err := cmd.Run(); err != nil {
+			if err := utils.OpenBrowser(prURL); err != nil {
 				return RequestToastMsg{Message: "Failed to open browser: " + err.Error(), IsError: true}
 			}
 			return RequestToastMsg{Message: "Opened PR in browser"}
