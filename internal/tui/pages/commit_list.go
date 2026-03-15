@@ -119,11 +119,18 @@ func (l *LogPage) loadDetailForCursorMaybeMore() tea.Cmd {
 func (l LogPage) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// When center is showing a diff, j/k scroll the diff and Esc exits.
 	if l.diffViewer.Active {
+		// In fullscreen mode, Esc exits fullscreen first (keeps the diff open).
+		if l.diffFullscreen && key.Matches(msg, key.NewBinding(key.WithKeys("esc"))) {
+			l.diffFullscreen = false
+			return l, nil
+		}
+
 		// Delegate all diff-mode keys to the DiffViewer.
 		handled, cmd := l.diffViewer.HandleKeys(msg, l.navKeys, l.repo, l.height)
 		if handled {
 			// HandleKeys.Reset() means Esc was pressed — return focus to detail.
 			if !l.diffViewer.Active {
+				l.diffFullscreen = false
 				l.focus = focusLogDetail
 			}
 			return l, cmd

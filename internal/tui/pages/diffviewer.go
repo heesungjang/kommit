@@ -274,6 +274,10 @@ func (d *DiffViewer) HandleKeys(msg tea.KeyMsg, navKeys keys.NavigationKeys, rep
 			return RequestSettingsChangeMsg{Key: "appearance.diffMode", Value: mode}
 		}
 
+	// Toggle fullscreen diff mode
+	case key.Matches(msg, key.NewBinding(key.WithKeys("f"))):
+		return true, func() tea.Msg { return DiffFullscreenToggleMsg{} }
+
 	// Hunk navigation
 	case key.Matches(msg, key.NewBinding(key.WithKeys("n", "]"))):
 		if len(d.HunkStarts) > 0 && d.CurrentHunkIdx < len(d.HunkStarts)-1 {

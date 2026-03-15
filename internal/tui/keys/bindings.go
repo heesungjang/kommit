@@ -354,6 +354,7 @@ type DiffKeys struct {
 	UnstageHunk key.Binding
 	VisualMode  key.Binding
 	ToggleView  key.Binding
+	Fullscreen  key.Binding
 }
 
 // NewDiffKeys returns populated diff view keybindings.
@@ -382,6 +383,10 @@ func NewDiffKeys() DiffKeys {
 		ToggleView: key.NewBinding(
 			key.WithKeys("V"),
 			key.WithHelp("V", "split/inline view"),
+		),
+		Fullscreen: key.NewBinding(
+			key.WithKeys("f"),
+			key.WithHelp("f", "fullscreen"),
 		),
 	}
 }

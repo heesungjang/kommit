@@ -137,6 +137,7 @@ func ShortHelp(ctx Context) []key.Binding {
 			Diff.UnstageHunk,
 			Diff.VisualMode,
 			Diff.ToggleView,
+			Diff.Fullscreen,
 		}, common...)
 
 	case ContextStash:
@@ -263,6 +264,7 @@ func FullHelp(ctx Context) [][]key.Binding {
 			Diff.UnstageHunk,
 			Diff.VisualMode,
 			Diff.ToggleView,
+			Diff.Fullscreen,
 		})
 
 	case ContextStash:

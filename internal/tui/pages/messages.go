@@ -114,6 +114,9 @@ type RestoreCommitMsg struct {
 	Description string
 }
 
+// DiffFullscreenToggleMsg is emitted by the DiffViewer to toggle fullscreen mode.
+type DiffFullscreenToggleMsg struct{}
+
 // RequestCreatePRMsg asks the app shell to open the Create PR dialog.
 type RequestCreatePRMsg struct{}
 

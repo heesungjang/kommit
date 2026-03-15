@@ -129,7 +129,8 @@ type LogPage struct {
 	viewedPR  *hosting.PullRequest
 
 	// Center diff viewer — shows file diffs, hunk navigation, visual mode
-	diffViewer DiffViewer
+	diffViewer     DiffViewer
+	diffFullscreen bool // true when diff uses full terminal width (sidebar + right hidden)
 
 	// Search/filter — inline per-panel search
 	searching   bool            // true when search input is active
@@ -881,6 +882,10 @@ func (l LogPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		l.commitDesc.Blur()
 		return l, nil
 
+	case DiffFullscreenToggleMsg:
+		l.diffFullscreen = !l.diffFullscreen
+		return l, nil
+
 	case RefreshStatusMsg:
 		// Auto-refresh detected external changes — reload log and sidebar.
 		return l, tea.Batch(l.loadLog(), l.sidebar.Refresh())
@@ -946,6 +951,12 @@ func (l LogPage) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	isTab := key.Matches(msg, key.NewBinding(key.WithKeys("tab")))
 	isShiftTab := key.Matches(msg, key.NewBinding(key.WithKeys("shift+tab")))
 
+	// Exit fullscreen diff mode when switching panels.
+	if l.diffFullscreen && (isTab || isShiftTab) {
+		l.diffFullscreen = false
+		return l, nil
+	}
+
 	if isTab || isShiftTab {
 		// When WIP is selected and we're in the detail panel, let the WIP
 		// sub-focus system handle tab internally (unstaged → staged → then next panel).
@@ -993,6 +1004,12 @@ func (l LogPage) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// Direct panel focus keys: 1 = sidebar, 2 = center, 3 = right
+	// Exit fullscreen diff mode when using direct panel focus keys.
+	if l.diffFullscreen {
+		if key.Matches(msg, key.NewBinding(key.WithKeys("1", "3"))) {
+			l.diffFullscreen = false
+		}
+	}
 	switch {
 	case key.Matches(msg, key.NewBinding(key.WithKeys("1"))):
 		l.focus = focusSidebar
@@ -1226,6 +1243,11 @@ func (l LogPage) View() string {
 			Padding(2, 4).
 			Foreground(t.Red).Background(t.Base).
 			Render(fmt.Sprintf("Error: %v", l.err))
+	}
+
+	// Fullscreen diff mode — only the diff viewer, edge-to-edge.
+	if l.diffFullscreen && l.diffViewer.Active {
+		return l.diffViewer.Render(l.width, l.height, true, l.borderAnim)
 	}
 
 	// Three-column layout: sidebar | center (commit list) | right (detail)
