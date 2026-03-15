@@ -170,7 +170,11 @@ func (l LogPage) handleWIPDetailKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return l, nil // already generating
 		}
 		l.aiGenerating = true
-		return l, func() tea.Msg { return RequestAICommitMsg{} }
+		l.spinner = l.spinner.SetLabel("Summarizing...").Start()
+		return l, tea.Batch(
+			l.spinner.Tick(),
+			func() tea.Msg { return RequestAICommitMsg{} },
+		)
 	}
 
 	// Stash save/pop — available from any WIP sub-focus when not editing
@@ -856,7 +860,7 @@ func (l LogPage) renderWIPDetail(width, height int) string {
 	// Header: ─○ Commit (or ─○ Amend Commit) with [c] shortcut
 	commitHeaderLabel := "─○ Commit"
 	if l.aiGenerating {
-		commitHeaderLabel = "─○ AI generating..."
+		commitHeaderLabel = "─○ " + l.spinner.View()
 	} else if l.commitAmend {
 		commitHeaderLabel = "─○ Amend Commit"
 	}
@@ -887,37 +891,44 @@ func (l LogPage) renderWIPDetail(width, height int) string {
 	}
 	commitInner = append(commitInner, cBgLine("")) // margin bottom
 
-	// Summary input — single-line
-	inputWidth := ciw - 2 // -2 for individual input border
-	if inputWidth < 6 {
-		inputWidth = 6
+	if l.aiGenerating {
+		// Empty body — spinner is shown in the header line.
+		for range 6 {
+			commitInner = append(commitInner, cBgLine(""))
+		}
+	} else {
+		// Summary input — single-line
+		inputWidth := ciw - 2 // -2 for individual input border
+		if inputWidth < 6 {
+			inputWidth = 6
+		}
+		l.commitSummary.Width = inputWidth
+
+		summaryBorder := l.borderAnim.Color(anim.BorderCommitSummary, t.Surface2, t.Blue)
+		summaryView := fillBg(l.commitSummary.View(), t.Surface0, inputWidth)
+		summaryBox := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(summaryBorder).
+			BorderBackground(t.Surface0).
+			Background(t.Surface0).
+			Width(ciw - 2). // -2 for input border
+			Render(summaryView)
+		commitInner = append(commitInner, cBgLine(summaryBox))
+
+		// Description textarea — multi-line
+		l.commitDesc.SetWidth(inputWidth)
+
+		descBorder := l.borderAnim.Color(anim.BorderCommitDesc, t.Surface2, t.Blue)
+		descView := fillBg(l.commitDesc.View(), t.Surface0, inputWidth)
+		descBox := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(descBorder).
+			BorderBackground(t.Surface0).
+			Background(t.Surface0).
+			Width(ciw - 2). // -2 for input border
+			Render(descView)
+		commitInner = append(commitInner, cBgLine(descBox))
 	}
-	l.commitSummary.Width = inputWidth
-
-	summaryBorder := l.borderAnim.Color(anim.BorderCommitSummary, t.Surface2, t.Blue)
-	summaryView := fillBg(l.commitSummary.View(), t.Surface0, inputWidth)
-	summaryBox := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(summaryBorder).
-		BorderBackground(t.Surface0).
-		Background(t.Surface0).
-		Width(ciw - 2). // -2 for input border
-		Render(summaryView)
-	commitInner = append(commitInner, cBgLine(summaryBox))
-
-	// Description textarea — multi-line
-	l.commitDesc.SetWidth(inputWidth)
-
-	descBorder := l.borderAnim.Color(anim.BorderCommitDesc, t.Surface2, t.Blue)
-	descView := fillBg(l.commitDesc.View(), t.Surface0, inputWidth)
-	descBox := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(descBorder).
-		BorderBackground(t.Surface0).
-		Background(t.Surface0).
-		Width(ciw - 2). // -2 for input border
-		Render(descView)
-	commitInner = append(commitInner, cBgLine(descBox))
 
 	// Wrap commit area in a single outer container border
 	containerBorder := l.borderAnim.Color(anim.BorderCommitOuter, t.Surface2, t.Blue)

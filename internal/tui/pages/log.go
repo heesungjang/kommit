@@ -852,6 +852,9 @@ func (l LogPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case AICommitResultMsg:
 		l.aiGenerating = false
+		if !l.loading {
+			l.spinner = l.spinner.SetLabel("Loading...").Stop()
+		}
 		// Populate the commit fields with the AI-generated message.
 		l.commitSummary.SetValue(msg.Summary)
 		l.commitDesc.SetValue(msg.Description)
@@ -865,6 +868,9 @@ func (l LogPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case AICommitErrorMsg:
 		l.aiGenerating = false
+		if !l.loading {
+			l.spinner = l.spinner.SetLabel("Loading...").Stop()
+		}
 		return l, func() tea.Msg {
 			return RequestToastMsg{Message: "AI: " + msg.Err.Error(), IsError: true}
 		}
