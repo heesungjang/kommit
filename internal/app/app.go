@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"github.com/heesungjang/kommit/internal/config"
@@ -45,7 +46,9 @@ func Run(repoPath string, debug, workspaceMode bool) error {
 
 	// Track this repo in recent repos.
 	cfg.AddRecentRepo(absPath)
-	_ = config.Save(&cfg)
+	if err := config.Save(&cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to save recent repos: %v\n", err)
+	}
 
 	// Launch TUI
 	return tui.Run(repo, &cfg)

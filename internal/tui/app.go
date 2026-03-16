@@ -1,23 +1,18 @@
 package tui
 
 import (
-	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/charmbracelet/x/ansi"
 
 	"github.com/heesungjang/kommit/internal/ai"
 	"github.com/heesungjang/kommit/internal/auth"
 	"github.com/heesungjang/kommit/internal/config"
 	"github.com/heesungjang/kommit/internal/git"
-	"github.com/heesungjang/kommit/internal/hosting"
 	"github.com/heesungjang/kommit/internal/tui/components"
 	tuictx "github.com/heesungjang/kommit/internal/tui/context"
 	"github.com/heesungjang/kommit/internal/tui/customcmd"
@@ -40,71 +35,6 @@ const pollInterval = 2 * time.Second
 // autoFetchInterval is how often the app silently fetches from remotes,
 // keeping tracking refs (and ahead/behind counts) up to date.
 const autoFetchInterval = 5 * time.Minute
-
-// ---------------------------------------------------------------------------
-// Messages
-// ---------------------------------------------------------------------------
-
-// showDialogMsg asks the app shell to display a dialog overlay.
-type showDialogMsg struct{ model tea.Model }
-
-// hideDialogMsg closes the active dialog overlay.
-type hideDialogMsg struct{}
-
-// branchInfoMsg carries branch metadata for the status bar.
-type branchInfoMsg struct {
-	branch    string
-	ahead     int
-	behind    int
-	bisecting bool
-	rebasing  bool
-}
-
-// commitDoneMsg is sent when a commit operation completes.
-type commitDoneMsg struct {
-	err error
-}
-
-// gitOpDoneMsg is sent when a push/pull/fetch operation completes.
-type gitOpDoneMsg struct {
-	op    string
-	force bool
-	err   error
-}
-
-// stashDoneMsg is sent when a stash save/pop operation completes.
-type stashDoneMsg struct {
-	op  string // "save" or "pop"
-	err error
-}
-
-// customCmdDoneMsg is sent when a custom command finishes execution.
-type customCmdDoneMsg struct {
-	name   string
-	output string
-	err    error
-	show   bool // whether to show output in a toast
-}
-
-// accountsChangedMsg is sent after an account login or logout to refresh state.
-type accountsChangedMsg struct{}
-
-// pollTickMsg is sent periodically to check for external git changes.
-type pollTickMsg struct{}
-
-// pollResultMsg carries the result of a background fingerprint check.
-type pollResultMsg struct {
-	fingerprint string
-	changed     bool
-}
-
-// autoFetchTickMsg triggers a silent background fetch from remotes.
-type autoFetchTickMsg struct{}
-
-// autoFetchDoneMsg carries the result of a background fetch.
-type autoFetchDoneMsg struct {
-	err error
-}
 
 // ---------------------------------------------------------------------------
 // App model
@@ -224,6 +154,10 @@ func (a App) Init() tea.Cmd {
 	)
 }
 
+// ---------------------------------------------------------------------------
+// Update
+// ---------------------------------------------------------------------------
+
 // Update processes messages.
 func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
@@ -266,7 +200,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		keys.ActiveContext = keys.ContextLog
 		// Track in recent repos.
 		a.ctx.Config.AddRecentRepo(msg.path)
-		_ = config.Save(a.ctx.Config)
+		if err := config.Save(a.ctx.Config); err != nil {
+			a.toast, _ = a.toast.ShowError("Failed to save config: " + err.Error())
+		}
 		// Reconstruct LogPage with the new repo.
 		a.mainView = pages.NewLogPage(a.ctx, a.width, a.pageHeight())
 		return a, tea.Batch(
@@ -378,12 +314,16 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, func() tea.Msg {
 			// Save API key to auth.json (separate from config).
 			if apiKey != "" {
-				_ = ai.SetAPIKey(provider, apiKey)
+				if err := ai.SetAPIKey(provider, apiKey); err != nil {
+					return msgs.ToastMsg{Message: "Failed to save API key: " + err.Error(), IsError: true}
+				}
 			}
 			// Save provider change to config.
 			if cfg != nil {
 				cfgCopy := *cfg
-				_ = config.Save(&cfgCopy)
+				if err := config.Save(&cfgCopy); err != nil {
+					return msgs.ToastMsg{Message: "Failed to save config: " + err.Error(), IsError: true}
+				}
 			}
 			// Re-trigger AI commit generation now that we have a key.
 			return pages.RequestAICommitMsg{}
@@ -406,10 +346,14 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cfg := a.ctx.Config
 		return a, func() tea.Msg {
 			// Save the GitHub token for future refresh, and the Copilot token for API calls.
-			_ = ai.SetAPIKey("copilot", ghToken)
+			if err := ai.SetAPIKey("copilot", ghToken); err != nil {
+				return msgs.ToastMsg{Message: "Failed to save Copilot token: " + err.Error(), IsError: true}
+			}
 			if cfg != nil {
 				cfgCopy := *cfg
-				_ = config.Save(&cfgCopy)
+				if err := config.Save(&cfgCopy); err != nil {
+					return msgs.ToastMsg{Message: "Failed to save config: " + err.Error(), IsError: true}
+				}
 			}
 			// Set the Copilot bearer token in-memory for this session.
 			if cfg != nil {
@@ -448,7 +392,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Remove the account and refresh.
 		host := msg.Host
 		return a, func() tea.Msg {
-			_ = auth.RemoveAccount(host)
+			if err := auth.RemoveAccount(host); err != nil {
+				return msgs.ToastMsg{Message: "Failed to remove account: " + err.Error(), IsError: true}
+			}
 			return accountsChangedMsg{}
 		}
 
@@ -1039,7 +985,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Name != "" {
 			cfg := a.ctx.Config
 			cfg.Workspaces = append(cfg.Workspaces, config.WorkspaceEntry{Name: msg.Name})
-			_ = config.Save(cfg)
+			if err := config.Save(cfg); err != nil {
+				var toastCmd tea.Cmd
+				a.toast, toastCmd = a.toast.ShowError("Workspace created but failed to save: " + err.Error())
+				return a, toastCmd
+			}
 			if wp, ok := a.workspacePage.(interface{ Sync() }); ok {
 				wp.Sync()
 			}
@@ -1056,7 +1006,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if idx >= 0 && idx < len(cfg.Workspaces) {
 			name := cfg.Workspaces[idx].Name
 			cfg.Workspaces = append(cfg.Workspaces[:idx], cfg.Workspaces[idx+1:]...)
-			_ = config.Save(cfg)
+			if err := config.Save(cfg); err != nil {
+				var toastCmd tea.Cmd
+				a.toast, toastCmd = a.toast.ShowError("Failed to save config: " + err.Error())
+				return a, toastCmd
+			}
 			if wp, ok := a.workspacePage.(interface{ Sync() }); ok {
 				wp.Sync()
 			}
@@ -1072,7 +1026,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		idx := msg.WorkspaceIndex
 		if idx >= 0 && idx < len(cfg.Workspaces) && msg.NewName != "" {
 			cfg.Workspaces[idx].Name = msg.NewName
-			_ = config.Save(cfg)
+			if err := config.Save(cfg); err != nil {
+				var toastCmd tea.Cmd
+				a.toast, toastCmd = a.toast.ShowError("Failed to save config: " + err.Error())
+				return a, toastCmd
+			}
 			if wp, ok := a.workspacePage.(interface{ Sync() }); ok {
 				wp.Sync()
 			}
@@ -1101,7 +1059,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			cfg.Workspaces[idx].Repos = append(cfg.Workspaces[idx].Repos, repoPath)
-			_ = config.Save(cfg)
+			if err := config.Save(cfg); err != nil {
+				var toastCmd tea.Cmd
+				a.toast, toastCmd = a.toast.ShowError("Failed to save config: " + err.Error())
+				return a, toastCmd
+			}
 			if wp, ok := a.workspacePage.(interface{ Sync() }); ok {
 				wp.Sync()
 			}
@@ -1121,7 +1083,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if rIdx >= 0 && rIdx < len(repos) {
 				repos = append(repos[:rIdx], repos[rIdx+1:]...)
 				cfg.Workspaces[wsIdx].Repos = repos
-				_ = config.Save(cfg)
+				if err := config.Save(cfg); err != nil {
+					var toastCmd tea.Cmd
+					a.toast, toastCmd = a.toast.ShowError("Failed to save config: " + err.Error())
+					return a, toastCmd
+				}
 				if wp, ok := a.workspacePage.(interface{ Sync() }); ok {
 					wp.Sync()
 				}
@@ -1296,6 +1262,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return a, tea.Batch(cmds...)
 }
 
+// ---------------------------------------------------------------------------
+// View
+// ---------------------------------------------------------------------------
+
 // View renders the full application layout:
 //
 //	main view  (all remaining space)
@@ -1430,1316 +1400,5 @@ func (a App) loadBranchInfo() tea.Cmd {
 			bisecting: repo.IsBisecting(),
 			rebasing:  repo.IsRebasing(),
 		}
-	}
-}
-
-// overlayAt composites |overlay| on top of |base| at character position (x, y).
-// It detects the overlay's background color and re-injects it after every SGR
-// reset within the overlay lines, preventing transparent cells from letting the
-// base content bleed through.
-func overlayAt(base, overlay string, x, y, _ int) string {
-	baseLines := strings.Split(base, "\n")
-	overlayLines := strings.Split(overlay, "\n")
-
-	// Detect the overlay's background color SGR from the rendered content.
-	bgSGR := extractBgSGR(overlay)
-
-	for i, oLine := range overlayLines {
-		row := y + i
-		if row < 0 || row >= len(baseLines) {
-			continue
-		}
-
-		bLine := baseLines[row]
-		oWidth := lipgloss.Width(oLine)
-
-		left := ansi.Truncate(bLine, x, "")
-		right := ansi.TruncateLeft(bLine, x+oWidth, "")
-
-		// Fill background on every printable cell that lacks one so
-		// transparent cells don't let the base content bleed through.
-		if bgSGR != "" {
-			oLine = fillBgCells(oLine, bgSGR)
-		}
-
-		baseLines[row] = left + "\033[0m" + bgSGR + oLine + right
-	}
-
-	return strings.Join(baseLines, "\n")
-}
-
-// extractBgSGR scans an ANSI string for the first background color SGR
-// parameter and returns it as a standalone SGR sequence (e.g. "\033[48;2;49;50;68m").
-// Returns "" if no background color is found.
-func extractBgSGR(s string) string {
-	for i := 0; i < len(s); i++ {
-		// Look for ESC [ ... m sequences (CSI SGR).
-		if s[i] != '\033' || i+1 >= len(s) || s[i+1] != '[' {
-			continue
-		}
-		// Found ESC[, now collect params until 'm' or a non-param byte.
-		j := i + 2
-		for j < len(s) && ((s[j] >= '0' && s[j] <= '9') || s[j] == ';') {
-			j++
-		}
-		if j >= len(s) || s[j] != 'm' {
-			i = j
-			continue
-		}
-		// s[i+2:j] is the params string, s[j] == 'm'.
-		params := s[i+2 : j]
-		if bg := extractBgFromParams(params); bg != "" {
-			return "\033[" + bg + "m"
-		}
-		i = j
-	}
-	return ""
-}
-
-// extractBgFromParams extracts the background color portion from a
-// semicolon-separated SGR parameter string. Returns the background params
-// (e.g. "48;2;49;50;68") or "" if no background is present.
-func extractBgFromParams(params string) string {
-	parts := strings.Split(params, ";")
-	for idx := 0; idx < len(parts); idx++ {
-		p := parts[idx]
-		// Basic 3-bit / 4-bit background: 40-47 (not 48=extended, not 49=default)
-		if len(p) == 2 && p[0] == '4' && p[1] >= '0' && p[1] <= '7' {
-			return p
-		}
-		if len(p) == 3 && p[0] == '1' && p[1] == '0' && p[2] >= '0' && p[2] <= '7' {
-			return p
-		}
-		// Extended background: 48;5;N or 48;2;R;G;B
-		if p == "48" && idx+1 < len(parts) {
-			if parts[idx+1] == "5" && idx+2 < len(parts) {
-				// 256-color: 48;5;N
-				return parts[idx] + ";" + parts[idx+1] + ";" + parts[idx+2]
-			}
-			if parts[idx+1] == "2" && idx+4 < len(parts) {
-				// True color: 48;2;R;G;B
-				return parts[idx] + ";" + parts[idx+1] + ";" + parts[idx+2] + ";" + parts[idx+3] + ";" + parts[idx+4]
-			}
-		}
-	}
-	return ""
-}
-
-// fillBgCells walks an ANSI string and ensures every printable cell has the
-// given background color active. It tracks the current SGR state and injects
-// bgSGR before any run of printable characters that lacks an explicit
-// background. This handles all transparent cells — not just those after resets.
-func fillBgCells(line, bgSGR string) string {
-	var buf strings.Builder
-	buf.Grow(len(line) + 256)
-
-	hasBg := false
-	i := 0
-	for i < len(line) {
-		// Check for CSI sequence: ESC [
-		if line[i] == '\033' && i+1 < len(line) && line[i+1] == '[' {
-			// Collect parameter bytes (0x30-0x3F) and intermediate bytes (0x20-0x2F)
-			// until a final byte (0x40-0x7E).
-			j := i + 2
-			for j < len(line) && ((line[j] >= '0' && line[j] <= '?') || (line[j] >= ' ' && line[j] <= '/')) {
-				j++
-			}
-			if j < len(line) {
-				seq := line[i : j+1]
-				if line[j] == 'm' {
-					// SGR sequence — update background tracking state.
-					hasBg = updateBgState(line[i+2:j], hasBg)
-				}
-				buf.WriteString(seq)
-				i = j + 1
-				continue
-			}
-			// Unterminated sequence — copy ESC and continue.
-			buf.WriteByte(line[i])
-			i++
-			continue
-		}
-
-		// Skip other ESC sequences (OSC, etc.) — copy through.
-		if line[i] == '\033' {
-			buf.WriteByte(line[i])
-			i++
-			continue
-		}
-
-		// Control characters — copy through without bg injection.
-		if line[i] < ' ' {
-			buf.WriteByte(line[i])
-			i++
-			continue
-		}
-
-		// Printable character — inject bgSGR if no background is active.
-		if !hasBg {
-			buf.WriteString(bgSGR)
-			hasBg = true
-		}
-		buf.WriteByte(line[i])
-		i++
-	}
-	return buf.String()
-}
-
-// updateBgState parses a semicolon-separated SGR parameter string and returns
-// whether a background color is active after applying the parameters.
-func updateBgState(params string, hasBg bool) bool {
-	// Empty params means implicit reset ("\033[m").
-	if params == "" {
-		return false
-	}
-
-	parts := strings.Split(params, ";")
-	for idx := 0; idx < len(parts); idx++ {
-		p := parts[idx]
-		switch {
-		case p == "0" || p == "":
-			// Explicit reset or empty sub-param — clears all attributes.
-			hasBg = false
-		case p == "49":
-			// Default background color — clears background.
-			hasBg = false
-		case len(p) == 2 && p[0] == '4' && p[1] >= '0' && p[1] <= '7':
-			// Basic background: 40-47.
-			hasBg = true
-		case p == "48":
-			// Extended background (48;5;N or 48;2;R;G;B) — skip sub-params.
-			hasBg = true
-			if idx+1 < len(parts) && parts[idx+1] == "5" {
-				idx += 2 // skip 5;N
-			} else if idx+1 < len(parts) && parts[idx+1] == "2" {
-				idx += 4 // skip 2;R;G;B
-			}
-		case len(p) == 3 && p[0] == '1' && p[1] == '0' && p[2] >= '0' && p[2] <= '7':
-			// Bright background: 100-107.
-			hasBg = true
-		}
-		// All other params (foreground, bold, etc.) don't affect bg state.
-	}
-	return hasBg
-}
-
-// doCommit runs the commit asynchronously.
-func (a App) doCommit(message string) tea.Cmd {
-	repo := a.repo
-	return func() tea.Msg {
-		err := repo.Commit(message)
-		return commitDoneMsg{err: err}
-	}
-}
-
-// doCommitAmend runs an amend commit asynchronously.
-func (a App) doCommitAmend(message string) tea.Cmd {
-	repo := a.repo
-	return func() tea.Msg {
-		err := repo.CommitAmend(message)
-		return commitDoneMsg{err: err}
-	}
-}
-
-// doGitOp runs a push/pull/fetch operation asynchronously.
-func (a App) doGitOp(op string, force bool) tea.Cmd {
-	repo := a.repo
-
-	// Resolve credentials for the origin remote.
-	gitUser, gitToken := a.resolveGitCredentials()
-
-	return func() tea.Msg {
-		var err error
-		switch op {
-		case "push":
-			// Fetch before push to ensure tracking refs are up to date.
-			// Without this, pushes fail with "rejected" if another tool
-			// (e.g. GitKraken) pushed to the remote since our last fetch.
-			if gitUser != "" {
-				_ = repo.FetchAuth(gitUser, gitToken)
-			} else {
-				_ = repo.Fetch()
-			}
-
-			// Auto-detect missing upstream and set it (for both normal and force push).
-			branch, brErr := repo.CurrentBranch()
-			needsUpstream := false
-			if brErr == nil && branch != "" && branch != "HEAD" {
-				hasUp, _ := repo.HasUpstream(branch)
-				needsUpstream = !hasUp
-			}
-			if needsUpstream {
-				var upErr error
-				if gitUser != "" {
-					upErr = repo.PushSetUpstreamAuth("origin", branch, gitUser, gitToken)
-				} else {
-					upErr = repo.PushSetUpstream("origin", branch)
-				}
-				if upErr == nil {
-					return gitOpDoneMsg{op: op, force: force, err: nil}
-				}
-				// PushSetUpstream failed — fall through to normal/force push.
-			}
-			if force {
-				if gitUser != "" {
-					err = repo.ForcePushAuth("", "", gitUser, gitToken)
-				} else {
-					err = repo.ForcePush("", "")
-				}
-			} else {
-				if gitUser != "" {
-					err = repo.PushAuth("", "", gitUser, gitToken)
-				} else {
-					err = repo.Push("", "")
-				}
-			}
-		case "pull":
-			if gitUser != "" {
-				err = repo.PullAuth("", "", gitUser, gitToken)
-			} else {
-				err = repo.Pull("", "")
-			}
-		case "fetch":
-			if gitUser != "" {
-				err = repo.FetchAuth(gitUser, gitToken)
-			} else {
-				err = repo.Fetch()
-			}
-		}
-		return gitOpDoneMsg{op: op, force: force, err: err}
-	}
-}
-
-// resolveGitCredentials looks up the saved account matching the current repo's
-// origin remote and returns the git username and token for authentication.
-// Returns empty strings if no matching account is found.
-func (a App) resolveGitCredentials() (username, token string) {
-	if a.repo == nil {
-		return "", ""
-	}
-	remoteURL, err := a.repo.RemoteURL("origin")
-	if err != nil || remoteURL == "" {
-		return "", ""
-	}
-	acct := auth.AccountForRemote(remoteURL)
-	if acct == nil || acct.Token == "" {
-		return "", ""
-	}
-	return acct.GitUser, acct.Token
-}
-
-// schedulePoll returns a Cmd that sends pollTickMsg after pollInterval.
-func (a App) schedulePoll() tea.Cmd {
-	return tea.Tick(pollInterval, func(_ time.Time) tea.Msg {
-		return pollTickMsg{}
-	})
-}
-
-// scheduleAutoFetch returns a Cmd that sends autoFetchTickMsg after autoFetchInterval.
-func (a App) scheduleAutoFetch() tea.Cmd {
-	return tea.Tick(autoFetchInterval, func(_ time.Time) tea.Msg {
-		return autoFetchTickMsg{}
-	})
-}
-
-// doBackgroundFetch runs a silent fetch from all remotes.
-func (a App) doBackgroundFetch() tea.Cmd {
-	repo := a.repo
-	if repo == nil {
-		return nil
-	}
-	gitUser, gitToken := a.resolveGitCredentials()
-	return func() tea.Msg {
-		var err error
-		if gitUser != "" {
-			err = repo.FetchAuth(gitUser, gitToken)
-		} else {
-			err = repo.Fetch()
-		}
-		return autoFetchDoneMsg{err: err}
-	}
-}
-
-// checkFingerprint runs a lightweight git status check in the background.
-func (a App) checkFingerprint() tea.Cmd {
-	repo := a.repo
-	if repo == nil {
-		return nil
-	}
-	prev := a.lastFingerprint
-	return func() tea.Msg {
-		fp := repo.StatusFingerprint()
-		return pollResultMsg{
-			fingerprint: fp,
-			changed:     prev != "" && fp != prev,
-		}
-	}
-}
-
-// capitalize returns s with the first letter uppercased.
-func capitalize(s string) string {
-	if s == "" {
-		return ""
-	}
-	return strings.ToUpper(s[:1]) + s[1:]
-}
-
-// friendlyGitError returns a user-friendly message for common git errors.
-// If the error is not recognized, the original message is returned.
-func friendlyGitError(op string, err error) string {
-	msg := err.Error()
-	lower := strings.ToLower(msg)
-
-	switch op {
-	case "push":
-		switch {
-		case strings.Contains(lower, "workflow") && strings.Contains(lower, "scope"):
-			return "Push rejected — token lacks 'workflow' scope for CI file changes."
-		case strings.Contains(lower, "oauth") && strings.Contains(lower, "scope"):
-			return "Push rejected — OAuth token is missing required scopes."
-		case strings.Contains(lower, "rejected") &&
-			!strings.Contains(lower, "workflow") &&
-			!strings.Contains(lower, "scope") &&
-			!strings.Contains(lower, "permission"):
-			return "Push rejected — remote has new commits. Pull first."
-		case strings.Contains(lower, "no upstream"):
-			return "No upstream branch configured."
-		case strings.Contains(lower, "authentication") || strings.Contains(lower, "permission denied"):
-			return "Authentication failed. Check your credentials."
-		case strings.Contains(lower, "could not resolve host"):
-			return "Cannot reach remote. Check your network connection."
-		case strings.Contains(lower, "does not match any"):
-			return "Branch not found on remote."
-		}
-	case "pull":
-		switch {
-		case strings.Contains(lower, "not possible because you have unmerged"):
-			return "Pull failed — resolve merge conflicts first."
-		case strings.Contains(lower, "uncommitted changes"):
-			return "Pull failed — commit or stash your changes first."
-		case strings.Contains(lower, "authentication") || strings.Contains(lower, "permission denied"):
-			return "Authentication failed. Check your credentials."
-		case strings.Contains(lower, "could not resolve host"):
-			return "Cannot reach remote. Check your network connection."
-		case strings.Contains(lower, "conflict"):
-			return "Pull completed with merge conflicts. Resolve them to continue."
-		}
-	case "fetch":
-		switch {
-		case strings.Contains(lower, "authentication") || strings.Contains(lower, "permission denied"):
-			return "Authentication failed. Check your credentials."
-		case strings.Contains(lower, "could not resolve host"):
-			return "Cannot reach remote. Check your network connection."
-		}
-	}
-	return msg
-}
-
-// isPushRejected returns true if the push error indicates a non-fast-forward
-// rejection, which means force push could resolve the issue. It excludes
-// permission/auth errors that also contain generic "failed to push" text.
-func isPushRejected(err error) bool {
-	lower := strings.ToLower(err.Error())
-	// Exclude auth/permission errors — these can't be fixed by force push.
-	if isAuthError(err) ||
-		strings.Contains(lower, "permission") ||
-		strings.Contains(lower, "oauth") ||
-		strings.Contains(lower, "workflow") ||
-		strings.Contains(lower, "scope") {
-		return false
-	}
-	return strings.Contains(lower, "non-fast-forward") ||
-		strings.Contains(lower, "fetch first") ||
-		(strings.Contains(lower, "rejected") && strings.Contains(lower, "failed to push"))
-}
-
-// isAuthError returns true if a git error indicates an authentication failure.
-func isAuthError(err error) bool {
-	lower := strings.ToLower(err.Error())
-	return strings.Contains(lower, "authentication") ||
-		strings.Contains(lower, "permission denied") ||
-		strings.Contains(lower, "could not read username") ||
-		strings.Contains(lower, "invalid credentials") ||
-		strings.Contains(lower, "401") ||
-		strings.Contains(lower, "403")
-}
-
-// hasAccountForOrigin returns true if there's a saved account matching the
-// current repo's origin remote.
-func (a App) hasAccountForOrigin() bool {
-	if a.repo == nil {
-		return false
-	}
-	remoteURL, err := a.repo.RemoteURL("origin")
-	if err != nil || remoteURL == "" {
-		return false
-	}
-	return auth.AccountForRemote(remoteURL) != nil
-}
-
-// detectOriginProvider detects the hosting provider for the origin remote.
-func (a App) detectOriginProvider() auth.HostProvider {
-	if a.repo == nil {
-		return ""
-	}
-	remoteURL, err := a.repo.RemoteURL("origin")
-	if err != nil || remoteURL == "" {
-		return ""
-	}
-	host := auth.HostFromRemoteURL(remoteURL)
-	return auth.ProviderForHost(host)
-}
-
-// ---------------------------------------------------------------------------
-// Accounts
-// ---------------------------------------------------------------------------
-
-// resolveUsername returns the username for the hosting provider matching the
-// current repo's origin remote. Returns empty string if no account matches.
-func (a App) resolveUsername() string {
-	if a.repo == nil {
-		return ""
-	}
-	remoteURL, err := a.repo.RemoteURL("origin")
-	if err != nil || remoteURL == "" {
-		return ""
-	}
-	acct := auth.AccountForRemote(remoteURL)
-	if acct == nil {
-		return ""
-	}
-	return acct.Username
-}
-
-// ---------------------------------------------------------------------------
-// Settings
-// ---------------------------------------------------------------------------
-
-// openSettings creates and shows the settings dialog.
-func (a App) openSettings() tea.Cmd {
-	cfg := a.ctx.Config
-	pctx := a.ctx
-	return func() tea.Msg {
-		return showDialogMsg{model: dialog.NewSettings(cfg, pctx)}
-	}
-}
-
-// applySettingsChange handles a settings change: updates the in-memory config,
-// applies the change to the running app, and persists to disk.
-func (a App) applySettingsChange(msg dialog.SettingsChangeMsg) tea.Cmd {
-	cfg := a.ctx.Config
-	if cfg == nil {
-		return nil
-	}
-
-	themeChanged := false
-
-	switch msg.Key {
-	case "theme":
-		// Hot-swap theme: update config, rebuild theme, update context.
-		cfg.Theme = msg.Value
-		newTheme := theme.Get(msg.Value)
-		// Apply color overrides from config.
-		o := cfg.Appearance.ThemeColors
-		newTheme.ApplyOverrides(theme.ColorOverrides{
-			Base: o.Base, Mantle: o.Mantle, Crust: o.Crust,
-			Surface0: o.Surface0, Surface1: o.Surface1, Surface2: o.Surface2,
-			Overlay0: o.Overlay0, Overlay1: o.Overlay1,
-			Text: o.Text, Subtext0: o.Subtext0, Subtext1: o.Subtext1,
-			Red: o.Red, Green: o.Green, Yellow: o.Yellow, Blue: o.Blue,
-			Mauve: o.Mauve, Pink: o.Pink, Teal: o.Teal, Sky: o.Sky,
-			Peach: o.Peach, Maroon: o.Maroon, Lavender: o.Lavender,
-			Flamingo: o.Flamingo, Rosewater: o.Rosewater, Sapphire: o.Sapphire,
-		})
-		theme.Active = newTheme
-		a.ctx.Theme = newTheme
-		a.ctx.Styles = tuictx.InitStyles(newTheme)
-		themeChanged = true
-
-	case "appearance.diffMode":
-		cfg.Appearance.DiffMode = msg.Value
-
-	case "appearance.showGraph":
-		cfg.Appearance.ShowGraph = msg.Value == "true"
-
-	case "appearance.compactLog":
-		cfg.Appearance.CompactLog = msg.Value == "true"
-
-	case "ai.provider":
-		cfg.AI.Provider = msg.Value
-		// Auto-reset model to the new provider's default so we don't send
-		// e.g. a Claude model name to the OpenAI API.
-		cfg.AI.Model = ai.DefaultModel(msg.Value)
-
-	case "ai.model":
-		cfg.AI.Model = msg.Value
-	}
-
-	// Notify pages of the change so they can sync local state.
-	settingKey := msg.Key
-	settingValue := msg.Value
-	cmds := []tea.Cmd{
-		func() tea.Msg {
-			return pages.SettingsUpdatedMsg{Key: settingKey, Value: settingValue}
-		},
-	}
-
-	// Force a full screen clear on theme changes so the terminal repaints
-	// all lines atomically instead of updating them one-by-one (which causes
-	// a visible top-to-bottom "wipe" effect on many terminals).
-	if themeChanged {
-		cmds = append(cmds, tea.ClearScreen)
-	}
-
-	// Persist config to disk — but skip for preview changes (the user
-	// hasn't confirmed yet, and they might cancel).
-	if !msg.Preview {
-		cfgCopy := *cfg
-		cmds = append(cmds, func() tea.Msg {
-			_ = config.Save(&cfgCopy)
-			return nil
-		})
-	}
-
-	return tea.Batch(cmds...)
-}
-
-// ---------------------------------------------------------------------------
-// AI commit message generation
-// ---------------------------------------------------------------------------
-
-// generateAICommitMessage gathers the staged diff and sends it to the
-// configured AI provider to generate a commit message. The result is
-// delivered back as an AICommitResultMsg or AICommitErrorMsg.
-func (a App) generateAICommitMessage() tea.Cmd {
-	cfg := a.ctx.Config
-	if cfg == nil {
-		return func() tea.Msg {
-			return pages.AICommitErrorMsg{Err: fmt.Errorf("no configuration loaded")}
-		}
-	}
-
-	// Resolve API key: config/env > saved credentials.
-	apiKey := ai.GetAPIKey(cfg.AI.Provider, cfg.AI.APIKey)
-	if apiKey == "" && cfg.AI.Provider != "openai-compatible" {
-		// No API key — open the AI Setup dialog for first-time configuration.
-		// Reset aiGenerating on the LogPage since we're not actually generating.
-		pctx := a.ctx
-		return func() tea.Msg {
-			return showDialogMsg{model: dialog.NewAISetup(pctx)}
-		}
-	}
-
-	// Build provider config with resolved key.
-	aiCfg := cfg.AI
-	aiCfg.APIKey = apiKey
-
-	repo := a.ctx.Repo
-	isCopilot := cfg.AI.Provider == "copilot"
-	return func() tea.Msg {
-		// For Copilot, the saved credential is the GitHub OAuth token.
-		// We need to exchange it for a short-lived Copilot bearer token
-		// before each generation (the bearer token expires frequently).
-		if isCopilot && aiCfg.APIKey != "" {
-			exchCtx, exchCancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer exchCancel()
-			cpToken, err := ai.ExchangeForCopilotToken(exchCtx, aiCfg.APIKey)
-			if err != nil {
-				return pages.AICommitErrorMsg{Err: fmt.Errorf("copilot token refresh: %w", err)}
-			}
-			aiCfg.APIKey = cpToken.Token
-		}
-
-		// Get staged diff as raw text for the AI prompt.
-		diff, err := repo.DiffStagedRaw()
-		if err != nil {
-			return pages.AICommitErrorMsg{Err: fmt.Errorf("get staged diff: %w", err)}
-		}
-		if strings.TrimSpace(diff) == "" {
-			return pages.AICommitErrorMsg{Err: fmt.Errorf("no staged changes")}
-		}
-
-		// Get diff stat for file-level summary.
-		stat, _ := repo.DiffStatStagedRaw()
-
-		// Create provider and generate.
-		provider, err := ai.NewProvider(&aiCfg)
-		if err != nil {
-			return pages.AICommitErrorMsg{Err: err}
-		}
-
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
-		msg, err := provider.GenerateCommitMessage(ctx, diff, stat)
-		if err != nil {
-			return pages.AICommitErrorMsg{Err: err}
-		}
-
-		return pages.AICommitResultMsg{
-			Summary:     msg.Summary,
-			Description: msg.Description,
-		}
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Command palette
-// ---------------------------------------------------------------------------
-
-// openCommandPalette builds and shows the command palette dialog.
-func (a App) openCommandPalette() tea.Cmd {
-	// Build entries from registered key bindings.
-	actionNames := keys.ActionNames()
-	entries := make([]dialog.PaletteEntry, 0, len(actionNames))
-	for _, name := range actionNames {
-		entry := dialog.PaletteEntry{
-			Action: name,
-			Label:  formatActionLabel(name),
-		}
-		// Look up the current key binding for this action.
-		if binding := keys.LookupBinding(name); binding != nil {
-			entry.Key = binding.Help().Key
-		}
-		entries = append(entries, entry)
-	}
-
-	// Add custom commands if configured.
-	if a.ctx.Config != nil {
-		for _, cc := range a.ctx.Config.CustomCommands {
-			entries = append(entries, dialog.PaletteEntry{
-				Action:      "custom:" + cc.Name,
-				Label:       cc.Name,
-				Description: cc.Description,
-				Key:         cc.Key,
-			})
-		}
-	}
-
-	pctx := a.ctx
-	return func() tea.Msg {
-		return showDialogMsg{model: dialog.NewCommandPalette(entries, pctx)}
-	}
-}
-
-// dispatchPaletteAction executes the action selected from the command palette.
-func (a App) dispatchPaletteAction(action string) tea.Cmd {
-	// Handle custom commands.
-	if strings.HasPrefix(action, "custom:") {
-		name := strings.TrimPrefix(action, "custom:")
-		if a.ctx.Config != nil {
-			for i, cc := range a.ctx.Config.CustomCommands {
-				if cc.Name == name {
-					a.customCmdList = a.ctx.Config.CustomCommands
-					a.customCmdVars = customcmd.TemplateVars{}
-					if a.repo != nil {
-						a.customCmdVars.RepoRoot = a.repo.Path()
-						if br, err := a.repo.Head(); err == nil {
-							a.customCmdVars.Branch = br
-						}
-					}
-					return a.executeCustomCommand(i)
-				}
-			}
-		}
-		return nil
-	}
-
-	// Handle specific actions that need direct dispatch.
-	if action == "pr.create" {
-		return a.openCreatePRDialog()
-	}
-
-	// For key binding actions, we synthesize the key press.
-	binding := keys.LookupBinding(action)
-	if binding == nil {
-		return nil
-	}
-	// Get the first key from the binding and synthesize a KeyMsg.
-	bindKeys := binding.Keys()
-	if len(bindKeys) == 0 {
-		return nil
-	}
-	// Send a synthetic key press to the main view.
-	keyStr := bindKeys[0]
-	return func() tea.Msg {
-		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(keyStr)}
-	}
-}
-
-// formatActionLabel converts a canonical action name like "nav.pageDown" to
-// a human-readable label like "Navigation: Page Down".
-func formatActionLabel(action string) string {
-	parts := strings.SplitN(action, ".", 2)
-	if len(parts) != 2 {
-		return action
-	}
-
-	// Map context prefixes to human labels.
-	contextLabels := map[string]string{
-		"global": "Global",
-		"nav":    "Navigation",
-		"status": "Status",
-		"branch": "Branch",
-		"commit": "Commit",
-		"diff":   "Diff",
-		"stash":  "Stash",
-		"remote": "Remote",
-		"pr":     "Pull Request",
-	}
-
-	ctx := parts[0]
-	name := parts[1]
-	label, ok := contextLabels[ctx]
-	if !ok {
-		label = capitalize(ctx)
-	}
-
-	// Convert camelCase to Title Case.
-	var words []string
-	word := strings.Builder{}
-	for i, c := range name {
-		if i > 0 && c >= 'A' && c <= 'Z' {
-			words = append(words, word.String())
-			word.Reset()
-		}
-		if i == 0 {
-			word.WriteRune(c - 32 + 32) // keep as-is, capitalize below
-		} else {
-			word.WriteRune(c)
-		}
-	}
-	words = append(words, word.String())
-
-	// Capitalize first letter of each word.
-	for i, w := range words {
-		if w != "" {
-			words[i] = strings.ToUpper(w[:1]) + w[1:]
-		}
-	}
-
-	return label + ": " + strings.Join(words, " ")
-}
-
-// ---------------------------------------------------------------------------
-// Custom commands
-// ---------------------------------------------------------------------------
-
-// buildCustomCommandsMenu creates a tea.Cmd that opens the custom commands menu.
-// It also sets a.customCmdList and a.customCmdVars so that executeCustomCommand
-// can look up the selected command when the menu result arrives.
-// IMPORTANT: This must be called in the Update method so that the modified `a`
-// is returned to Bubble Tea (value receiver semantics).
-func (a *App) buildCustomCommandsMenu(ctxName string, vars customcmd.TemplateVars) tea.Cmd {
-	cfg := a.ctx.Config
-	if cfg == nil || len(cfg.CustomCommands) == 0 {
-		return func() tea.Msg {
-			return pages.RequestToastMsg{Message: "No custom commands configured", IsError: false}
-		}
-	}
-
-	if ctxName == "" {
-		ctxName = "global"
-	}
-	filtered := customcmd.FilterByContext(cfg.CustomCommands, ctxName)
-	if len(filtered) == 0 {
-		return func() tea.Msg {
-			return pages.RequestToastMsg{Message: "No custom commands for context: " + ctxName, IsError: false}
-		}
-	}
-
-	// Store the filtered list and vars for executeCustomCommand.
-	a.customCmdList = filtered
-	a.customCmdVars = vars
-	// Fill in branch if not provided.
-	if a.customCmdVars.Branch == "" && a.repo != nil {
-		if br, err := a.repo.Head(); err == nil {
-			a.customCmdVars.Branch = br
-		}
-	}
-	if a.customCmdVars.RepoRoot == "" && a.repo != nil {
-		a.customCmdVars.RepoRoot = a.repo.Path()
-	}
-
-	// Build menu options.
-	opts := make([]dialog.MenuOption, 0, len(filtered))
-	for i, c := range filtered {
-		desc := c.Description
-		if desc == "" {
-			desc = c.Command
-		}
-		shortKey := ""
-		if i < 9 {
-			shortKey = fmt.Sprintf("%d", i+1)
-		}
-		opts = append(opts, dialog.MenuOption{
-			Label:       c.Name,
-			Description: desc,
-			Key:         shortKey,
-		})
-	}
-
-	pctx := a.ctx
-	return func() tea.Msg {
-		return showDialogMsg{model: dialog.NewMenu("custom-commands", "Custom Commands", opts, pctx)}
-	}
-}
-
-// executeCustomCommand runs the selected custom command (by index into customCmdList).
-func (a App) executeCustomCommand(idx int) tea.Cmd {
-	if idx < 0 || idx >= len(a.customCmdList) {
-		return nil
-	}
-	cc := a.customCmdList[idx]
-	vars := a.customCmdVars
-	repoDir := ""
-	if a.repo != nil {
-		repoDir = a.repo.Path()
-	}
-
-	// Expand template variables.
-	expanded, err := customcmd.Expand(cc.Command, vars)
-	if err != nil {
-		name := cc.Name
-		return func() tea.Msg {
-			return customCmdDoneMsg{name: name, err: err}
-		}
-	}
-
-	// If the command requires confirmation, open a confirm dialog first.
-	if cc.Confirm {
-		pctx := a.ctx
-		name := cc.Name
-		return func() tea.Msg {
-			body := "Run command?\n\n" + expanded
-			return showDialogMsg{model: dialog.NewConfirm("customcmd-"+name, name, body, pctx)}
-		}
-	}
-
-	// If the command is interactive (suspend TUI), use tea.ExecProcess.
-	if cc.Suspend {
-		cmd := customcmd.RunInteractive(expanded, repoDir)
-		name := cc.Name
-		return tea.ExecProcess(cmd, func(err error) tea.Msg {
-			return customCmdDoneMsg{name: name, err: err}
-		})
-	}
-
-	// Run in background and capture output.
-	name := cc.Name
-	showOutput := cc.ShowOutput
-	return func() tea.Msg {
-		output, runErr := customcmd.Run(expanded, repoDir)
-		return customCmdDoneMsg{
-			name:   name,
-			output: output,
-			err:    runErr,
-			show:   showOutput,
-		}
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Pull Requests
-// ---------------------------------------------------------------------------
-
-// loadPullRequests fetches open PRs from the hosting provider in the background.
-// It checks the origin remote, resolves the hosting account, and calls the API.
-// The result is a SidebarPRsLoadedMsg which the LogPage routes to the sidebar.
-func (a App) loadPullRequests() tea.Cmd {
-	repo := a.repo
-	return func() tea.Msg {
-		if repo == nil {
-			return pages.SidebarPRsLoadedMsg{}
-		}
-
-		remoteURL, err := repo.RemoteURL("origin")
-		if err != nil || remoteURL == "" {
-			return pages.SidebarPRsLoadedMsg{}
-		}
-
-		// Only GitHub is supported for now.
-		host := auth.HostFromRemoteURL(remoteURL)
-		provider := auth.ProviderForHost(host)
-		if provider != auth.ProviderGitHub {
-			return pages.SidebarPRsLoadedMsg{}
-		}
-
-		acct := auth.GetAccount(host)
-		if acct == nil {
-			return pages.SidebarPRsLoadedMsg{}
-		}
-
-		ref, err := hosting.RepoRefFromRemoteURL(remoteURL)
-		if err != nil {
-			return pages.SidebarPRsLoadedMsg{Err: err}
-		}
-
-		client := hosting.NewGitHubClient(acct.Token)
-		prs, err := client.ListPullRequests(ref, "open")
-		return pages.SidebarPRsLoadedMsg{PRs: prs, Err: err}
-	}
-}
-
-// openCreatePRDialog opens the Create PR dialog pre-filled with the current
-// branch, remote branches, and the repository's default branch. It also kicks
-// off async loading of commit/diff stats and remote push status.
-func (a App) openCreatePRDialog() tea.Cmd {
-	repo := a.repo
-	pctx := a.ctx
-	return func() tea.Msg {
-		headBranch, err := repo.Head()
-		if err != nil {
-			return pages.PRCreateErrorMsg{Err: fmt.Errorf("cannot determine current branch: %w", err)}
-		}
-
-		// Determine the default branch (target for the PR).
-		baseBranch := "main" // fallback
-		remoteURL, err := repo.RemoteURL("origin")
-		if err == nil && remoteURL != "" {
-			host := auth.HostFromRemoteURL(remoteURL)
-			acct := auth.GetAccount(host)
-			if acct != nil {
-				ref, refErr := hosting.RepoRefFromRemoteURL(remoteURL)
-				if refErr == nil {
-					client := hosting.NewGitHubClient(acct.Token)
-					if defaultBranch, dbErr := client.GetDefaultBranch(ref); dbErr == nil {
-						baseBranch = defaultBranch
-					}
-				}
-			}
-		}
-
-		// Gather remote branch names (strip "origin/" prefix).
-		var branchNames []string
-		remoteBranches, rbErr := repo.RemoteBranches()
-		if rbErr == nil {
-			for _, b := range remoteBranches {
-				name := strings.TrimPrefix(b.Name, "origin/")
-				if name == "HEAD" {
-					continue
-				}
-				branchNames = append(branchNames, name)
-			}
-		}
-
-		return showCreatePRDialogMsg{
-			headBranch:     headBranch,
-			baseBranch:     baseBranch,
-			remoteBranches: branchNames,
-			pctx:           pctx,
-		}
-	}
-}
-
-// showCreatePRDialogMsg carries all data needed to open the PR dialog and
-// trigger async stat loading.
-type showCreatePRDialogMsg struct {
-	headBranch     string
-	baseBranch     string
-	remoteBranches []string
-	pctx           *tuictx.ProgramContext
-}
-
-// loadPRStats loads commit count and diff stats between the base branch and HEAD.
-func (a App) loadPRStats(baseBranch string) tea.Cmd {
-	repo := a.repo
-	return func() tea.Msg {
-		commitCount, _ := repo.RevListCount(baseBranch, "HEAD")
-		entries, _ := repo.DiffStatBranch(baseBranch, "HEAD")
-
-		filesChanged := len(entries)
-		var additions, deletions int
-		for _, e := range entries {
-			additions += e.Added
-			deletions += e.Removed
-		}
-
-		return dialog.CreatePRStatsMsg{
-			CommitCount:  commitCount,
-			FilesChanged: filesChanged,
-			Additions:    additions,
-			Deletions:    deletions,
-		}
-	}
-}
-
-// checkBranchPushed checks if the head branch exists on the remote.
-func (a App) checkBranchPushed() tea.Cmd {
-	repo := a.repo
-	return func() tea.Msg {
-		head, err := repo.Head()
-		if err != nil {
-			return dialog.CreatePRBranchPushedMsg{Pushed: false}
-		}
-		pushed := repo.HasRemoteBranch("origin", head)
-		return dialog.CreatePRBranchPushedMsg{Pushed: pushed}
-	}
-}
-
-// pushHeadBranch pushes the current HEAD branch to origin using auth.
-func (a App) pushHeadBranch() tea.Cmd {
-	repo := a.repo
-	return func() tea.Msg {
-		head, err := repo.Head()
-		if err != nil {
-			return dialog.CreatePRPushDoneMsg{Err: fmt.Errorf("cannot determine branch: %w", err)}
-		}
-
-		remoteURL, err := repo.RemoteURL("origin")
-		if err != nil || remoteURL == "" {
-			return dialog.CreatePRPushDoneMsg{Err: fmt.Errorf("no origin remote")}
-		}
-
-		host := auth.HostFromRemoteURL(remoteURL)
-		acct := auth.GetAccount(host)
-		if acct == nil {
-			return dialog.CreatePRPushDoneMsg{Err: fmt.Errorf("not logged in")}
-		}
-
-		err = repo.PushSetUpstreamAuth("origin", head, acct.Username, acct.Token)
-		if err != nil {
-			return dialog.CreatePRPushDoneMsg{Err: err}
-		}
-		return dialog.CreatePRPushDoneMsg{}
-	}
-}
-
-// createPullRequest calls the GitHub API to create a pull request.
-func (a App) createPullRequest(msg dialog.CreatePRSubmitMsg) tea.Cmd {
-	repo := a.repo
-	return func() tea.Msg {
-		remoteURL, err := repo.RemoteURL("origin")
-		if err != nil || remoteURL == "" {
-			return pages.PRCreateErrorMsg{Err: fmt.Errorf("no origin remote configured")}
-		}
-
-		host := auth.HostFromRemoteURL(remoteURL)
-		acct := auth.GetAccount(host)
-		if acct == nil {
-			return pages.PRCreateErrorMsg{Err: fmt.Errorf("not logged in — log in via Settings > Accounts")}
-		}
-
-		ref, err := hosting.RepoRefFromRemoteURL(remoteURL)
-		if err != nil {
-			return pages.PRCreateErrorMsg{Err: err}
-		}
-
-		client := hosting.NewGitHubClient(acct.Token)
-		pr, err := client.CreatePullRequest(ref, hosting.CreatePRRequest{
-			Title: msg.Title,
-			Body:  msg.Body,
-			Head:  msg.Head,
-			Base:  msg.Base,
-			Draft: msg.Draft,
-		})
-		if err != nil {
-			return pages.PRCreateErrorMsg{Err: err}
-		}
-
-		return pages.PRCreatedMsg{Number: pr.Number, URL: pr.URL}
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Workspace helpers
-// ---------------------------------------------------------------------------
-
-// switchToRepo opens a repository and switches to the log page. If path is
-// empty, it switches back to the last opened repo (if one is loaded).
-func (a App) switchToRepo(path string) tea.Cmd {
-	if path == "" {
-		// Switch back to current repo view if we have one.
-		if a.repo != nil {
-			// Return a command that sends backToRepoMsg so the switch
-			// happens in the Update() method (not on a value-receiver copy).
-			return func() tea.Msg { return backToRepoMsg{} }
-		}
-		return nil
-	}
-
-	repoPath := expandPath(path)
-	return func() tea.Msg {
-		repo, err := git.Open(repoPath)
-		if err != nil {
-			return pages.RequestToastMsg{Message: "Cannot open: " + err.Error(), IsError: true}
-		}
-		return switchToRepoMsg{repo: repo, path: repoPath}
-	}
-}
-
-// backToRepoMsg tells the app to switch back to the log page for the
-// currently loaded repo (without reopening it).
-type backToRepoMsg struct{}
-
-// switchToRepoMsg carries a successfully opened repo from the background.
-type switchToRepoMsg struct {
-	repo *git.Repository
-	path string
-}
-
-// switchToWorkspace switches to the workspace page.
-func (a App) switchToWorkspace() tea.Cmd {
-	return func() tea.Msg {
-		return showWorkspaceMsg{}
-	}
-}
-
-type showWorkspaceMsg struct{}
-
-// doWorkspaceBulkOp runs fetch or pull on a list of repo paths concurrently.
-// It attempts to resolve credentials for each repo's origin remote so that
-// private repos are supported.
-func (a App) doWorkspaceBulkOp(op string, paths []string) tea.Cmd {
-	return func() tea.Msg {
-		type result struct {
-			path string
-			err  error
-		}
-		ch := make(chan result, len(paths))
-		for _, p := range paths {
-			go func(repoPath string) {
-				repo, err := git.Open(repoPath)
-				if err != nil {
-					ch <- result{path: repoPath, err: err}
-					return
-				}
-				// Try to resolve credentials for this repo's origin.
-				user, token := "", ""
-				if remoteURL, urlErr := repo.RemoteURL("origin"); urlErr == nil && remoteURL != "" {
-					if acct := auth.AccountForRemote(remoteURL); acct != nil && acct.Token != "" {
-						user, token = acct.GitUser, acct.Token
-					}
-				}
-				switch op {
-				case "fetch":
-					if token != "" {
-						err = repo.FetchAuth(user, token)
-					} else {
-						err = repo.Fetch()
-					}
-				case "pull":
-					if token != "" {
-						err = repo.PullAuth("", "", user, token)
-					} else {
-						err = repo.Pull("", "")
-					}
-				}
-				ch <- result{path: repoPath, err: err}
-			}(p)
-		}
-
-		var errors []string
-		for range paths {
-			r := <-ch
-			if r.err != nil {
-				errors = append(errors, r.path+": "+r.err.Error())
-			}
-		}
-
-		return pages.WorkspaceBulkOpDoneMsg{
-			Op:     op,
-			Total:  len(paths),
-			Failed: len(errors),
-			Errors: errors,
-		}
-	}
-}
-
-// handleWorkspaceTextInput processes text input results for workspace operations.
-func (a App) handleWorkspaceTextInput(id, value string) tea.Cmd {
-	switch {
-	case id == "workspace-new":
-		return func() tea.Msg {
-			return pages.RequestNewWorkspaceMsg{Name: value}
-		}
-	case strings.HasPrefix(id, "workspace-rename-"):
-		idxStr := strings.TrimPrefix(id, "workspace-rename-")
-		idx := 0
-		_, _ = fmt.Sscanf(idxStr, "%d", &idx)
-		return func() tea.Msg {
-			return pages.RequestRenameWorkspaceMsg{WorkspaceIndex: idx, NewName: value}
-		}
-	case strings.HasPrefix(id, "workspace-addrepo-"):
-		idxStr := strings.TrimPrefix(id, "workspace-addrepo-")
-		idx := 0
-		_, _ = fmt.Sscanf(idxStr, "%d", &idx)
-		return func() tea.Msg {
-			return pages.RequestAddRepoToWorkspaceMsg{WorkspaceIndex: idx, RepoPath: value}
-		}
-	}
-	return nil
-}
-
-// expandPath expands ~ to the user's home directory.
-func expandPath(path string) string {
-	if strings.HasPrefix(path, "~/") || path == "~" {
-		home, err := os.UserHomeDir()
-		if err == nil {
-			if path == "~" {
-				return home
-			}
-			return filepath.Join(home, path[2:])
-		}
-	}
-	// Try making it absolute.
-	abs, err := filepath.Abs(path)
-	if err == nil {
-		return abs
-	}
-	return path
-}
-
-// generatePRDescription uses the AI provider to generate a PR title and body
-// from the branch diff against the given base branch.
-func (a App) generatePRDescription(baseBranch string) tea.Cmd {
-	cfg := a.ctx.Config
-	repo := a.repo
-	isCopilot := cfg != nil && cfg.AI.Provider == "copilot"
-
-	return func() tea.Msg {
-		if cfg == nil {
-			return dialog.CreatePRAIErrorMsg{Err: fmt.Errorf("no configuration loaded")}
-		}
-
-		apiKey := ai.GetAPIKey(cfg.AI.Provider, cfg.AI.APIKey)
-		if apiKey == "" && cfg.AI.Provider != "openai-compatible" {
-			return dialog.CreatePRAIErrorMsg{Err: fmt.Errorf("no AI provider configured — set up in Settings > AI")}
-		}
-
-		// For Copilot, exchange for bearer token.
-		aiCfg := cfg.AI
-		aiCfg.APIKey = apiKey
-		if isCopilot && aiCfg.APIKey != "" {
-			exchCtx, exchCancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer exchCancel()
-			cpToken, err := ai.ExchangeForCopilotToken(exchCtx, aiCfg.APIKey)
-			if err != nil {
-				return dialog.CreatePRAIErrorMsg{Err: fmt.Errorf("copilot token refresh: %w", err)}
-			}
-			aiCfg.APIKey = cpToken.Token
-		}
-
-		// Get branch diff.
-		diff, err := repo.DiffBranchRaw(baseBranch)
-		if err != nil {
-			return dialog.CreatePRAIErrorMsg{Err: fmt.Errorf("get branch diff: %w", err)}
-		}
-		if strings.TrimSpace(diff) == "" {
-			return dialog.CreatePRAIErrorMsg{Err: fmt.Errorf("no changes between %s and HEAD", baseBranch)}
-		}
-
-		stat, _ := repo.DiffStatBranchRaw(baseBranch)
-		commitLog, _ := repo.LogBranchOneline(baseBranch)
-
-		genCtx, genCancel := context.WithTimeout(context.Background(), 45*time.Second)
-		defer genCancel()
-
-		desc, err := ai.GeneratePRDescription(genCtx, &aiCfg, aiCfg.APIKey, diff, stat, commitLog)
-		if err != nil {
-			return dialog.CreatePRAIErrorMsg{Err: err}
-		}
-
-		return dialog.CreatePRAIResultMsg{Title: desc.Title, Body: desc.Body}
 	}
 }

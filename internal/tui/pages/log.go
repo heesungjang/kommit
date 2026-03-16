@@ -623,7 +623,12 @@ func (l LogPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if err != nil {
 				// Try to pop stash back if reset failed
 				if stashed {
-					_ = repo.StashPop(0)
+					if popErr := repo.StashPop(0); popErr != nil {
+						return RequestToastMsg{
+							Message: op + " failed: " + err.Error() + " (stash restore also failed — run 'git stash pop' manually)",
+							IsError: true,
+						}
+					}
 				}
 				return RequestToastMsg{Message: op + " failed: " + err.Error(), IsError: true}
 			}
