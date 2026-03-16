@@ -1247,7 +1247,7 @@ func (l LogPage) View() string {
 
 	// Fullscreen diff mode — only the diff viewer, edge-to-edge.
 	if l.diffFullscreen && l.diffViewer.Active {
-		return l.diffViewer.Render(l.width, l.height, true, l.borderAnim)
+		return l.diffViewer.Render(l.width-styles.PanelBorderWidth, l.height, true, l.borderAnim)
 	}
 
 	// Three-column layout: sidebar | center (commit list) | right (detail)
