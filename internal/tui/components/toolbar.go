@@ -16,6 +16,9 @@ type HintBar struct {
 	// Extra is an optional contextual message shown on the right side,
 	// e.g. "BISECTING: press B for actions" or "Select a commit to compare".
 	Extra string
+	// keyContext is the active keybinding context, set by the app before
+	// rendering so the hint bar doesn't need to read a global variable.
+	keyContext keys.Context
 }
 
 // NewHintBar creates a new context-sensitive hint bar.
@@ -35,13 +38,19 @@ func (hb HintBar) SetExtra(msg string) HintBar {
 	return hb
 }
 
-// View renders the hint bar using the current keys.ActiveContext.
+// SetKeyContext sets the active keybinding context for rendering.
+func (hb HintBar) SetKeyContext(ctx keys.Context) HintBar {
+	hb.keyContext = ctx
+	return hb
+}
+
+// View renders the hint bar using the configured key context.
 func (hb HintBar) View() string {
 	t := theme.Active
 	bg := t.Mantle
 
 	// Render context-sensitive bindings on the left
-	leftContent := keys.RenderHelp(keys.ActiveContext, hb.width-4)
+	leftContent := keys.RenderHelp(hb.keyContext, hb.width-4)
 
 	// Build right content: optional extra message
 	rightContent := ""

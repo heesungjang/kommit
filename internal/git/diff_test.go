@@ -134,7 +134,7 @@ func TestParseDiffSection(t *testing.T) {
 
 func TestParseHunkHeader(t *testing.T) {
 	t.Run("standard header", func(t *testing.T) {
-		hunk := parseHunkHeader("@@ -10,5 +20,8 @@ func foo()")
+		hunk := ParseHunkHeader("@@ -10,5 +20,8 @@ func foo()")
 		if hunk == nil {
 			t.Fatal("expected non-nil hunk")
 		}
@@ -156,7 +156,7 @@ func TestParseHunkHeader(t *testing.T) {
 	})
 
 	t.Run("no count (single line)", func(t *testing.T) {
-		hunk := parseHunkHeader("@@ -1 +1 @@")
+		hunk := ParseHunkHeader("@@ -1 +1 @@")
 		if hunk == nil {
 			t.Fatal("expected non-nil hunk")
 		}
@@ -175,7 +175,7 @@ func TestParseHunkHeader(t *testing.T) {
 	})
 
 	t.Run("zero start new file", func(t *testing.T) {
-		hunk := parseHunkHeader("@@ -0,0 +1,3 @@")
+		hunk := ParseHunkHeader("@@ -0,0 +1,3 @@")
 		if hunk == nil {
 			t.Fatal("expected non-nil hunk")
 		}

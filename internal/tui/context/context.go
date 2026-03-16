@@ -6,6 +6,7 @@ package context
 import (
 	"github.com/heesungjang/kommit/internal/config"
 	"github.com/heesungjang/kommit/internal/git"
+	"github.com/heesungjang/kommit/internal/tui/keys"
 	"github.com/heesungjang/kommit/internal/tui/theme"
 )
 
@@ -34,6 +35,10 @@ type ProgramContext struct {
 
 	// Repo is the git repository being displayed.
 	Repo *git.Repository
+
+	// ActiveKeyContext tracks the currently active keybinding context.
+	// It is updated whenever the user switches pages, panels, or opens a dialog.
+	ActiveKeyContext keys.Context
 }
 
 // New creates a ProgramContext with the given config and repository.
@@ -74,10 +79,11 @@ func New(cfg *config.Config, repo *git.Repository) *ProgramContext {
 	})
 
 	return &ProgramContext{
-		Config: cfg,
-		Theme:  t,
-		Styles: InitStyles(t),
-		Repo:   repo,
+		Config:           cfg,
+		Theme:            t,
+		Styles:           InitStyles(t),
+		Repo:             repo,
+		ActiveKeyContext: keys.ContextLog,
 	}
 }
 

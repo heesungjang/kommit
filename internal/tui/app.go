@@ -98,8 +98,8 @@ type App struct {
 // If repo is nil the app starts in workspace mode.
 func NewApp(repo *git.Repository, cfg *config.Config) App {
 	ctx := tuictx.New(cfg, repo)
-	// Set the package-level Active theme so existing code that reads
-	// theme.Active directly continues to work during the migration.
+	// Set the package-level Active theme so components that haven't been
+	// migrated to use ctx.Theme yet continue to work.
 	theme.Active = ctx.Theme
 
 	// Apply user keybinding overrides from config.
@@ -123,12 +123,12 @@ func NewApp(repo *git.Repository, cfg *config.Config) App {
 
 	if repo != nil {
 		// Normal mode: open directly to repo view.
-		keys.ActiveContext = keys.ContextLog
+		ctx.ActiveKeyContext = keys.ContextLog
 		a.page = pageLog
 		a.mainView = pages.NewLogPage(ctx, 80, 24)
 	} else {
 		// Workspace mode: no repo provided, show workspace overview.
-		keys.ActiveContext = keys.ContextWorkspace
+		ctx.ActiveKeyContext = keys.ContextWorkspace
 		a.page = pageWorkspace
 		// mainView stays nil — we use workspacePage in this mode.
 	}
@@ -197,7 +197,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.repo = msg.repo
 		a.ctx.Repo = msg.repo
 		a.page = pageLog
-		keys.ActiveContext = keys.ContextLog
+		a.ctx.ActiveKeyContext = keys.ContextLog
 		// Track in recent repos.
 		a.ctx.Config.AddRecentRepo(msg.path)
 		if err := config.Save(a.ctx.Config); err != nil {
@@ -217,14 +217,14 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case backToRepoMsg:
 		if a.repo != nil && a.mainView != nil {
 			a.page = pageLog
-			keys.ActiveContext = keys.ContextLog
+			a.ctx.ActiveKeyContext = keys.ContextLog
 		}
 		return a, nil
 
 	// -- Switch to workspace view ---------------------------------------------
 	case showWorkspaceMsg:
 		a.page = pageWorkspace
-		keys.ActiveContext = keys.ContextWorkspace
+		a.ctx.ActiveKeyContext = keys.ContextWorkspace
 		if wp, ok := a.workspacePage.(interface{ Sync() }); ok {
 			wp.Sync()
 		}
@@ -1166,10 +1166,14 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 
-		statusBarY := a.height - 1
-		if msg.Y >= statusBarY {
-			return a, nil // clicks on status bar — ignore
+		// Ignore clicks on chrome areas (action bar at top, hint bar + status bar at bottom).
+		actionBarH := 1
+		if msg.Y < actionBarH || msg.Y >= a.height-2 {
+			return a, nil
 		}
+
+		// Make Y page-relative so downstream handlers don't need to know about chrome.
+		msg.Y -= actionBarH
 
 		// Route mouse events to the active page.
 		if a.page == pageWorkspace && a.workspacePage != nil {
@@ -1219,14 +1223,14 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// Switch back to repo view if we have a repo loaded.
 					if a.repo != nil {
 						a.page = pageLog
-						keys.ActiveContext = keys.ContextLog
+						a.ctx.ActiveKeyContext = keys.ContextLog
 					}
 					return a, nil
 				}
 				// Switch to workspace view.
 				return a, a.switchToWorkspace()
 			case key.Matches(msg, a.keys.Help):
-				kctx := keys.ActiveContext
+				kctx := a.ctx.ActiveKeyContext
 				pctx := a.ctx
 				return a, func() tea.Msg {
 					return showDialogMsg{model: dialog.NewHelp(kctx, pctx)}
@@ -1272,7 +1276,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 //	toast      (optional overlay)
 //	status bar (1 line)
 func (a App) View() string {
-	t := theme.Active
+	t := a.ctx.Theme
 
 	// Terminal size guard.
 	if a.width > 0 && a.height > 0 && (a.width < minTermWidth || a.height < minTermHeight) {
@@ -1294,7 +1298,7 @@ func (a App) View() string {
 	}
 
 	// Update status bar with current focus label
-	sb := a.statusBar.SetFocusLabel(keys.ContextLabel(keys.ActiveContext))
+	sb := a.statusBar.SetFocusLabel(keys.ContextLabel(a.ctx.ActiveKeyContext))
 
 	// Set contextual hint bar extra message for active workflows
 	hb := a.hintBar
@@ -1303,8 +1307,8 @@ func (a App) View() string {
 	} else if sb.IsComparing() {
 		hb = hb.SetExtra("Select a commit to compare")
 	}
-	actionBarView := a.actionBar.SetContext(keys.ActiveContext).View()
-	hintBarView := hb.View()
+	actionBarView := a.actionBar.SetContext(a.ctx.ActiveKeyContext).View()
+	hintBarView := hb.SetKeyContext(a.ctx.ActiveKeyContext).View()
 	statusBar := sb.View()
 
 	// Height available for the main view.

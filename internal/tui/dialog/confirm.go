@@ -6,7 +6,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	tuictx "github.com/heesungjang/kommit/internal/tui/context"
-	"github.com/heesungjang/kommit/internal/tui/theme"
 )
 
 // ---------------------------------------------------------------------------
@@ -79,7 +78,7 @@ func (c Confirm) View() string {
 // buildContentLines produces the scrollable content lines for the confirm
 // dialog. Every entry is a single terminal line (no embedded newlines).
 func (c Confirm) buildContentLines() []string {
-	t := theme.Active
+	t := c.Base.ctx.Theme
 
 	// Render the message with word wrapping.
 	message := lipgloss.NewStyle().

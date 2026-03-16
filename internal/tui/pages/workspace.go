@@ -15,7 +15,6 @@ import (
 	tuictx "github.com/heesungjang/kommit/internal/tui/context"
 	"github.com/heesungjang/kommit/internal/tui/keys"
 	"github.com/heesungjang/kommit/internal/tui/styles"
-	"github.com/heesungjang/kommit/internal/tui/theme"
 )
 
 // ---------------------------------------------------------------------------
@@ -121,7 +120,7 @@ func NewWorkspacePage(ctx *tuictx.ProgramContext, width, height int) *WorkspaceP
 
 // Init loads initial status for the first visible repo.
 func (w *WorkspacePage) Init() tea.Cmd {
-	keys.ActiveContext = keys.ContextWorkspace
+	w.ctx.ActiveKeyContext = keys.ContextWorkspace
 	items := w.visibleItems()
 	if len(items) == 0 {
 		return nil
@@ -544,7 +543,7 @@ func (w *WorkspacePage) refreshAllStatuses() tea.Cmd {
 
 // View renders the workspace page.
 func (w *WorkspacePage) View() string {
-	t := theme.Active
+	t := w.ctx.Theme
 	items := w.visibleItems()
 
 	// Layout: left list panel (40%) | right detail panel (60%)
@@ -607,7 +606,7 @@ func (w *WorkspacePage) View() string {
 
 // renderList renders the left panel list items with a scroll counter at bottom.
 func (w WorkspacePage) renderList(items []wsItem, width, height int) []string {
-	t := theme.Active
+	t := w.ctx.Theme
 	// Height budget: total content height minus title(1) + gap(1) + scroll counter(1) = 3
 	visibleHeight := height - 3
 	if visibleHeight < 1 {
@@ -650,7 +649,7 @@ func (w WorkspacePage) renderList(items []wsItem, width, height int) []string {
 
 // renderEmptyState renders a bordered empty state with key hints.
 func (w WorkspacePage) renderEmptyState(width, visibleHeight int) []string {
-	t := theme.Active
+	t := w.ctx.Theme
 
 	titleLine := lipgloss.NewStyle().
 		Foreground(t.Subtext0).Background(t.Base).Bold(true).
@@ -711,7 +710,7 @@ func (w WorkspacePage) renderEmptyState(width, visibleHeight int) []string {
 
 // renderItem renders a single list item as a single line.
 func (w WorkspacePage) renderItem(item wsItem, selected bool, width int) string {
-	t := theme.Active
+	t := w.ctx.Theme
 
 	bg := t.Base
 	if selected {
@@ -812,7 +811,7 @@ func (w WorkspacePage) renderItem(item wsItem, selected bool, width int) string 
 
 // statusIndicator returns a colored dot for the repo's status with the given bg.
 func (w WorkspacePage) statusIndicator(path string, bg lipgloss.Color) string {
-	t := theme.Active
+	t := w.ctx.Theme
 	qs, ok := w.statusCache[path]
 	if !ok {
 		return lipgloss.NewStyle().Foreground(t.Overlay0).Background(bg).Render("\u25cb") // ○ loading
@@ -857,7 +856,7 @@ func (w WorkspacePage) renderDetail(width int) string {
 
 // renderWorkspaceDetail shows an overview of a workspace with mini repo table.
 func (w WorkspacePage) renderWorkspaceDetail(item *wsItem, width int) string {
-	t := theme.Active
+	t := w.ctx.Theme
 	ws := w.workspaces[item.workspaceIndex]
 
 	titleStyle := lipgloss.NewStyle().
@@ -1027,7 +1026,7 @@ func (w WorkspacePage) renderWorkspaceDetail(item *wsItem, width int) string {
 
 // renderRepoDetail shows detailed status for a single repo in a structured card.
 func (w WorkspacePage) renderRepoDetail(item *wsItem, width int) string {
-	t := theme.Active
+	t := w.ctx.Theme
 
 	titleStyle := lipgloss.NewStyle().
 		Foreground(t.Text).
@@ -1166,7 +1165,7 @@ func (w WorkspacePage) renderRepoDetail(item *wsItem, width int) string {
 
 // renderStatBar renders a visual bar showing proportions of staged/modified/untracked changes.
 func (w WorkspacePage) renderStatBar(qs git.RepoQuickStatus, barWidth int) string {
-	t := theme.Active
+	t := w.ctx.Theme
 
 	total := qs.Staged + qs.Modified + qs.Untracked + qs.Conflicts
 	if total == 0 || barWidth < 4 {
@@ -1246,7 +1245,7 @@ func (w WorkspacePage) renderStatBar(qs git.RepoQuickStatus, barWidth int) strin
 
 // renderCenteredMessage renders a centered dim message.
 func (w WorkspacePage) renderCenteredMessage(msg string, width int) string {
-	t := theme.Active
+	t := w.ctx.Theme
 	if msg == "" {
 		return ""
 	}
@@ -1269,7 +1268,7 @@ type keyHint struct {
 
 // renderKeyHints renders styled key hints: key in Mauve+Bold, desc in Subtext0.
 func (w WorkspacePage) renderKeyHints(hints []keyHint, bg lipgloss.Color) string {
-	t := theme.Active
+	t := w.ctx.Theme
 	parts := make([]string, 0, len(hints))
 	for _, h := range hints {
 		k := lipgloss.NewStyle().Foreground(t.Mauve).Background(bg).Bold(true).Render(h.key)

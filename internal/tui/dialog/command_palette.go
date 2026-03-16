@@ -9,7 +9,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	tuictx "github.com/heesungjang/kommit/internal/tui/context"
-	"github.com/heesungjang/kommit/internal/tui/theme"
 )
 
 // CommandPaletteResultMsg is sent when the user selects a command from the palette.
@@ -39,7 +38,7 @@ type CommandPalette struct {
 
 // NewCommandPalette creates a new command palette with the given entries.
 func NewCommandPalette(entries []PaletteEntry, pctx *tuictx.ProgramContext) CommandPalette {
-	t := theme.Active
+	t := pctx.Theme
 
 	ti := textinput.New()
 	ti.Placeholder = "Type to filter..."
@@ -180,7 +179,7 @@ func (cp CommandPalette) View() string {
 
 // buildContentLines produces the content for the command palette.
 func (cp CommandPalette) buildContentLines() []string {
-	t := theme.Active
+	t := cp.Base.ctx.Theme
 	iw := cp.Base.ContentWidth(len(cp.filtered) > cp.Base.MaxContentHeight())
 
 	lines := make([]string, 0, len(cp.filtered)+2)

@@ -9,7 +9,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	tuictx "github.com/heesungjang/kommit/internal/tui/context"
-	"github.com/heesungjang/kommit/internal/tui/theme"
 )
 
 // ---------------------------------------------------------------------------
@@ -179,7 +178,7 @@ func (a AISetup) updateProviderStep(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (a AISetup) buildProviderLines() []string {
-	t := theme.Active
+	t := a.ctx.Theme
 	w := a.Base.InnerWidth()
 
 	lines := make([]string, 0, len(a.providers)*2+4)
@@ -275,7 +274,7 @@ func (a AISetup) updateKeyStep(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (a AISetup) buildKeyLines() []string {
-	t := theme.Active
+	t := a.ctx.Theme
 	w := a.Base.InnerWidth()
 
 	lines := make([]string, 0, 12)

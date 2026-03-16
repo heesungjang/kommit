@@ -10,7 +10,6 @@ import (
 
 	"github.com/heesungjang/kommit/internal/ai"
 	tuictx "github.com/heesungjang/kommit/internal/tui/context"
-	"github.com/heesungjang/kommit/internal/tui/theme"
 )
 
 // ---------------------------------------------------------------------------
@@ -136,7 +135,7 @@ func (c CopilotOAuth) View() string {
 }
 
 func (c CopilotOAuth) buildContentLines() []string {
-	t := theme.Active
+	t := c.Base.ctx.Theme
 	w := c.Base.InnerWidth()
 
 	blank := lipgloss.NewStyle().Background(t.Surface0).Width(w).Render("")

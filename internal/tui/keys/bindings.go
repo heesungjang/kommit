@@ -651,6 +651,7 @@ func init() {
 		"diff.unstageHunk": &Diff.UnstageHunk,
 		"diff.visualMode":  &Diff.VisualMode,
 		"diff.toggleView":  &Diff.ToggleView,
+		"diff.fullscreen":  &Diff.Fullscreen,
 
 		// Stash
 		"stash.save":  &Stash.Save,

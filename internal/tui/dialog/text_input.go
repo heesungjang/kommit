@@ -7,7 +7,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	tuictx "github.com/heesungjang/kommit/internal/tui/context"
-	"github.com/heesungjang/kommit/internal/tui/theme"
 )
 
 // ---------------------------------------------------------------------------
@@ -90,7 +89,7 @@ func (t TextInput) View() string {
 // buildContentLines produces the scrollable content lines for the text input
 // dialog. Every entry is a single terminal line.
 func (t TextInput) buildContentLines() []string {
-	th := theme.Active
+	th := t.Base.ctx.Theme
 	emptyLine := lipgloss.NewStyle().Background(th.Surface0).Render("")
 
 	lines := make([]string, 0, 4)

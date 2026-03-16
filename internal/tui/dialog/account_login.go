@@ -13,7 +13,6 @@ import (
 	"github.com/heesungjang/kommit/internal/auth"
 	tuictx "github.com/heesungjang/kommit/internal/tui/context"
 	"github.com/heesungjang/kommit/internal/tui/msgs"
-	"github.com/heesungjang/kommit/internal/tui/theme"
 	"github.com/heesungjang/kommit/internal/tui/utils"
 )
 
@@ -260,7 +259,7 @@ func (a AccountLogin) updateProviderStep(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (a AccountLogin) buildProviderLines() []string {
-	t := theme.Active
+	t := a.ctx.Theme
 	w := a.Base.InnerWidth()
 
 	lines := make([]string, 0, len(a.providers)*2+4)
@@ -431,7 +430,7 @@ func (a AccountLogin) updateDeviceCodeStep(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (a AccountLogin) buildDeviceCodeLines() []string {
-	t := theme.Active
+	t := a.ctx.Theme
 	w := a.Base.InnerWidth()
 	blank := lipgloss.NewStyle().Background(t.Surface0).Width(w).Render("")
 
@@ -543,7 +542,7 @@ func (a AccountLogin) updateTokenStep(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (a AccountLogin) buildTokenLines() []string {
-	t := theme.Active
+	t := a.ctx.Theme
 	w := a.Base.InnerWidth()
 	blank := lipgloss.NewStyle().Background(t.Surface0).Width(w).Render("")
 
@@ -635,7 +634,7 @@ func (a AccountLogin) updateFetchingStep(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (a AccountLogin) buildFetchingLines() []string {
-	t := theme.Active
+	t := a.ctx.Theme
 	w := a.Base.InnerWidth()
 	blank := lipgloss.NewStyle().Background(t.Surface0).Width(w).Render("")
 

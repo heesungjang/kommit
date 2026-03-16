@@ -2,7 +2,6 @@ package pages
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -1060,35 +1059,13 @@ func unstageHunkCmd(repo *git.Repository, path string, hunk git.Hunk) tea.Cmd {
 
 // parseDiffHunkNums extracts the old and new starting line numbers from a
 // @@ -old,count +new,count @@ hunk header line.
+// Delegates to the shared git.ParseHunkHeader parser.
 func parseDiffHunkNums(line string) (oldStart, newStart int) {
-	idx := strings.Index(line, "@@")
-	if idx < 0 {
+	h := git.ParseHunkHeader(line)
+	if h == nil {
 		return 1, 1
 	}
-	rest := line[idx+2:]
-	idx2 := strings.Index(rest, "@@")
-	if idx2 <= 0 {
-		return 1, 1
-	}
-	rangeInfo := strings.TrimSpace(rest[:idx2])
-	parts := strings.Fields(rangeInfo)
-	for _, part := range parts {
-		if strings.HasPrefix(part, "-") {
-			nums := strings.SplitN(part[1:], ",", 2)
-			if len(nums) >= 1 {
-				if n, err := strconv.Atoi(nums[0]); err == nil {
-					oldStart = n
-				}
-			}
-		} else if strings.HasPrefix(part, "+") {
-			nums := strings.SplitN(part[1:], ",", 2)
-			if len(nums) >= 1 {
-				if n, err := strconv.Atoi(nums[0]); err == nil {
-					newStart = n
-				}
-			}
-		}
-	}
+	oldStart, newStart = h.StartOld, h.StartNew
 	if oldStart == 0 {
 		oldStart = 1
 	}

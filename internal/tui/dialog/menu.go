@@ -8,7 +8,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	tuictx "github.com/heesungjang/kommit/internal/tui/context"
-	"github.com/heesungjang/kommit/internal/tui/theme"
 )
 
 // ---------------------------------------------------------------------------
@@ -108,7 +107,7 @@ func (m Menu) View() string {
 // buildContentLines produces the scrollable content lines for the menu dialog.
 // Every entry is a single terminal line (no embedded newlines).
 func (m Menu) buildContentLines() []string {
-	t := theme.Active
+	t := m.Base.ctx.Theme
 	w := m.Base.InnerWidth()
 
 	lines := make([]string, 0, len(m.Options)*2)
@@ -154,7 +153,7 @@ func (m Menu) buildContentLines() []string {
 
 // ensureCursorVisible adjusts the scroll offset so the cursor option is visible.
 func (m *Menu) ensureCursorVisible() {
-	t := theme.Active
+	t := m.Base.ctx.Theme
 	w := m.Base.InnerWidth()
 
 	lineIdx := 0

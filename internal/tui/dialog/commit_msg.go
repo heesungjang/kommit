@@ -9,7 +9,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	tuictx "github.com/heesungjang/kommit/internal/tui/context"
-	"github.com/heesungjang/kommit/internal/tui/theme"
 )
 
 // ---------------------------------------------------------------------------
@@ -108,7 +107,7 @@ func (c CommitMsg) View() string {
 // buildContentLines produces the scrollable content lines for the commit
 // dialog. Every entry is a single terminal line.
 func (c CommitMsg) buildContentLines() []string {
-	t := theme.Active
+	t := c.Base.ctx.Theme
 	emptyLine := lipgloss.NewStyle().Background(t.Surface0).Render("")
 
 	info := lipgloss.NewStyle().

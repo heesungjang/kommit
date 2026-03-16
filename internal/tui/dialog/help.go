@@ -7,7 +7,6 @@ import (
 
 	tuictx "github.com/heesungjang/kommit/internal/tui/context"
 	"github.com/heesungjang/kommit/internal/tui/keys"
-	"github.com/heesungjang/kommit/internal/tui/theme"
 )
 
 // ---------------------------------------------------------------------------
@@ -114,7 +113,7 @@ func (h Help) View() string {
 // buildContentLines produces all keybinding lines for scrollable rendering.
 // Every returned entry is a single terminal line (no embedded newlines).
 func (h Help) buildContentLines() []string {
-	t := theme.Active
+	t := h.Base.ctx.Theme
 
 	emptyLine := lipgloss.NewStyle().Background(t.Surface0).Render("")
 	keyStyle := lipgloss.NewStyle().Foreground(t.Mauve).Background(t.Surface0).Bold(true).Width(16)

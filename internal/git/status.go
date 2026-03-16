@@ -323,31 +323,23 @@ func QuickStatus(path string) RepoQuickStatus {
 				_, _ = fmt.Sscanf(parts[1], "-%d", &qs.Behind)
 			}
 		case strings.HasPrefix(line, "1 "):
-			// Ordinary changed entry
-			parts := strings.SplitN(line, " ", 9)
-			if len(parts) >= 9 {
-				xy := parts[1]
-				if len(xy) >= 2 {
-					if xy[0] != '.' {
-						qs.Staged++
-					}
-					if xy[1] != '.' {
-						qs.Modified++
-					}
+			// Ordinary changed entry — reuse shared parser
+			if f := parseOrdinaryEntry(line); f != nil {
+				if f.StagedCode != '.' {
+					qs.Staged++
+				}
+				if f.UnstagedCode != '.' {
+					qs.Modified++
 				}
 			}
 		case strings.HasPrefix(line, "2 "):
-			// Rename/copy entry
-			parts := strings.SplitN(line, " ", 10)
-			if len(parts) >= 10 {
-				xy := parts[1]
-				if len(xy) >= 2 {
-					if xy[0] != '.' {
-						qs.Staged++
-					}
-					if xy[1] != '.' {
-						qs.Modified++
-					}
+			// Rename/copy entry — reuse shared parser
+			if f := parseRenameEntry(line); f != nil {
+				if f.StagedCode != '.' {
+					qs.Staged++
+				}
+				if f.UnstagedCode != '.' {
+					qs.Modified++
 				}
 			}
 		case strings.HasPrefix(line, "u "):

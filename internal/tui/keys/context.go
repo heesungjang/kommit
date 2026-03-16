@@ -21,10 +21,6 @@ const (
 	ContextDialog            // Modal dialog overlay
 )
 
-// ActiveContext tracks the currently active keybinding context.
-// It is updated whenever the user switches pages or opens a dialog.
-var ActiveContext = ContextLog
-
 // ContextLabel returns a short human-readable label for the given context.
 func ContextLabel(ctx Context) string {
 	switch ctx {

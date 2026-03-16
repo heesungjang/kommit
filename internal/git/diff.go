@@ -213,7 +213,7 @@ parseHunks:
 			if currentHunk != nil {
 				file.Hunks = append(file.Hunks, *currentHunk)
 			}
-			currentHunk = parseHunkHeader(line)
+			currentHunk = ParseHunkHeader(line)
 		} else if currentHunk != nil {
 			currentHunk.Lines = append(currentHunk.Lines, line)
 		}
@@ -225,7 +225,9 @@ parseHunks:
 	return file
 }
 
-func parseHunkHeader(line string) *Hunk {
+// ParseHunkHeader parses a @@ -old,count +new,count @@ hunk header line
+// and returns a Hunk with StartOld, CountOld, StartNew, CountNew populated.
+func ParseHunkHeader(line string) *Hunk {
 	hunk := &Hunk{Header: line}
 
 	// Parse @@ -start,count +start,count @@

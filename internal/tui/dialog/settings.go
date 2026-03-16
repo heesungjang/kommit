@@ -351,7 +351,7 @@ func (s Settings) formatValue(def settingDef, raw string) string {
 // ---------------------------------------------------------------------------
 
 func (s Settings) buildContentLines() []string {
-	t := theme.Active
+	t := s.ctx.Theme
 	w := s.Base.InnerWidth()
 
 	lines := make([]string, 0, len(s.defs)*2)
@@ -609,7 +609,7 @@ func (s Settings) updateSubPicker(msg tea.Msg) (tea.Model, tea.Cmd) {
 // buildAccountLine renders a single account row with status and action hint.
 // Format: "  GitHub     @username  [Logout]"  or  "  GitHub     Not connected  [Login]"
 func (s Settings) buildAccountLine(def settingDef, label, value string, w int, selected bool, bg, fg lipgloss.Color) string {
-	t := theme.Active
+	t := s.ctx.Theme
 
 	labelStyle := lipgloss.NewStyle().Foreground(fg).Background(bg)
 	labelRendered := labelStyle.Render(label)

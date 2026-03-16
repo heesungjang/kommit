@@ -8,7 +8,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	tuictx "github.com/heesungjang/kommit/internal/tui/context"
-	"github.com/heesungjang/kommit/internal/tui/theme"
 )
 
 // ---------------------------------------------------------------------------
@@ -122,7 +121,7 @@ func (lp ListPicker) PreviewValue() string {
 
 // buildContentLines produces the scrollable content lines.
 func (lp ListPicker) buildContentLines() []string {
-	t := theme.Active
+	t := lp.Base.ctx.Theme
 	w := lp.Base.InnerWidth()
 
 	lines := make([]string, 0, len(lp.Options)*2)
@@ -171,7 +170,7 @@ func (lp ListPicker) buildContentLines() []string {
 
 // ensureCursorVisible adjusts the scroll offset so the cursor option is visible.
 func (lp *ListPicker) ensureCursorVisible() {
-	t := theme.Active
+	t := lp.Base.ctx.Theme
 	w := lp.Base.InnerWidth()
 
 	lineIdx := 0

@@ -11,7 +11,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	tuictx "github.com/heesungjang/kommit/internal/tui/context"
-	"github.com/heesungjang/kommit/internal/tui/theme"
 )
 
 // ---------------------------------------------------------------------------
@@ -128,7 +127,7 @@ type CreatePR struct {
 
 // NewCreatePR creates a new Create PR dialog.
 func NewCreatePR(headBranch, baseBranch string, remoteBranches []string, ctx *tuictx.ProgramContext) CreatePR {
-	t := theme.Active
+	t := ctx.Theme
 
 	ti := textinput.New()
 	ti.Placeholder = "PR title"
@@ -448,7 +447,7 @@ func (d CreatePR) View() string {
 }
 
 func (d CreatePR) buildContentLines() []string {
-	th := theme.Active
+	th := d.ctx.Theme
 	var lines []string
 
 	labelStyle := lipgloss.NewStyle().Foreground(th.Subtext0).Background(th.Surface0)
@@ -578,7 +577,7 @@ func (d CreatePR) buildContentLines() []string {
 
 // buildBranchPickerLines renders the inline branch picker as content lines.
 func (d CreatePR) buildBranchPickerLines() []string {
-	th := theme.Active
+	th := d.ctx.Theme
 	filtered := d.filteredBranches()
 
 	var lines []string

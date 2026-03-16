@@ -9,7 +9,6 @@ import (
 	"github.com/muesli/ansi"
 
 	tuictx "github.com/heesungjang/kommit/internal/tui/context"
-	"github.com/heesungjang/kommit/internal/tui/theme"
 )
 
 // borderOverhead is the vertical space consumed by the lipgloss rounded border
@@ -221,7 +220,7 @@ func (b *Base) HandleScrollKeys(msg tea.KeyMsg, totalLines int) bool {
 // footer) is rendered at exact dimensions using Width+MaxWidth and
 // Height+MaxHeight so the dialog is fully opaque with no transparent gaps.
 func (b *Base) Render(contentLines []string) string {
-	t := theme.Active
+	t := b.ctx.Theme
 	dialogWidth := b.DialogWidth()
 	innerWidth := b.InnerWidth()
 	maxVisible := b.MaxContentHeight()
@@ -329,7 +328,7 @@ func padLine(line string, targetWidth int, bg lipgloss.Color) string {
 // line. The scrollbar uses block characters: ░ for the track and █ for the
 // thumb.
 func (b *Base) attachScrollbar(visible []string, totalLines, maxVisible int) []string {
-	t := theme.Active
+	t := b.ctx.Theme
 	trackHeight := len(visible)
 	if trackHeight == 0 {
 		return visible
