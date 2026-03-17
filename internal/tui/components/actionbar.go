@@ -36,13 +36,13 @@ var actionGroups = []actionGroup{
 	// Remote operations
 	{buttons: []actionButton{
 		{Icon: "↓", Label: "Pull", Key: "P", Contexts: []keys.Context{
-			keys.ContextStatus, keys.ContextLog, keys.ContextRemotes, keys.ContextDetail,
+			keys.ContextStatus, keys.ContextDetail,
 		}},
 		{Icon: "↑", Label: "Push", Key: "p", Contexts: []keys.Context{
-			keys.ContextStatus, keys.ContextLog, keys.ContextRemotes, keys.ContextDetail,
+			keys.ContextStatus, keys.ContextDetail,
 		}},
 		{Icon: "⟳", Label: "Fetch", Key: "f", Contexts: []keys.Context{
-			keys.ContextStatus, keys.ContextLog, keys.ContextRemotes, keys.ContextDetail,
+			keys.ContextStatus, keys.ContextDetail,
 		}},
 	}},
 	// Branch

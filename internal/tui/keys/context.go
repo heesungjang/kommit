@@ -272,12 +272,7 @@ func FullHelp(ctx Context) [][]key.Binding {
 		})
 
 	case ContextRemotes:
-		return append(base, []key.Binding{
-			RemoteOps.Push,
-			RemoteOps.ForcePush,
-			RemoteOps.Pull,
-			RemoteOps.Fetch,
-		})
+		return base
 
 	case ContextLog:
 		return append(base,
@@ -293,11 +288,6 @@ func FullHelp(ctx Context) [][]key.Binding {
 				CommitOps.BisectMenu,
 				CommitOps.Undo,
 				CommitOps.Redo,
-			},
-			[]key.Binding{
-				RemoteOps.Push,
-				RemoteOps.Pull,
-				RemoteOps.Fetch,
 			},
 		)
 

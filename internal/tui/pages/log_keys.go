@@ -111,11 +111,11 @@ func (l LogPage) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		l.viewedPR = nil
 	}
 
-	// Global push/pull/fetch — available when center or right panel is focused
-	// AND when we're NOT on a non-WIP commit in the center panel (to avoid
-	// conflicting with commit ops keys like f=fixup, p=push, etc.).
-	// When sidebar is focused, let it handle p/a/etc. contextually.
-	// When the diff viewer is active, let it handle f=fullscreen, etc.
+	// Push/pull/fetch — available from the right panel (detail/WIP) and from
+	// the center panel only when the WIP row is selected or the list is empty.
+	// Blocked when: sidebar is focused (keys conflict with branch/stash ops),
+	// diff viewer is active (f=fullscreen, s=stage hunk), or a non-WIP commit
+	// is selected in the center panel (f=fixup, s=squash, d=drop, etc.).
 	if l.focus != focusSidebar && !l.diffViewer.Active && (l.focus != focusLogList || l.isWIPSelected() || len(l.commits) == 0) {
 		switch {
 		case key.Matches(msg, l.remoteKeys.Push):
