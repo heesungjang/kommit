@@ -864,18 +864,26 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// -- AI explain request from commit list --------------------------------
 	case pages.RequestAIExplainMsg:
-		return a, a.generateAIExplanation(msg.Diff, msg.Subject)
+		// Open the AI explain dialog immediately (loading state) and fire the
+		// async AI generation in parallel.
+		d := dialog.NewAIExplain(msg.ShortHash, msg.Subject, a.ctx)
+		a.dialog = d
+		a.showDialog = true
+		return a, tea.Batch(d.Init(), a.generateAIExplanation(msg.Diff, msg.Subject))
 
-	case pages.AIExplainResultMsg:
-		// Show the explanation as a large toast/info message
-		var cmd tea.Cmd
-		a.toast, cmd = a.toast.ShowSuccess("AI: " + msg.Explanation)
-		return a, cmd
+	case dialog.AIExplainUpdateMsg:
+		// Forward the AI result/error to the open explain dialog.
+		if a.showDialog && a.dialog != nil {
+			var cmd tea.Cmd
+			a.dialog, cmd = a.dialog.Update(msg)
+			return a, cmd
+		}
+		return a, nil
 
-	case pages.AIExplainErrorMsg:
-		var cmd tea.Cmd
-		a.toast, cmd = a.toast.ShowError("AI explain: " + msg.Err.Error())
-		return a, cmd
+	case dialog.AIExplainCloseMsg:
+		a.showDialog = false
+		a.dialog = nil
+		return a, nil
 
 	// -- AI commit message request from WIP panel --------------------------
 	case pages.RequestAICommitMsg:

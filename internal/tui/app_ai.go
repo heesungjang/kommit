@@ -110,18 +110,20 @@ func (a App) generateAICommitMessage() tea.Cmd {
 }
 
 // generateAIExplanation uses the AI provider to explain a diff.
+// The result is sent as a dialog.AIExplainUpdateMsg which gets forwarded
+// to the open AIExplain dialog.
 func (a App) generateAIExplanation(diff, subject string) tea.Cmd {
 	cfg := a.ctx.Config
 	if cfg == nil {
 		return func() tea.Msg {
-			return pages.AIExplainErrorMsg{Err: fmt.Errorf("no configuration loaded")}
+			return dialog.AIExplainUpdateMsg{Err: fmt.Errorf("no configuration loaded")}
 		}
 	}
 
 	apiKey := ai.GetAPIKey(cfg.AI.Provider, cfg.AI.APIKey)
 	if apiKey == "" && cfg.AI.Provider != "openai-compatible" {
 		return func() tea.Msg {
-			return pages.AIExplainErrorMsg{Err: fmt.Errorf("no AI provider configured — press , to set up in Settings > AI")}
+			return dialog.AIExplainUpdateMsg{Err: fmt.Errorf("no AI provider configured — press , to set up in Settings > AI")}
 		}
 	}
 
@@ -135,7 +137,7 @@ func (a App) generateAIExplanation(diff, subject string) tea.Cmd {
 			defer exchCancel()
 			cpToken, err := ai.ExchangeForCopilotToken(exchCtx, aiCfg.APIKey)
 			if err != nil {
-				return pages.AIExplainErrorMsg{Err: fmt.Errorf("copilot token refresh: %w", err)}
+				return dialog.AIExplainUpdateMsg{Err: fmt.Errorf("copilot token refresh: %w", err)}
 			}
 			aiCfg.APIKey = cpToken.Token
 		}
@@ -145,10 +147,10 @@ func (a App) generateAIExplanation(diff, subject string) tea.Cmd {
 
 		result, err := ai.GenerateExplanation(ctx, &aiCfg, aiCfg.APIKey, diff, subject)
 		if err != nil {
-			return pages.AIExplainErrorMsg{Err: err}
+			return dialog.AIExplainUpdateMsg{Err: err}
 		}
 
-		return pages.AIExplainResultMsg{Explanation: result.Explanation}
+		return dialog.AIExplainUpdateMsg{Explanation: result.Explanation}
 	}
 }
 

@@ -319,6 +319,10 @@ func (l LogPage) requestAIExplain(commit git.CommitInfo) tea.Cmd {
 	repo := l.repo
 	hash := commit.Hash
 	subject := commit.Subject
+	shortHash := commit.ShortHash
+	if shortHash == "" && len(hash) > 7 {
+		shortHash = hash[:7]
+	}
 	return func() tea.Msg {
 		diff, err := repo.DiffCommitRaw(hash)
 		if err != nil {
@@ -328,8 +332,9 @@ func (l LogPage) requestAIExplain(commit git.CommitInfo) tea.Cmd {
 			return RequestToastMsg{Message: "No changes to explain", IsError: true}
 		}
 		return RequestAIExplainMsg{
-			Diff:    diff,
-			Subject: subject,
+			Diff:      diff,
+			Subject:   subject,
+			ShortHash: shortHash,
 		}
 	}
 }

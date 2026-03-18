@@ -125,18 +125,9 @@ type DiffFullscreenToggleMsg struct{}
 
 // RequestAIExplainMsg asks the app shell to explain a diff using AI.
 type RequestAIExplainMsg struct {
-	Diff    string // raw diff text to explain
-	Subject string // optional commit subject for context
-}
-
-// AIExplainResultMsg carries the AI-generated explanation back to the UI.
-type AIExplainResultMsg struct {
-	Explanation string
-}
-
-// AIExplainErrorMsg is sent when AI explanation generation fails.
-type AIExplainErrorMsg struct {
-	Err error
+	Diff      string // raw diff text to explain
+	Subject   string // optional commit subject for context
+	ShortHash string // short commit hash for dialog title
 }
 
 // RequestCreatePRMsg asks the app shell to open the Create PR dialog.
