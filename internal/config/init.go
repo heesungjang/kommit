@@ -163,6 +163,7 @@ func yamlMarshal(v any) ([]byte, error) {
 		"showGraph":     cfg.Appearance.ShowGraph,
 		"compactLog":    cfg.Appearance.CompactLog,
 		"syntaxTheme":   cfg.Appearance.SyntaxTheme,
+		"nerdFonts":     cfg.Appearance.NerdFonts,
 		"sidebarWidth":  cfg.Appearance.SidebarWidth,
 		"sidebarMaxPct": cfg.Appearance.SidebarMaxPct,
 		"centerPct":     cfg.Appearance.CenterPct,

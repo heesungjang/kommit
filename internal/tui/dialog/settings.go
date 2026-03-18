@@ -743,18 +743,26 @@ func aiModelOptions(provider string) []string {
 func themeOptionNames() []string {
 	names := make([]string, 0, len(theme.Themes)+1)
 	names = append(names, "auto")
-	// Sort deterministically — catppuccin family first, then community themes.
+	// Sort deterministically — catppuccin family first, then dark themes, then light themes.
 	ordered := []string{
 		"catppuccin-mocha",
-		"catppuccin-latte",
 		"catppuccin-frappe",
 		"catppuccin-macchiato",
+		"catppuccin-latte",
 		"tokyo-night",
 		"dracula",
 		"nord",
+		"one-dark",
 		"gruvbox-dark",
 		"rose-pine",
 		"kanagawa-wave",
+		"everforest-dark",
+		"nightfox",
+		"github-dark",
+		"solarized-dark",
+		"gruvbox-light",
+		"github-light",
+		"solarized-light",
 	}
 	for _, name := range ordered {
 		if _, ok := theme.Themes[name]; ok {
