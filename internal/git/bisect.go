@@ -49,12 +49,7 @@ func (r *Repository) BisectLog() (string, error) {
 // IsBisecting returns true if a bisect session is in progress.
 // Uses filesystem check (fast, no git subprocess).
 func (r *Repository) IsBisecting() bool {
-	gitDir, err := r.run("rev-parse", "--git-dir")
-	if err != nil {
-		return false
-	}
-	gitDir = strings.TrimSpace(gitDir)
-	_, err = os.Stat(filepath.Join(gitDir, "BISECT_LOG"))
+	_, err := os.Stat(filepath.Join(r.gitDir, "BISECT_LOG"))
 	return err == nil
 }
 

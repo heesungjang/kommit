@@ -74,15 +74,10 @@ func (l LogPage) renderCommitList(width, height int) string {
 	// Check if graph display is enabled in settings.
 	showGraph := l.ctx == nil || l.ctx.Config == nil || l.ctx.Config.Appearance.ShowGraph
 
-	// Compute max graph width across ALL commits (not just visible) for consistent column layout.
+	// Use the cached max graph width (updated on data load, not per frame).
 	graphWidth := 0
 	if showGraph {
-		for _, gr := range l.graphRows {
-			w := len(gr.Cells)
-			if w > graphWidth {
-				graphWidth = w
-			}
-		}
+		graphWidth = l.cachedGraphMax
 	}
 	// Each graph cell takes 1 character, plus 1 space separator after graph
 	graphColWidth := 0

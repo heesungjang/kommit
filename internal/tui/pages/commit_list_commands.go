@@ -13,6 +13,12 @@ import (
 // defaultPageSize is the number of commits loaded per page.
 const defaultPageSize = 200
 
+// maxCommitsInMemory is the upper bound on commits held in memory.
+// Beyond this limit, pagination stops to prevent unbounded memory growth.
+// At ~300 bytes per CommitInfo + ~150 bytes per GraphRow, 5000 commits
+// uses roughly 2-3 MB — well within acceptable limits.
+const maxCommitsInMemory = 5000
+
 func (l LogPage) pageSize() int {
 	if l.logPageSize > 0 {
 		return l.logPageSize
@@ -45,8 +51,8 @@ func (l LogPage) loadLog() tea.Cmd {
 			commits = append([]git.CommitInfo{wipEntry}, commits...)
 		}
 
-		graphRows := git.ComputeGraph(commits)
-		return logLoadedMsg{commits: commits, graphRows: graphRows, hasWIP: hasWIP, err: nil}
+		graphRows, graphState := git.ComputeGraphIncremental(commits, nil)
+		return logLoadedMsg{commits: commits, graphRows: graphRows, graphState: graphState, hasWIP: hasWIP, err: nil}
 	}
 }
 
@@ -75,12 +81,14 @@ func (l LogPage) loadLogFiltered(query string) tea.Cmd {
 			commits = append([]git.CommitInfo{wipEntry}, commits...)
 		}
 
-		graphRows := git.ComputeGraph(commits)
-		return logLoadedMsg{commits: commits, graphRows: graphRows, hasWIP: hasWIP, err: nil}
+		graphRows, graphState := git.ComputeGraphIncremental(commits, nil)
+		return logLoadedMsg{commits: commits, graphRows: graphRows, graphState: graphState, hasWIP: hasWIP, err: nil}
 	}
 }
 
 // loadLogMore loads the next page of commits and appends them.
+// Uses incremental graph computation — only processes the new commits,
+// resuming from the saved lane state, instead of reprocessing all commits.
 func (l LogPage) loadLogMore() tea.Cmd {
 	repo := l.repo
 	ps := l.pageSize()
@@ -89,9 +97,7 @@ func (l LogPage) loadLogMore() tea.Cmd {
 	if l.hasWIP {
 		skip-- // don't count the synthetic WIP entry
 	}
-	existing := make([]git.CommitInfo, len(l.commits))
-	copy(existing, l.commits)
-	hasWIP := l.hasWIP
+	prevGraphState := l.graphState
 
 	return func() tea.Msg {
 		more, err := repo.Log(git.LogOptions{MaxCount: ps, Skip: skip})
@@ -99,26 +105,34 @@ func (l LogPage) loadLogMore() tea.Cmd {
 			return logMoreLoadedMsg{err: err}
 		}
 
-		// Combine existing + new commits, preserving WIP entry if present.
-		combined := existing
-		combined = append(combined, more...)
-		graphRows := git.ComputeGraph(combined)
+		// Incrementally compute graph rows for ONLY the new commits,
+		// continuing from the lane state left by the previous batch.
+		newRows, newState := git.ComputeGraphIncremental(more, prevGraphState)
 
-		result := logMoreLoadedMsg{
-			commits:   more,
-			graphRows: graphRows,
-			err:       nil,
+		return logMoreLoadedMsg{
+			commits:    more,
+			graphRows:  newRows,
+			graphState: newState,
+			err:        nil,
 		}
-		// If we fetched fewer than a full page, there's nothing more to load.
-		_ = hasWIP
-		_ = ps
-		return result
 	}
 }
 
 func (l LogPage) loadCommitDetail(c git.CommitInfo) tea.Cmd {
 	repo := l.repo
 	compareBase := l.compareBase
+
+	// Check the diff cache for non-compare mode (compare mode changes the
+	// base, so caching on hash alone would be incorrect).
+	if compareBase == nil && c.Hash != "" {
+		if diff, body, ok := l.diffCache.Get(c.Hash); ok {
+			c.Body = body
+			return func() tea.Msg {
+				return commitDetailMsg{commit: c, diff: diff, err: nil}
+			}
+		}
+	}
+
 	return func() tea.Msg {
 		var diff *git.DiffResult
 		var err error

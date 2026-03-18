@@ -50,8 +50,11 @@ func (l LogPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		prevHadWIP := l.hasWIP
 		l.commits = msg.commits
 		l.graphRows = msg.graphRows
+		l.graphState = msg.graphState
 		l.hasWIP = msg.hasWIP
-		l.graphScrollX = 0 // reset horizontal scroll on reload
+		l.graphScrollX = 0  // reset horizontal scroll on reload
+		l.diffCache.Clear() // invalidate cached diffs on full reload
+		l.updateGraphMaxWidth()
 
 		// Determine if more commits are available for pagination.
 		realCount := len(msg.commits)
@@ -104,8 +107,14 @@ func (l LogPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return l, nil
 		}
 		l.commits = append(l.commits, msg.commits...)
-		l.graphRows = msg.graphRows
+		l.graphRows = append(l.graphRows, msg.graphRows...)
+		l.graphState = msg.graphState
+		l.updateGraphMaxWidth()
 		l.canLoadMore = len(msg.commits) >= l.pageSize()
+		// Stop pagination once we hit the memory cap.
+		if len(l.commits) >= maxCommitsInMemory {
+			l.canLoadMore = false
+		}
 		return l, nil
 
 	case wipDetailMsg:
@@ -290,6 +299,10 @@ func (l LogPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				l.detailFiles = msg.diff.Files
 			} else {
 				l.detailFiles = nil
+			}
+			// Populate the diff cache for fast j/k navigation.
+			if msg.commit.Hash != "" && l.compareBase == nil {
+				l.diffCache.Put(msg.commit.Hash, msg.diff, msg.commit.Body)
 			}
 		}
 		l.detailFileCursor = 0

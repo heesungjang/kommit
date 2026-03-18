@@ -64,11 +64,13 @@ type LogPage struct {
 	// Left sidebar (branches, remotes, tags, stash)
 	sidebar Sidebar
 
-	commits      []git.CommitInfo
-	cursor       int
-	hasWIP       bool           // true when uncommitted changes exist; commits[0] is synthetic
-	graphRows    []git.GraphRow // parallel to commits; one GraphRow per commit
-	graphScrollX int            // horizontal scroll offset for graph column
+	commits        []git.CommitInfo
+	cursor         int
+	hasWIP         bool            // true when uncommitted changes exist; commits[0] is synthetic
+	graphRows      []git.GraphRow  // parallel to commits; one GraphRow per commit
+	graphScrollX   int             // horizontal scroll offset for graph column
+	cachedGraphMax int             // cached max graph cell count (updated on data load, not per frame)
+	graphState     *git.GraphState // lane state for incremental graph computation on pagination
 
 	// Detail view — structured file list (for commits)
 	detailCommit     *git.CommitInfo
@@ -111,6 +113,9 @@ type LogPage struct {
 	// Undo — reflog-based
 	pendingUndoHash string // captured at confirm time to avoid TOCTOU race
 	pendingRedoHash string // captured at confirm time to avoid TOCTOU race
+
+	// Diff cache — avoids re-running git diff on j/k navigation
+	diffCache diffLRU
 
 	// Stash diff display
 	viewingStash     bool
@@ -529,6 +534,19 @@ func hexToRGB(hex string) (r, g, b uint8) {
 	g = uint8((val >> 8) & 0xFF)
 	b = uint8(val & 0xFF)
 	return r, g, b
+}
+
+// updateGraphMaxWidth recomputes the cached max graph cell count from graphRows.
+// Called whenever graphRows is replaced (initial load, pagination, refresh)
+// so the render loop can read cachedGraphMax without scanning all rows per frame.
+func (l *LogPage) updateGraphMaxWidth() {
+	m := 0
+	for _, gr := range l.graphRows {
+		if w := len(gr.Cells); w > m {
+			m = w
+		}
+	}
+	l.cachedGraphMax = m
 }
 
 // splitCommitMessage, newCommitSummary, newCommitDesc — now in wip_panel.go

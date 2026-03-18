@@ -120,6 +120,11 @@ func NewApp(repo *git.Repository, cfg *config.Config) App {
 		toast:     components.NewToast(),
 	}
 
+	// Resolve the logged-in username eagerly so it's available from the
+	// first render.  (Previously this was done in Init(), but Init() is a
+	// value-receiver method so the mutation was lost.)
+	a.actionBar = a.actionBar.SetUsername(a.resolveUsername())
+
 	// Always create the workspace page so it's available for switching.
 	wsPage := pages.NewWorkspacePage(ctx, 80, 24)
 	a.workspacePage = wsPage
@@ -141,9 +146,6 @@ func NewApp(repo *git.Repository, cfg *config.Config) App {
 
 // Init initializes the application.
 func (a App) Init() tea.Cmd {
-	// Resolve logged-in username for the action bar.
-	a.actionBar = a.actionBar.SetUsername(a.resolveUsername())
-
 	if a.page == pageWorkspace {
 		return a.workspacePage.Init()
 	}
@@ -1415,20 +1417,21 @@ func (a App) pageHeight() int {
 }
 
 // loadBranchInfo returns a Cmd that refreshes the status bar with branch info.
+// Uses a single git process (git status --porcelain=v2 --branch) plus cheap
+// filesystem checks instead of 3-4 separate git invocations.
 func (a App) loadBranchInfo() tea.Cmd {
 	repo := a.repo
 	if repo == nil {
 		return nil
 	}
 	return func() tea.Msg {
-		branch, _ := repo.Head()
-		ahead, behind, _ := repo.AheadBehind()
+		info := repo.BranchInfo()
 		return branchInfoMsg{
-			branch:    branch,
-			ahead:     ahead,
-			behind:    behind,
-			bisecting: repo.IsBisecting(),
-			rebasing:  repo.IsRebasing(),
+			branch:    info.Branch,
+			ahead:     info.Ahead,
+			behind:    info.Behind,
+			bisecting: info.Bisecting,
+			rebasing:  info.Rebasing,
 		}
 	}
 }

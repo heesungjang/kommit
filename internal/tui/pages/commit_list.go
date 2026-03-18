@@ -14,22 +14,78 @@ import (
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
+// Diff LRU cache
+// ---------------------------------------------------------------------------
+
+const diffCacheSize = 10
+
+// diffCacheEntry holds a cached diff result for a single commit.
+type diffCacheEntry struct {
+	hash string
+	diff *git.DiffResult
+	body string
+}
+
+// diffLRU is a simple fixed-size LRU cache for commit diffs. On a hit the
+// entry is promoted to the front; on a miss the oldest entry is evicted.
+type diffLRU struct {
+	entries []diffCacheEntry
+}
+
+// Get returns the cached diff for the given hash, or nil on a miss.
+func (c *diffLRU) Get(hash string) (*git.DiffResult, string, bool) {
+	for i, e := range c.entries {
+		if e.hash == hash {
+			// Promote to front (LRU).
+			c.entries = append(c.entries[:i], c.entries[i+1:]...)
+			c.entries = append([]diffCacheEntry{e}, c.entries...)
+			return e.diff, e.body, true
+		}
+	}
+	return nil, "", false
+}
+
+// Put adds or updates a cache entry. Evicts the oldest if at capacity.
+func (c *diffLRU) Put(hash string, diff *git.DiffResult, body string) {
+	// Remove existing entry if present.
+	for i, e := range c.entries {
+		if e.hash == hash {
+			c.entries = append(c.entries[:i], c.entries[i+1:]...)
+			break
+		}
+	}
+	// Evict oldest if full.
+	if len(c.entries) >= diffCacheSize {
+		c.entries = c.entries[:diffCacheSize-1]
+	}
+	// Prepend (most recent).
+	c.entries = append([]diffCacheEntry{{hash: hash, diff: diff, body: body}}, c.entries...)
+}
+
+// Clear empties the cache (called on refresh/reload).
+func (c *diffLRU) Clear() {
+	c.entries = nil
+}
+
+// ---------------------------------------------------------------------------
 // Messages
 // ---------------------------------------------------------------------------
 
 // logLoadedMsg carries the result of loading the commit log.
 type logLoadedMsg struct {
-	commits   []git.CommitInfo
-	graphRows []git.GraphRow
-	hasWIP    bool // true if a synthetic WIP entry was prepended
-	err       error
+	commits    []git.CommitInfo
+	graphRows  []git.GraphRow
+	graphState *git.GraphState // lane state for incremental pagination
+	hasWIP     bool            // true if a synthetic WIP entry was prepended
+	err        error
 }
 
 // logMoreLoadedMsg carries additional commits loaded via pagination.
 type logMoreLoadedMsg struct {
-	commits   []git.CommitInfo
-	graphRows []git.GraphRow // graph for the FULL combined list
-	err       error
+	commits    []git.CommitInfo
+	graphRows  []git.GraphRow  // graph rows for NEW commits only
+	graphState *git.GraphState // updated lane state
+	err        error
 }
 
 // commitDetailMsg carries the result of loading a single commit's detail.

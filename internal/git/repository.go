@@ -204,3 +204,45 @@ func (r *Repository) AheadBehind() (ahead, behind int, err error) {
 	}
 	return ahead, behind, nil
 }
+
+// BranchInfoResult is the combined result of BranchInfo().
+type BranchInfoResult struct {
+	Branch    string
+	Ahead     int
+	Behind    int
+	Bisecting bool
+	Rebasing  bool
+}
+
+// BranchInfo returns branch name, ahead/behind counts, and active workflow
+// state (bisect/rebase) using a single git process plus cheap filesystem
+// checks, replacing 3-4 separate git invocations.
+func (r *Repository) BranchInfo() BranchInfoResult {
+	out, err := r.run("status", "--porcelain=v2", "--branch")
+	info := BranchInfoResult{
+		Bisecting: r.IsBisecting(),
+		Rebasing:  r.IsRebasing(),
+	}
+	if err != nil {
+		return info
+	}
+	for _, line := range strings.Split(out, "\n") {
+		switch {
+		case strings.HasPrefix(line, "# branch.head "):
+			info.Branch = strings.TrimPrefix(line, "# branch.head ")
+			if info.Branch == "(detached)" {
+				// Provide a short hash for detached HEAD.
+				if h, err2 := r.run("rev-parse", "--short", "HEAD"); err2 == nil {
+					info.Branch = strings.TrimSpace(h)
+				}
+			}
+		case strings.HasPrefix(line, "# branch.ab "):
+			parts := strings.Fields(strings.TrimPrefix(line, "# branch.ab "))
+			if len(parts) >= 2 {
+				_, _ = fmt.Sscanf(parts[0], "+%d", &info.Ahead)
+				_, _ = fmt.Sscanf(parts[1], "-%d", &info.Behind)
+			}
+		}
+	}
+	return info
+}

@@ -19,12 +19,26 @@ type GraphCell struct {
 	Column int // which logical branch track this belongs to (for coloring)
 }
 
+// GraphState holds the lane-tracking state between incremental graph passes.
+// Pass it to ComputeGraphIncremental to resume from a previous computation.
+type GraphState struct {
+	Active []string // commit hashes expected in each column
+}
+
 // ComputeGraph computes an ASCII commit graph for the given commits.
 // Commits must be in topological order (newest first), which is the
 // default git log order.
 func ComputeGraph(commits []CommitInfo) []GraphRow {
+	rows, _ := ComputeGraphIncremental(commits, nil)
+	return rows
+}
+
+// ComputeGraphIncremental computes graph rows and returns the lane state so
+// additional commits can be appended without reprocessing earlier rows.
+// If prev is nil the computation starts fresh.
+func ComputeGraphIncremental(commits []CommitInfo, prev *GraphState) ([]GraphRow, *GraphState) {
 	if len(commits) == 0 {
-		return nil
+		return nil, prev
 	}
 
 	rows := make([]GraphRow, len(commits))
@@ -32,6 +46,10 @@ func ComputeGraph(commits []CommitInfo) []GraphRow {
 	// active tracks which commit hashes are expected in each column.
 	// A column is "free" when its value is empty.
 	var active []string
+	if prev != nil {
+		active = make([]string, len(prev.Active))
+		copy(active, prev.Active)
+	}
 
 	for i, c := range commits {
 		if c.Hash == "" {
@@ -175,7 +193,7 @@ func ComputeGraph(commits []CommitInfo) []GraphRow {
 		}
 	}
 
-	return rows
+	return rows, &GraphState{Active: active}
 }
 
 // findFreeColumn returns the first free (empty) column index, or len(active)

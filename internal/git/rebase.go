@@ -30,15 +30,10 @@ func (r *Repository) RebaseContinue() error {
 // IsRebasing returns true if a rebase is in progress.
 // Uses filesystem checks (fast, no git subprocess).
 func (r *Repository) IsRebasing() bool {
-	gitDir, err := r.run("rev-parse", "--git-dir")
-	if err != nil {
-		return false
-	}
-	gitDir = strings.TrimSpace(gitDir)
-	if _, err := os.Stat(filepath.Join(gitDir, "rebase-merge")); err == nil {
+	if _, err := os.Stat(filepath.Join(r.gitDir, "rebase-merge")); err == nil {
 		return true
 	}
-	if _, err := os.Stat(filepath.Join(gitDir, "rebase-apply")); err == nil {
+	if _, err := os.Stat(filepath.Join(r.gitDir, "rebase-apply")); err == nil {
 		return true
 	}
 	return false

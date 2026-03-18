@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/heesungjang/kommit/internal/tui/icons"
 	"github.com/heesungjang/kommit/internal/tui/keys"
 	"github.com/heesungjang/kommit/internal/tui/theme"
@@ -36,16 +37,17 @@ func buildActionGroups() []actionGroup {
 				keys.ContextLog,
 			}},
 		}},
-		// Remote operations
+		// Remote operations — active from most repo contexts so the bar
+		// always shows push/pull/fetch when viewing a repository.
 		{buttons: []actionButton{
 			{Icon: ic.Pull, Label: "Pull", Key: "P", Contexts: []keys.Context{
-				keys.ContextStatus, keys.ContextDetail,
+				keys.ContextStatus, keys.ContextLog, keys.ContextDetail, keys.ContextRemotes,
 			}},
 			{Icon: ic.Push, Label: "Push", Key: "p", Contexts: []keys.Context{
-				keys.ContextStatus, keys.ContextDetail,
+				keys.ContextStatus, keys.ContextLog, keys.ContextDetail, keys.ContextRemotes,
 			}},
 			{Icon: ic.Fetch, Label: "Fetch", Key: "f", Contexts: []keys.Context{
-				keys.ContextStatus, keys.ContextDetail,
+				keys.ContextStatus, keys.ContextLog, keys.ContextDetail, keys.ContextRemotes,
 			}},
 		}},
 		// Branch
@@ -151,22 +153,44 @@ func (ab ActionBar) View() string {
 	labelActive := lipgloss.NewStyle().Foreground(t.Text)
 	keyActive := lipgloss.NewStyle().Foreground(t.Overlay0)
 
-	// Dimmed styles for unavailable actions.
-	iconDim := lipgloss.NewStyle().Foreground(t.Surface2)
-	labelDim := lipgloss.NewStyle().Foreground(t.Surface2)
+	// Dimmed styles for unavailable actions — use Overlay0 for legibility
+	// against the Surface0 background (Surface2 was nearly invisible).
+	iconDim := lipgloss.NewStyle().Foreground(t.Overlay0)
+	labelDim := lipgloss.NewStyle().Foreground(t.Overlay0)
 	keyDim := lipgloss.NewStyle().Foreground(t.Surface2)
 
-	groupSep := lipgloss.NewStyle().Foreground(t.Surface2).Render("  │  ")
+	groupSep := lipgloss.NewStyle().Foreground(t.Overlay0).Render("  │  ")
 	btnSep := "   "
 
 	// Badge style for ahead/behind counts on Push/Pull buttons.
 	badgeStyle := lipgloss.NewStyle().Foreground(t.Peach).Bold(true)
 	badgeDim := lipgloss.NewStyle().Foreground(t.Surface2)
 
-	// Build groups.
+	// Build groups — only include groups relevant to the current mode.
+	// Workspace buttons are hidden in repo contexts and vice versa to
+	// prevent the bar from overflowing the terminal width.
+	inWorkspace := ab.context == keys.ContextWorkspace
 	ag := buildActionGroups()
 	groups := make([]string, 0, len(ag))
 	for _, g := range ag {
+		// Check if this group belongs to the current mode.
+		groupRelevant := false
+		for _, btn := range g.buttons {
+			for _, c := range btn.Contexts {
+				isWsBtn := c == keys.ContextWorkspace
+				if isWsBtn == inWorkspace {
+					groupRelevant = true
+					break
+				}
+			}
+			if groupRelevant {
+				break
+			}
+		}
+		if !groupRelevant {
+			continue
+		}
+
 		btns := make([]string, 0, len(g.buttons))
 		for _, btn := range g.buttons {
 			// Determine if this button gets an ahead/behind badge.
@@ -218,6 +242,27 @@ func (ab ActionBar) View() string {
 	if gap < 2 {
 		gap = 2
 	}
+
+	// If the bar overflows the available width, progressively trim:
+	// first reduce the gap, then truncate the left side to make room
+	// for the branding.
+	totalW := leftW + gap + rightW
+	if totalW > ab.width && ab.width > rightW+4 {
+		// Reserve space for branding + minimal gap.
+		maxLeft := ab.width - rightW - 3
+		if maxLeft < 10 {
+			maxLeft = 10
+		}
+		if leftW > maxLeft {
+			left = ansi.Truncate(left, maxLeft, "…")
+			leftW = lipgloss.Width(left)
+		}
+		gap = ab.width - leftW - rightW - 1
+		if gap < 1 {
+			gap = 1
+		}
+	}
+
 	content := left + strings.Repeat(" ", gap) + brand + rightPad
 
 	// Force background on every cell using ANSI patching (same as statusbar).
