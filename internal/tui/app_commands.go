@@ -14,6 +14,7 @@ import (
 	tuictx "github.com/heesungjang/kommit/internal/tui/context"
 	"github.com/heesungjang/kommit/internal/tui/customcmd"
 	"github.com/heesungjang/kommit/internal/tui/dialog"
+	"github.com/heesungjang/kommit/internal/tui/icons"
 	"github.com/heesungjang/kommit/internal/tui/keys"
 	"github.com/heesungjang/kommit/internal/tui/msgs"
 	"github.com/heesungjang/kommit/internal/tui/pages"
@@ -73,6 +74,12 @@ func (a App) applySettingsChange(msg dialog.SettingsChangeMsg) tea.Cmd {
 
 	case "appearance.compactLog":
 		cfg.Appearance.CompactLog = msg.Value == "true"
+
+	case "appearance.nerdFonts":
+		cfg.Appearance.NerdFonts = msg.Value == "true"
+		ic := icons.ForConfig(cfg.Appearance.NerdFonts)
+		icons.Active = ic
+		a.ctx.Icons = ic
 
 	case "ai.provider":
 		cfg.AI.Provider = msg.Value

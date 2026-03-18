@@ -1,12 +1,14 @@
 package ai
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 )
 
 const anthropicDefaultBaseURL = "https://api.anthropic.com"
@@ -124,4 +126,86 @@ func (p *AnthropicProvider) generate(ctx context.Context, systemPrompt, userProm
 	}
 
 	return text, nil
+}
+
+// anthropicStreamRequest includes the stream flag.
+type anthropicStreamRequest struct {
+	Model     string             `json:"model"`
+	MaxTokens int                `json:"max_tokens"`
+	System    string             `json:"system,omitempty"`
+	Messages  []anthropicMessage `json:"messages"`
+	Stream    bool               `json:"stream"`
+}
+
+// anthropicStreamEvent represents a streaming SSE event from Anthropic.
+type anthropicStreamEvent struct {
+	Type  string `json:"type"`
+	Delta struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"delta"`
+}
+
+// GenerateStream implements StreamingProvider for Anthropic.
+func (p *AnthropicProvider) GenerateStream(ctx context.Context, systemPrompt, userPrompt string, onChunk func(chunk string)) (string, error) {
+	reqBody := anthropicStreamRequest{
+		Model:     p.model,
+		MaxTokens: 1024,
+		System:    systemPrompt,
+		Messages: []anthropicMessage{
+			{Role: "user", Content: userPrompt},
+		},
+		Stream: true,
+	}
+
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", fmt.Errorf("marshal request: %w", err)
+	}
+
+	url := p.baseURL + "/v1/messages"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", p.apiKey)
+	req.Header.Set("anthropic-version", "2023-06-01")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("anthropic API error (%d): %s", resp.StatusCode, string(respBody))
+	}
+
+	// Parse SSE stream
+	var full strings.Builder
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		data := strings.TrimPrefix(line, "data: ")
+
+		var event anthropicStreamEvent
+		if err := json.Unmarshal([]byte(data), &event); err != nil {
+			continue
+		}
+
+		if event.Type == "content_block_delta" && event.Delta.Text != "" {
+			full.WriteString(event.Delta.Text)
+			if onChunk != nil {
+				onChunk(event.Delta.Text)
+			}
+		}
+	}
+
+	return full.String(), scanner.Err()
 }

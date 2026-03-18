@@ -29,12 +29,8 @@ func (a App) loadPullRequests() tea.Cmd {
 			return pages.SidebarPRsLoadedMsg{}
 		}
 
-		// Only GitHub is supported for now.
 		host := auth.HostFromRemoteURL(remoteURL)
 		provider := auth.ProviderForHost(host)
-		if provider != auth.ProviderGitHub {
-			return pages.SidebarPRsLoadedMsg{}
-		}
 
 		acct := auth.GetAccount(host)
 		if acct == nil {
@@ -46,8 +42,17 @@ func (a App) loadPullRequests() tea.Cmd {
 			return pages.SidebarPRsLoadedMsg{Err: err}
 		}
 
-		client := hosting.NewGitHubClient(acct.Token)
-		prs, err := client.ListPullRequests(ref, "open")
+		var prs []hosting.PullRequest
+		switch provider {
+		case auth.ProviderGitHub:
+			client := hosting.NewGitHubClient(acct.Token)
+			prs, err = client.ListPullRequests(ref, "open")
+		case auth.ProviderGitLab:
+			client := hosting.NewGitLabClientWithHost(acct.Token, host)
+			prs, err = client.ListPullRequests(ref, "open")
+		default:
+			return pages.SidebarPRsLoadedMsg{}
+		}
 		return pages.SidebarPRsLoadedMsg{PRs: prs, Err: err}
 	}
 }
@@ -69,13 +74,22 @@ func (a App) openCreatePRDialog() tea.Cmd {
 		remoteURL, err := repo.RemoteURL("origin")
 		if err == nil && remoteURL != "" {
 			host := auth.HostFromRemoteURL(remoteURL)
+			provider := auth.ProviderForHost(host)
 			acct := auth.GetAccount(host)
 			if acct != nil {
 				ref, refErr := hosting.RepoRefFromRemoteURL(remoteURL)
 				if refErr == nil {
-					client := hosting.NewGitHubClient(acct.Token)
-					if defaultBranch, dbErr := client.GetDefaultBranch(ref); dbErr == nil {
-						baseBranch = defaultBranch
+					switch provider {
+					case auth.ProviderGitHub:
+						client := hosting.NewGitHubClient(acct.Token)
+						if defaultBranch, dbErr := client.GetDefaultBranch(ref); dbErr == nil {
+							baseBranch = defaultBranch
+						}
+					case auth.ProviderGitLab:
+						client := hosting.NewGitLabClientWithHost(acct.Token, host)
+						if defaultBranch, dbErr := client.GetDefaultBranch(ref); dbErr == nil {
+							baseBranch = defaultBranch
+						}
 					}
 				}
 			}
@@ -116,8 +130,14 @@ type showCreatePRDialogMsg struct {
 func (a App) loadPRStats(baseBranch string) tea.Cmd {
 	repo := a.repo
 	return func() tea.Msg {
-		commitCount, _ := repo.RevListCount(baseBranch, "HEAD")
-		entries, _ := repo.DiffStatBranch(baseBranch, "HEAD")
+		commitCount, err := repo.RevListCount(baseBranch, "HEAD")
+		if err != nil {
+			commitCount = 0 // non-fatal: show zero if base branch doesn't exist yet
+		}
+		entries, err := repo.DiffStatBranch(baseBranch, "HEAD")
+		if err != nil {
+			entries = nil // non-fatal: show empty stats
+		}
 
 		filesChanged := len(entries)
 		var additions, deletions int
@@ -176,7 +196,7 @@ func (a App) pushHeadBranch() tea.Cmd {
 	}
 }
 
-// createPullRequest calls the GitHub API to create a pull request.
+// createPullRequest calls the hosting API to create a pull request or merge request.
 func (a App) createPullRequest(msg dialog.CreatePRSubmitMsg) tea.Cmd {
 	repo := a.repo
 	return func() tea.Msg {
@@ -186,6 +206,7 @@ func (a App) createPullRequest(msg dialog.CreatePRSubmitMsg) tea.Cmd {
 		}
 
 		host := auth.HostFromRemoteURL(remoteURL)
+		provider := auth.ProviderForHost(host)
 		acct := auth.GetAccount(host)
 		if acct == nil {
 			return pages.PRCreateErrorMsg{Err: fmt.Errorf("not logged in — log in via Settings > Accounts")}
@@ -196,14 +217,26 @@ func (a App) createPullRequest(msg dialog.CreatePRSubmitMsg) tea.Cmd {
 			return pages.PRCreateErrorMsg{Err: err}
 		}
 
-		client := hosting.NewGitHubClient(acct.Token)
-		pr, err := client.CreatePullRequest(ref, hosting.CreatePRRequest{
+		prReq := hosting.CreatePRRequest{
 			Title: msg.Title,
 			Body:  msg.Body,
 			Head:  msg.Head,
 			Base:  msg.Base,
 			Draft: msg.Draft,
-		})
+		}
+
+		var pr *hosting.PullRequest
+		switch provider {
+		case auth.ProviderGitHub:
+			client := hosting.NewGitHubClient(acct.Token)
+			pr, err = client.CreatePullRequest(ref, prReq)
+		case auth.ProviderGitLab:
+			client := hosting.NewGitLabClientWithHost(acct.Token, host)
+			pr, err = client.CreatePullRequest(ref, prReq)
+		default:
+			return pages.PRCreateErrorMsg{Err: fmt.Errorf("PR creation not supported for %s", host)}
+		}
+
 		if err != nil {
 			return pages.PRCreateErrorMsg{Err: err}
 		}

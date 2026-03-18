@@ -67,8 +67,11 @@ func (a App) generateAICommitMessage() tea.Cmd {
 			return pages.AICommitErrorMsg{Err: fmt.Errorf("no staged changes")}
 		}
 
-		// Get diff stat for file-level summary.
-		stat, _ := repo.DiffStatStagedRaw()
+		// Get diff stat for file-level summary (non-fatal if it fails).
+		stat, statErr := repo.DiffStatStagedRaw()
+		if statErr != nil {
+			stat = "" // proceed without stat — AI can still generate from diff alone
+		}
 
 		// Create provider and generate.
 		provider, err := ai.NewProvider(&aiCfg)
@@ -76,10 +79,25 @@ func (a App) generateAICommitMessage() tea.Cmd {
 			return pages.AICommitErrorMsg{Err: err}
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		genCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		msg, err := provider.GenerateCommitMessage(ctx, diff, stat)
+		// Try streaming first for a better UX.
+		if sp, ok := provider.(ai.StreamingProvider); ok {
+			prompt := ai.BuildCommitPrompt(diff, stat)
+			fullText, err := sp.GenerateStream(genCtx, ai.CommitMessageSystemPrompt(), prompt, nil)
+			if err != nil {
+				return pages.AICommitErrorMsg{Err: err}
+			}
+			msg := ai.ParseCommitMessageText(fullText)
+			return pages.AICommitResultMsg{
+				Summary:     msg.Summary,
+				Description: msg.Description,
+			}
+		}
+
+		// Fallback to non-streaming.
+		msg, err := provider.GenerateCommitMessage(genCtx, diff, stat)
 		if err != nil {
 			return pages.AICommitErrorMsg{Err: err}
 		}
@@ -88,6 +106,49 @@ func (a App) generateAICommitMessage() tea.Cmd {
 			Summary:     msg.Summary,
 			Description: msg.Description,
 		}
+	}
+}
+
+// generateAIExplanation uses the AI provider to explain a diff.
+func (a App) generateAIExplanation(diff, subject string) tea.Cmd {
+	cfg := a.ctx.Config
+	if cfg == nil {
+		return func() tea.Msg {
+			return pages.AIExplainErrorMsg{Err: fmt.Errorf("no configuration loaded")}
+		}
+	}
+
+	apiKey := ai.GetAPIKey(cfg.AI.Provider, cfg.AI.APIKey)
+	if apiKey == "" && cfg.AI.Provider != "openai-compatible" {
+		return func() tea.Msg {
+			return pages.AIExplainErrorMsg{Err: fmt.Errorf("no AI provider configured — press , to set up in Settings > AI")}
+		}
+	}
+
+	aiCfg := cfg.AI
+	aiCfg.APIKey = apiKey
+	isCopilot := cfg.AI.Provider == "copilot"
+
+	return func() tea.Msg {
+		if isCopilot && aiCfg.APIKey != "" {
+			exchCtx, exchCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer exchCancel()
+			cpToken, err := ai.ExchangeForCopilotToken(exchCtx, aiCfg.APIKey)
+			if err != nil {
+				return pages.AIExplainErrorMsg{Err: fmt.Errorf("copilot token refresh: %w", err)}
+			}
+			aiCfg.APIKey = cpToken.Token
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		result, err := ai.GenerateExplanation(ctx, &aiCfg, aiCfg.APIKey, diff, subject)
+		if err != nil {
+			return pages.AIExplainErrorMsg{Err: err}
+		}
+
+		return pages.AIExplainResultMsg{Explanation: result.Explanation}
 	}
 }
 
@@ -130,8 +191,14 @@ func (a App) generatePRDescription(baseBranch string) tea.Cmd {
 			return dialog.CreatePRAIErrorMsg{Err: fmt.Errorf("no changes between %s and HEAD", baseBranch)}
 		}
 
-		stat, _ := repo.DiffStatBranchRaw(baseBranch)
-		commitLog, _ := repo.LogBranchOneline(baseBranch)
+		stat, statErr := repo.DiffStatBranchRaw(baseBranch)
+		if statErr != nil {
+			stat = ""
+		}
+		commitLog, logErr := repo.LogBranchOneline(baseBranch)
+		if logErr != nil {
+			commitLog = ""
+		}
 
 		genCtx, genCancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer genCancel()

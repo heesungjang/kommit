@@ -46,6 +46,18 @@ changelog:
       - '^test:'
       - '^chore:'
 
+brews:
+  - repository:
+      owner: heesungjang
+      name: homebrew-tap
+    homepage: "https://github.com/heesungjang/kommit"
+    description: "Terminal-native git client with built-in AI and PR integration"
+    license: "MIT"
+    install: |
+      bin.install "kommit"
+    test: |
+      system "#{bin}/kommit", "--version"
+
 release:
   github:
     owner: heesungjang

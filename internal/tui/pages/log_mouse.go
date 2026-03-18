@@ -53,8 +53,8 @@ func (l LogPage) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				return l, l.loadDetailForCursor()
 			}
 		case zoneRight:
-			// Right panel has no scrollable diff; no-op for now
 			l.focus = focusLogDetail
+			l.scrollRightPanel(-3)
 		}
 		return l, nil
 
@@ -79,8 +79,8 @@ func (l LogPage) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				return l, l.loadDetailForCursor()
 			}
 		case zoneRight:
-			// Right panel has no scrollable diff; no-op for now
 			l.focus = focusLogDetail
+			l.scrollRightPanel(3)
 		}
 		return l, nil
 
@@ -129,4 +129,58 @@ func (l LogPage) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	}
 
 	return l, nil
+}
+
+// scrollRightPanel scrolls the right panel content by delta lines.
+// Positive delta scrolls down, negative scrolls up.
+// It handles different right-panel modes: WIP file lists, commit detail tabs,
+// stash diff, and PR detail.
+func (l *LogPage) scrollRightPanel(delta int) {
+	// WIP panel: scroll the focused file list
+	if l.isWIPSelected() && !l.viewingStash && !l.viewingPR {
+		switch l.wipFocus {
+		case wipFocusUnstaged:
+			if len(l.wipUnstaged) > 0 {
+				l.wipUnstagedCursor += delta
+				if l.wipUnstagedCursor < 0 {
+					l.wipUnstagedCursor = 0
+				}
+				if l.wipUnstagedCursor >= len(l.wipUnstaged) {
+					l.wipUnstagedCursor = len(l.wipUnstaged) - 1
+				}
+			}
+		case wipFocusStaged:
+			if len(l.wipStaged) > 0 {
+				l.wipStagedCursor += delta
+				if l.wipStagedCursor < 0 {
+					l.wipStagedCursor = 0
+				}
+				if l.wipStagedCursor >= len(l.wipStaged) {
+					l.wipStagedCursor = len(l.wipStaged) - 1
+				}
+			}
+		}
+		return
+	}
+
+	// Commit detail: scroll the detail tab content
+	if l.detailCommit != nil {
+		switch l.detailTab {
+		case 0: // Files tab — scroll file cursor
+			if len(l.detailFiles) > 0 {
+				l.detailFileCursor += delta
+				if l.detailFileCursor < 0 {
+					l.detailFileCursor = 0
+				}
+				if l.detailFileCursor >= len(l.detailFiles) {
+					l.detailFileCursor = len(l.detailFiles) - 1
+				}
+			}
+		case 1, 2: // Message or Stats tab — scroll text content
+			l.detailTabScroll += delta
+			if l.detailTabScroll < 0 {
+				l.detailTabScroll = 0
+			}
+		}
+	}
 }

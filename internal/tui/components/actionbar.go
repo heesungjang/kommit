@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/heesungjang/kommit/internal/tui/icons"
 	"github.com/heesungjang/kommit/internal/tui/keys"
 	"github.com/heesungjang/kommit/internal/tui/theme"
 )
@@ -22,59 +23,68 @@ type actionGroup struct {
 	buttons []actionButton
 }
 
-// actionGroups defines the toolbar layout: grouped by workflow.
-var actionGroups = []actionGroup{
-	// History operations
-	{buttons: []actionButton{
-		{Icon: "↺", Label: "Undo", Key: "z", Contexts: []keys.Context{
-			keys.ContextStatus, keys.ContextLog,
+// buildActionGroups returns the toolbar layout, using the active icon set.
+func buildActionGroups() []actionGroup {
+	ic := icons.Active
+	return []actionGroup{
+		// History operations
+		{buttons: []actionButton{
+			{Icon: ic.Undo, Label: "Undo", Key: "z", Contexts: []keys.Context{
+				keys.ContextStatus, keys.ContextLog,
+			}},
+			{Icon: ic.Redo, Label: "Redo", Key: "Z", Contexts: []keys.Context{
+				keys.ContextLog,
+			}},
 		}},
-		{Icon: "↻", Label: "Redo", Key: "Z", Contexts: []keys.Context{
-			keys.ContextLog,
+		// Remote operations
+		{buttons: []actionButton{
+			{Icon: ic.Pull, Label: "Pull", Key: "P", Contexts: []keys.Context{
+				keys.ContextStatus, keys.ContextDetail,
+			}},
+			{Icon: ic.Push, Label: "Push", Key: "p", Contexts: []keys.Context{
+				keys.ContextStatus, keys.ContextDetail,
+			}},
+			{Icon: ic.Fetch, Label: "Fetch", Key: "f", Contexts: []keys.Context{
+				keys.ContextStatus, keys.ContextDetail,
+			}},
 		}},
-	}},
-	// Remote operations
-	{buttons: []actionButton{
-		{Icon: "↓", Label: "Pull", Key: "P", Contexts: []keys.Context{
-			keys.ContextStatus, keys.ContextDetail,
+		// Branch
+		{buttons: []actionButton{
+			{Icon: ic.Branch, Label: "Branch", Key: "n", Contexts: []keys.Context{
+				keys.ContextBranches,
+			}},
 		}},
-		{Icon: "↑", Label: "Push", Key: "p", Contexts: []keys.Context{
-			keys.ContextStatus, keys.ContextDetail,
+		// Stash operations — available from WIP panel
+		{buttons: []actionButton{
+			{Icon: ic.Stash, Label: "Stash", Key: "W", Contexts: []keys.Context{
+				keys.ContextStatus,
+			}},
+			{Icon: ic.StashOpen, Label: "Pop", Key: "X", Contexts: []keys.Context{
+				keys.ContextStatus,
+			}},
 		}},
-		{Icon: "⟳", Label: "Fetch", Key: "f", Contexts: []keys.Context{
-			keys.ContextStatus, keys.ContextDetail,
+		// AI
+		{buttons: []actionButton{
+			{Icon: ic.AI, Label: "AI", Key: "ctrl+g", Contexts: []keys.Context{
+				keys.ContextStatus,
+			}},
 		}},
-	}},
-	// Branch
-	{buttons: []actionButton{
-		{Icon: "⑂", Label: "Branch", Key: "n", Contexts: []keys.Context{
-			keys.ContextBranches,
+		// Workspace operations
+		{buttons: []actionButton{
+			{Icon: ic.Fetch, Label: "Fetch All", Key: "f", Contexts: []keys.Context{
+				keys.ContextWorkspace,
+			}},
+			{Icon: ic.Pull, Label: "Pull All", Key: "P", Contexts: []keys.Context{
+				keys.ContextWorkspace,
+			}},
+			{Icon: "+", Label: "New", Key: "n", Contexts: []keys.Context{
+				keys.ContextWorkspace,
+			}},
+			{Icon: "a", Label: "Add Repo", Key: "a", Contexts: []keys.Context{
+				keys.ContextWorkspace,
+			}},
 		}},
-	}},
-	// Stash operations — available from WIP panel
-	{buttons: []actionButton{
-		{Icon: "⊞", Label: "Stash", Key: "W", Contexts: []keys.Context{
-			keys.ContextStatus,
-		}},
-		{Icon: "⊟", Label: "Pop", Key: "X", Contexts: []keys.Context{
-			keys.ContextStatus,
-		}},
-	}},
-	// Workspace operations
-	{buttons: []actionButton{
-		{Icon: "⟳", Label: "Fetch All", Key: "f", Contexts: []keys.Context{
-			keys.ContextWorkspace,
-		}},
-		{Icon: "↓", Label: "Pull All", Key: "P", Contexts: []keys.Context{
-			keys.ContextWorkspace,
-		}},
-		{Icon: "+", Label: "New", Key: "n", Contexts: []keys.Context{
-			keys.ContextWorkspace,
-		}},
-		{Icon: "a", Label: "Add Repo", Key: "a", Contexts: []keys.Context{
-			keys.ContextWorkspace,
-		}},
-	}},
+	}
 }
 
 // ActionBar renders a top-level action toolbar with common git operations.
@@ -154,8 +164,9 @@ func (ab ActionBar) View() string {
 	badgeDim := lipgloss.NewStyle().Foreground(t.Surface2)
 
 	// Build groups.
-	groups := make([]string, 0, len(actionGroups))
-	for _, g := range actionGroups {
+	ag := buildActionGroups()
+	groups := make([]string, 0, len(ag))
+	for _, g := range ag {
 		btns := make([]string, 0, len(g.buttons))
 		for _, btn := range g.buttons {
 			// Determine if this button gets an ahead/behind badge.

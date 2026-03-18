@@ -254,6 +254,8 @@ func (l LogPage) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			l.pendingOpHash = commit.Hash
 			l.pendingOpAction = "drop"
 			return l, l.showRebaseConfirm(commit, short, "drop")
+		case key.Matches(msg, l.commitOpsKeys.AIExplain):
+			return l, l.requestAIExplain(commit)
 		}
 	}
 

@@ -81,6 +81,7 @@ type AppearanceConfig struct {
 	SidebarWidth  int            `json:"sidebarWidth" mapstructure:"sidebarWidth"`   // sidebar width in columns (0 = auto)
 	SidebarMaxPct int            `json:"sidebarMaxPct" mapstructure:"sidebarMaxPct"` // max sidebar width as % of terminal (0 = default 15%)
 	CenterPct     int            `json:"centerPct" mapstructure:"centerPct"`         // center panel width as % of remaining (0 = default 70%)
+	NerdFonts     bool           `json:"nerdFonts" mapstructure:"nerdFonts"`         // use Nerd Font glyphs for icons
 	ThemeColors   ThemeOverrides `json:"themeColors" mapstructure:"themeColors"`     // override individual theme colors
 }
 

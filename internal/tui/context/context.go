@@ -6,6 +6,7 @@ package context
 import (
 	"github.com/heesungjang/kommit/internal/config"
 	"github.com/heesungjang/kommit/internal/git"
+	"github.com/heesungjang/kommit/internal/tui/icons"
 	"github.com/heesungjang/kommit/internal/tui/keys"
 	"github.com/heesungjang/kommit/internal/tui/theme"
 )
@@ -39,6 +40,9 @@ type ProgramContext struct {
 	// ActiveKeyContext tracks the currently active keybinding context.
 	// It is updated whenever the user switches pages, panels, or opens a dialog.
 	ActiveKeyContext keys.Context
+
+	// Icons holds the active icon set (plain Unicode or Nerd Font glyphs).
+	Icons icons.Icons
 }
 
 // New creates a ProgramContext with the given config and repository.
@@ -84,6 +88,7 @@ func New(cfg *config.Config, repo *git.Repository) *ProgramContext {
 		Styles:           InitStyles(t),
 		Repo:             repo,
 		ActiveKeyContext: keys.ContextLog,
+		Icons:            icons.ForConfig(cfg.Appearance.NerdFonts),
 	}
 }
 

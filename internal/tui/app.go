@@ -17,6 +17,7 @@ import (
 	tuictx "github.com/heesungjang/kommit/internal/tui/context"
 	"github.com/heesungjang/kommit/internal/tui/customcmd"
 	"github.com/heesungjang/kommit/internal/tui/dialog"
+	"github.com/heesungjang/kommit/internal/tui/icons"
 	"github.com/heesungjang/kommit/internal/tui/keys"
 	"github.com/heesungjang/kommit/internal/tui/msgs"
 	"github.com/heesungjang/kommit/internal/tui/pages"
@@ -101,6 +102,8 @@ func NewApp(repo *git.Repository, cfg *config.Config) App {
 	// Set the package-level Active theme so components that haven't been
 	// migrated to use ctx.Theme yet continue to work.
 	theme.Active = ctx.Theme
+	// Set the package-level Active icons for components without context access.
+	icons.Active = ctx.Icons
 
 	// Apply user keybinding overrides from config.
 	if len(cfg.Keybinds.Custom) > 0 {
@@ -858,6 +861,21 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case pages.StatusDirtyMsg:
 		a.statusBar = a.statusBar.SetClean(!msg.Dirty)
 		return a, nil
+
+	// -- AI explain request from commit list --------------------------------
+	case pages.RequestAIExplainMsg:
+		return a, a.generateAIExplanation(msg.Diff, msg.Subject)
+
+	case pages.AIExplainResultMsg:
+		// Show the explanation as a large toast/info message
+		var cmd tea.Cmd
+		a.toast, cmd = a.toast.ShowSuccess("AI: " + msg.Explanation)
+		return a, cmd
+
+	case pages.AIExplainErrorMsg:
+		var cmd tea.Cmd
+		a.toast, cmd = a.toast.ShowError("AI explain: " + msg.Err.Error())
+		return a, cmd
 
 	// -- AI commit message request from WIP panel --------------------------
 	case pages.RequestAICommitMsg:

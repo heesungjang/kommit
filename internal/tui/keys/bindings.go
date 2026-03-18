@@ -290,6 +290,7 @@ type CommitOpsKeys struct {
 	BisectMenu key.Binding
 	Undo       key.Binding
 	Redo       key.Binding
+	AIExplain  key.Binding
 }
 
 // NewCommitOpsKeys returns populated commit operation keybindings.
@@ -338,6 +339,10 @@ func NewCommitOpsKeys() CommitOpsKeys {
 		Redo: key.NewBinding(
 			key.WithKeys("Z"),
 			key.WithHelp("Z", "redo"),
+		),
+		AIExplain: key.NewBinding(
+			key.WithKeys("E"),
+			key.WithHelp("E", "AI explain"),
 		),
 	}
 }
@@ -643,6 +648,7 @@ func init() {
 		"commit.bisectMenu": &CommitOps.BisectMenu,
 		"commit.undo":       &CommitOps.Undo,
 		"commit.redo":       &CommitOps.Redo,
+		"commit.aiExplain":  &CommitOps.AIExplain,
 
 		// Diff
 		"diff.nextHunk":    &Diff.NextHunk,

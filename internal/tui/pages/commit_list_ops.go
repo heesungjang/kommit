@@ -311,6 +311,30 @@ func (l LogPage) doRedoConfirmed() tea.Cmd {
 }
 
 // ---------------------------------------------------------------------------
+// AI Explain
+// ---------------------------------------------------------------------------
+
+// requestAIExplain sends a request to explain the given commit's diff using AI.
+func (l LogPage) requestAIExplain(commit git.CommitInfo) tea.Cmd {
+	repo := l.repo
+	hash := commit.Hash
+	subject := commit.Subject
+	return func() tea.Msg {
+		diff, err := repo.DiffCommitRaw(hash)
+		if err != nil {
+			return RequestToastMsg{Message: "Failed to get diff: " + err.Error(), IsError: true}
+		}
+		if strings.TrimSpace(diff) == "" {
+			return RequestToastMsg{Message: "No changes to explain", IsError: true}
+		}
+		return RequestAIExplainMsg{
+			Diff:    diff,
+			Subject: subject,
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Clipboard
 // ---------------------------------------------------------------------------
 

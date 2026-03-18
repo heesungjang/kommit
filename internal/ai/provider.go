@@ -28,6 +28,15 @@ type Provider interface {
 	GenerateCommitMessage(ctx context.Context, diff, stat string) (*CommitMessage, error)
 }
 
+// StreamingProvider extends Provider with streaming support.
+// Providers that support streaming can deliver tokens incrementally.
+type StreamingProvider interface {
+	Provider
+	// GenerateStream sends a request and calls onChunk for each token received.
+	// The full accumulated text is returned when the stream completes.
+	GenerateStream(ctx context.Context, systemPrompt, userPrompt string, onChunk func(chunk string)) (string, error)
+}
+
 // ErrNoAPIKey is returned when no API key is configured for the provider.
 var ErrNoAPIKey = errors.New("no API key configured")
 
@@ -125,6 +134,11 @@ func resolveOpenAIModel(model string) string {
 		return DefaultModel("openai")
 	}
 	return model
+}
+
+// ParseCommitMessageText is the exported wrapper for parsing AI commit message text.
+func ParseCommitMessageText(text string) *CommitMessage {
+	return parseCommitMessage(text)
 }
 
 // parseCommitMessage parses the AI response text into a CommitMessage.

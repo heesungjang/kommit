@@ -1,12 +1,14 @@
 package ai
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 )
 
 const openAIDefaultBaseURL = "https://api.openai.com"
@@ -119,4 +121,93 @@ func (p *OpenAIProvider) generate(ctx context.Context, systemPrompt, userPrompt 
 	}
 
 	return result.Choices[0].Message.Content, nil
+}
+
+// openAIStreamRequest includes the stream flag.
+type openAIStreamRequest struct {
+	Model       string          `json:"model"`
+	MaxTokens   int             `json:"max_tokens,omitempty"`
+	Temperature float64         `json:"temperature"`
+	Messages    []openAIMessage `json:"messages"`
+	Stream      bool            `json:"stream"`
+}
+
+// openAIStreamChunk represents a single SSE chunk from the streaming API.
+type openAIStreamChunk struct {
+	Choices []struct {
+		Delta struct {
+			Content string `json:"content"`
+		} `json:"delta"`
+	} `json:"choices"`
+}
+
+// GenerateStream implements StreamingProvider for OpenAI.
+func (p *OpenAIProvider) GenerateStream(ctx context.Context, systemPrompt, userPrompt string, onChunk func(chunk string)) (string, error) {
+	reqBody := openAIStreamRequest{
+		Model:       p.model,
+		MaxTokens:   1024,
+		Temperature: 0.3,
+		Messages: []openAIMessage{
+			{Role: "system", Content: systemPrompt},
+			{Role: "user", Content: userPrompt},
+		},
+		Stream: true,
+	}
+
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", fmt.Errorf("marshal request: %w", err)
+	}
+
+	url := p.baseURL + "/v1/chat/completions"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	if p.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+p.apiKey)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("API error (%d): %s", resp.StatusCode, string(respBody))
+	}
+
+	// Parse SSE stream
+	var full strings.Builder
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		data := strings.TrimPrefix(line, "data: ")
+		if data == "[DONE]" {
+			break
+		}
+
+		var chunk openAIStreamChunk
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			continue
+		}
+
+		for _, choice := range chunk.Choices {
+			if choice.Delta.Content != "" {
+				full.WriteString(choice.Delta.Content)
+				if onChunk != nil {
+					onChunk(choice.Delta.Content)
+				}
+			}
+		}
+	}
+
+	return full.String(), scanner.Err()
 }

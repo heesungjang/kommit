@@ -107,6 +107,12 @@ type AICommitErrorMsg struct {
 	Err error
 }
 
+// AICommitStreamChunkMsg carries a partial AI response chunk for live display.
+type AICommitStreamChunkMsg struct {
+	Chunk string // the new text chunk
+	Full  string // full accumulated text so far
+}
+
 // RestoreCommitMsg is sent when a pending commit is canceled so the WIP
 // panel can restore the summary and description fields.
 type RestoreCommitMsg struct {
@@ -116,6 +122,22 @@ type RestoreCommitMsg struct {
 
 // DiffFullscreenToggleMsg is emitted by the DiffViewer to toggle fullscreen mode.
 type DiffFullscreenToggleMsg struct{}
+
+// RequestAIExplainMsg asks the app shell to explain a diff using AI.
+type RequestAIExplainMsg struct {
+	Diff    string // raw diff text to explain
+	Subject string // optional commit subject for context
+}
+
+// AIExplainResultMsg carries the AI-generated explanation back to the UI.
+type AIExplainResultMsg struct {
+	Explanation string
+}
+
+// AIExplainErrorMsg is sent when AI explanation generation fails.
+type AIExplainErrorMsg struct {
+	Err error
+}
 
 // RequestCreatePRMsg asks the app shell to open the Create PR dialog.
 type RequestCreatePRMsg struct{}

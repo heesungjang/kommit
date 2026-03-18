@@ -96,6 +96,18 @@ func (r *Repository) DiffCommit(hash string) (*DiffResult, error) {
 	return parseDiff(out), nil
 }
 
+// DiffCommitRaw returns the raw diff text for a specific commit (not parsed).
+func (r *Repository) DiffCommitRaw(hash string) (string, error) {
+	out, err := r.run("diff", "--no-color", hash+"^!", "--")
+	if err != nil {
+		out, err = r.run("diff", "--no-color", "--root", hash, "--")
+		if err != nil {
+			return "", err
+		}
+	}
+	return out, nil
+}
+
 // DiffCommitFile returns the raw diff text for a single file in a commit.
 func (r *Repository) DiffCommitFile(hash, path string) (string, error) {
 	out, err := r.run("diff", "--no-color", hash+"^!", "--", path)

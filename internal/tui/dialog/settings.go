@@ -126,6 +126,12 @@ func NewSettings(cfg *config.Config, ctx *tuictx.ProgramContext) Settings {
 			Kind:    settingToggle,
 		},
 		{
+			Key:     "appearance.nerdFonts",
+			Label:   "Nerd Font Icons",
+			Section: "APPEARANCE",
+			Kind:    settingToggle,
+		},
+		{
 			Key:     "ai.provider",
 			Label:   "AI Provider",
 			Section: "AI",
@@ -310,6 +316,11 @@ func (s Settings) rawValue(def settingDef) string {
 		return "false"
 	case "appearance.compactLog":
 		if s.cfg.Appearance.CompactLog {
+			return "true"
+		}
+		return "false"
+	case "appearance.nerdFonts":
+		if s.cfg.Appearance.NerdFonts {
 			return "true"
 		}
 		return "false"
