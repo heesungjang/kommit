@@ -127,7 +127,7 @@ func (d AIExplain) buildContentLines() []string {
 	t := d.Base.ctx.Theme
 	w := d.Base.InnerWidth()
 
-	blank := lipgloss.NewStyle().Background(t.Surface0).Width(w).Render("")
+	blank := lipgloss.NewStyle().Background(t.Surface0).Render("")
 
 	// --- Loading state with skeleton shimmer ---
 	if d.loading {
@@ -136,14 +136,14 @@ func (d AIExplain) buildContentLines() []string {
 
 		// Commit subject
 		subj := lipgloss.NewStyle().
-			Foreground(t.Overlay0).Background(t.Surface0).Width(w).
+			Foreground(t.Overlay0).Background(t.Surface0).
 			Render("  " + truncateStr(d.subject, w-4))
 		lines = append(lines, subj)
 		lines = append(lines, blank)
 
 		// Separator
 		sep := lipgloss.NewStyle().
-			Foreground(t.Surface2).Background(t.Surface0).Width(w).
+			Foreground(t.Surface2).Background(t.Surface0).
 			Render("  " + strings.Repeat("─", w-4))
 		lines = append(lines, sep)
 		lines = append(lines, blank)
@@ -163,7 +163,7 @@ func (d AIExplain) buildContentLines() []string {
 		}
 		for i, blen := range barLens {
 			bar := explainShimmerBar(blen, barWidth, shimmerPos, i*2, t.Surface2, t.Overlay1, t.Surface0)
-			styled := lipgloss.NewStyle().Background(t.Surface0).Width(w).Render("  " + bar)
+			styled := lipgloss.NewStyle().Background(t.Surface0).Render("  " + bar)
 			lines = append(lines, styled)
 		}
 
@@ -174,10 +174,10 @@ func (d AIExplain) buildContentLines() []string {
 	// --- Error state ---
 	if d.errMsg != "" {
 		errLine := lipgloss.NewStyle().
-			Foreground(t.Red).Background(t.Surface0).Width(w).
+			Foreground(t.Red).Background(t.Surface0).
 			Render("  Error: " + d.errMsg)
 		hint := lipgloss.NewStyle().
-			Foreground(t.Overlay0).Background(t.Surface0).Width(w).
+			Foreground(t.Overlay0).Background(t.Surface0).
 			Render("  Press esc to close")
 		return []string{blank, errLine, blank, hint, blank}
 	}
@@ -188,14 +188,14 @@ func (d AIExplain) buildContentLines() []string {
 
 	// Commit subject as context header
 	subj := lipgloss.NewStyle().
-		Foreground(t.Blue).Background(t.Surface0).Width(w).Bold(true).
+		Foreground(t.Blue).Background(t.Surface0).Bold(true).
 		Render("  " + truncateStr(d.subject, w-4))
 	lines = append(lines, subj)
 	lines = append(lines, blank)
 
 	// Separator
 	sep := lipgloss.NewStyle().
-		Foreground(t.Surface2).Background(t.Surface0).Width(w).
+		Foreground(t.Surface2).Background(t.Surface0).
 		Render("  " + strings.Repeat("─", w-4))
 	lines = append(lines, sep)
 	lines = append(lines, blank)
@@ -212,7 +212,7 @@ func (d AIExplain) buildContentLines() []string {
 		}
 		for _, wl := range wrapLine(paragraph, contentWidth) {
 			styled := lipgloss.NewStyle().
-				Foreground(t.Text).Background(t.Surface0).Width(w).
+				Foreground(t.Text).Background(t.Surface0).
 				Render("  " + wl)
 			lines = append(lines, styled)
 		}
