@@ -61,10 +61,6 @@ AI features support Anthropic, OpenAI, GitHub Copilot, and any OpenAI-compatible
 - **Bisect**: start, good, bad, skip, reset
 - **Tags**: create (lightweight or annotated) and delete
 
-<p align="center">
-  <img src="assets/branches.gif" alt="Branch management" width="800">
-</p>
-
 ### Diff Viewer
 
 - **Inline (unified) and side-by-side**: toggle with `V`
@@ -74,10 +70,6 @@ AI features support Anthropic, OpenAI, GitHub Copilot, and any OpenAI-compatible
 - **Horizontal panning**: scroll long lines with `h`/`l`
 - **Line numbers**: dual-gutter display with old and new line numbers
 - **Fullscreen mode**: press `f` to expand the diff to the full terminal width
-
-<p align="center">
-  <img src="assets/diff-viewer.gif" alt="Diff viewer with hunk navigation" width="800">
-</p>
 
 ### Pull Requests
 
@@ -104,10 +96,6 @@ AI features support Anthropic, OpenAI, GitHub Copilot, and any OpenAI-compatible
 - **Nerd Font support**: toggle rich icons for branches, tags, file status, and action bar buttons
 - **Fully rebindable keys**: remap any of the 70+ keybindings in config
 - **Custom commands**: define shell commands with template variables, trigger from a menu or shortcut
-
-<p align="center">
-  <img src="assets/themes.gif" alt="Live theme switching" width="800">
-</p>
 
 ---
 
