@@ -37,8 +37,9 @@ AI features support Anthropic, OpenAI, GitHub Copilot, and any OpenAI-compatible
 
 ### AI-Powered Workflow
 
-- **AI commit messages**: press `ctrl+g` on staged changes to generate a commit summary and description
+- **AI commit messages**: press `ctrl+g` on staged changes to generate a commit summary and description with streaming output
 - **AI pull request descriptions**: generates title and markdown body from the branch diff
+- **AI explain**: press `ctrl+e` on any commit to get a plain-English explanation of the changes
 - **4 providers**: Anthropic (Claude), OpenAI (GPT), GitHub Copilot (OAuth device flow), or any OpenAI-compatible API
 - **Bring your own key**: use your existing API keys, no kommit account needed
 - **Local models**: point the OpenAI-compatible provider at Ollama, LM Studio, or any local endpoint
@@ -60,6 +61,24 @@ AI features support Anthropic, OpenAI, GitHub Copilot, and any OpenAI-compatible
 - **Bisect**: start, good, bad, skip, reset
 - **Tags**: create (lightweight or annotated) and delete
 
+<p align="center">
+  <img src="assets/branches.gif" alt="Branch management" width="800">
+</p>
+
+### Diff Viewer
+
+- **Inline (unified) and side-by-side**: toggle with `V`
+- **Hunk navigation**: jump between hunks with `n`/`N`
+- **Hunk staging**: stage or unstage entire hunks from the diff view
+- **Visual line selection**: press `v`, select a range, stage those lines
+- **Horizontal panning**: scroll long lines with `h`/`l`
+- **Line numbers**: dual-gutter display with old and new line numbers
+- **Fullscreen mode**: press `f` to expand the diff to the full terminal width
+
+<p align="center">
+  <img src="assets/diff-viewer.gif" alt="Diff viewer with hunk navigation" width="800">
+</p>
+
 ### Pull Requests
 
 - **PR list in sidebar**: view all open PRs with status indicators, updated on push/pull/fetch
@@ -75,24 +94,20 @@ AI features support Anthropic, OpenAI, GitHub Copilot, and any OpenAI-compatible
 - **Credential injection**: saved tokens are automatically provided to push/pull/fetch via `GIT_ASKPASS`
 - **Auth failure recovery**: if a push fails due to auth, kommit offers to log in and retry
 
-### Diff Viewer
-
-- **Inline (unified) and side-by-side**: toggle with `V`
-- **Hunk navigation**: jump between hunks with `n`/`N`
-- **Hunk staging**: stage or unstage entire hunks from the diff view
-- **Visual line selection**: press `v`, select a range, stage those lines
-- **Horizontal panning**: scroll long lines with `h`/`l`
-- **Line numbers**: dual-gutter display with old and new line numbers
-
 ### Interface
 
 - **3-panel layout**: sidebar (branches, tags, stash, PRs) | commit list with graph | detail/WIP view
 - **Action bar**: context-aware toolbar showing current branch, sync status, and logged-in account
 - **Hint bar**: dynamic keyboard shortcut hints that change based on the focused panel
 - **Command palette**: `ctrl+p` for fuzzy search across all available actions
-- **11 themes**: switch live with instant preview
+- **18 themes**: switch live with instant preview, including Catppuccin, Tokyo Night, Dracula, Nord, Gruvbox, and more
+- **Nerd Font support**: toggle rich icons for branches, tags, file status, and action bar buttons
 - **Fully rebindable keys**: remap any of the 70+ keybindings in config
 - **Custom commands**: define shell commands with template variables, trigger from a menu or shortcut
+
+<p align="center">
+  <img src="assets/themes.gif" alt="Live theme switching" width="800">
+</p>
 
 ---
 
@@ -140,11 +155,11 @@ Navigate with `hjkl` or arrow keys, `tab`/`shift+tab` between panels, `?` for th
 
 kommit uses a layered config system. Settings are loaded in this order (last wins):
 
-| Priority | Location | Scope |
-|---|---|---|
-| 1 | `~/.config/kommit/config.yaml` | Global |
-| 2 | `$XDG_CONFIG_HOME/kommit/config.yaml` | Global (XDG) |
-| 3 | `.kommit.yaml` | Project-local |
+| Priority | Location                              | Scope         |
+| -------- | ------------------------------------- | ------------- |
+| 1        | `~/.config/kommit/config.yaml`        | Global        |
+| 2        | `$XDG_CONFIG_HOME/kommit/config.yaml` | Global (XDG)  |
+| 3        | `.kommit.yaml`                        | Project-local |
 
 Open the settings dialog with `,` to configure themes, diff mode, AI provider, and more without editing files.
 
@@ -158,13 +173,13 @@ API keys and account tokens are stored separately from config:
 
 This file is never committed and never synced with your config. Environment variables are also supported:
 
-| Variable | Overrides |
-|---|---|
+| Variable            | Overrides                               |
+| ------------------- | --------------------------------------- |
 | `ANTHROPIC_API_KEY` | AI API key (when provider is Anthropic) |
-| `OPENAI_API_KEY` | AI API key (when provider is OpenAI) |
-| `KOMMIT_AI_API_KEY` | AI API key (any provider) |
-| `GITHUB_TOKEN` | GitHub hosting token |
-| `GITLAB_TOKEN` | GitLab hosting token |
+| `OPENAI_API_KEY`    | AI API key (when provider is OpenAI)    |
+| `KOMMIT_AI_API_KEY` | AI API key (any provider)               |
+| `GITHUB_TOKEN`      | GitHub hosting token                    |
+| `GITLAB_TOKEN`      | GitLab hosting token                    |
 
 ---
 
@@ -177,18 +192,18 @@ Or configure manually:
 ```yaml
 # ~/.config/kommit/config.yaml
 ai:
-  provider: anthropic     # anthropic | openai | copilot | openai-compatible
-  model: claude-sonnet-4-6  # model name for the selected provider
+  provider: anthropic # anthropic | openai | copilot | openai-compatible
+  model: claude-sonnet-4-6 # model name for the selected provider
 ```
 
 ### Providers
 
-| Provider | Default Model | Auth | Notes |
-|---|---|---|---|
-| `anthropic` | `claude-sonnet-4-6` | API key | Via [console.anthropic.com](https://console.anthropic.com) |
-| `openai` | `gpt-4o-mini` | API key | Via [platform.openai.com](https://platform.openai.com) |
-| `copilot` | `gpt-4o` | OAuth device flow | Uses your existing GitHub Copilot subscription |
-| `openai-compatible` | `default` | Optional API key | Any endpoint that speaks the OpenAI API |
+| Provider            | Default Model       | Auth              | Notes                                                      |
+| ------------------- | ------------------- | ----------------- | ---------------------------------------------------------- |
+| `anthropic`         | `claude-sonnet-4-6` | API key           | Via [console.anthropic.com](https://console.anthropic.com) |
+| `openai`            | `gpt-4o-mini`       | API key           | Via [platform.openai.com](https://platform.openai.com)     |
+| `copilot`           | `gpt-4o`            | OAuth device flow | Uses your existing GitHub Copilot subscription             |
+| `openai-compatible` | `default`           | Optional API key  | Any endpoint that speaks the OpenAI API                    |
 
 ### Using Local Models
 
@@ -198,7 +213,7 @@ Point the `openai-compatible` provider at any local inference server:
 ai:
   provider: openai-compatible
   model: llama3
-  apiBaseURL: http://localhost:11434/v1   # Ollama
+  apiBaseURL: http://localhost:11434/v1 # Ollama
 ```
 
 Works with Ollama, LM Studio, and any server that implements the OpenAI chat completions API.
@@ -207,21 +222,29 @@ Works with Ollama, LM Studio, and any server that implements the OpenAI chat com
 
 ## Themes
 
-kommit ships with 11 themes. Switch between them in the settings dialog (`,`) with live preview.
+kommit ships with 18 themes. Switch between them in the settings dialog (`,`) with live preview.
 
-| Theme | Style |
-|---|---|
-| `catppuccin-mocha` | Dark (default) |
-| `catppuccin-latte` | Light |
-| `catppuccin-frappe` | Mid-dark, French lavender undertones |
-| `catppuccin-macchiato` | Dark, warm and cozy |
-| `tokyo-night` | Inspired by the lights of downtown Tokyo |
-| `dracula` | Distinctive pink, purple, and green accents |
-| `nord` | Arctic, north-bluish palette with cool, muted tones |
-| `gruvbox-dark` | Warm retro palette with earthy tones |
-| `rose-pine` | Soft, muted dark with warm rose and gold |
-| `kanagawa-wave` | Inspired by Hokusai's *The Great Wave off Kanagawa* |
-| `auto` | Detects your terminal background and picks light or dark |
+| Theme                  | Style                                                    |
+| ---------------------- | -------------------------------------------------------- |
+| `catppuccin-mocha`     | Dark (default)                                           |
+| `catppuccin-frappe`    | Mid-dark, French lavender undertones                     |
+| `catppuccin-macchiato` | Dark, warm and cozy                                      |
+| `catppuccin-latte`     | Light, pastel accents                                    |
+| `tokyo-night`          | Inspired by the lights of downtown Tokyo                 |
+| `dracula`              | Distinctive pink, purple, and green accents              |
+| `nord`                 | Arctic, north-bluish palette with cool, muted tones      |
+| `one-dark`             | The iconic Atom editor theme                             |
+| `gruvbox-dark`         | Warm retro palette with earthy tones                     |
+| `gruvbox-light`        | Warm retro palette, light variant                        |
+| `rose-pine`            | Soft, muted dark with warm rose and gold                 |
+| `kanagawa-wave`        | Inspired by Hokusai's _The Great Wave off Kanagawa_      |
+| `everforest-dark`      | Green-tinted, low-contrast forest palette                |
+| `nightfox`             | Calm, dark blue from the nightfox.nvim plugin            |
+| `github-dark`          | GitHub's default dark mode                               |
+| `github-light`         | GitHub's default light mode                              |
+| `solarized-dark`       | Ethan Schoonover's precision palette                     |
+| `solarized-light`      | Solarized for light backgrounds                          |
+| `auto`                 | Detects your terminal background and picks light or dark |
 
 Every theme color is overridable in config:
 
@@ -261,15 +284,15 @@ customCommands:
 
 ### Template Variables
 
-| Variable | Value |
-|---|---|
-| `{{.Hash}}` | Full commit hash |
-| `{{.ShortHash}}` | Abbreviated hash |
-| `{{.Branch}}` | Current branch name |
-| `{{.Path}}` | Selected file path |
-| `{{.RepoRoot}}` | Repository root directory |
-| `{{.Subject}}` | Commit subject line |
-| `{{.Author}}` | Commit author name |
+| Variable         | Value                     |
+| ---------------- | ------------------------- |
+| `{{.Hash}}`      | Full commit hash          |
+| `{{.ShortHash}}` | Abbreviated hash          |
+| `{{.Branch}}`    | Current branch name       |
+| `{{.Path}}`      | Selected file path        |
+| `{{.RepoRoot}}`  | Repository root directory |
+| `{{.Subject}}`   | Commit subject line       |
+| `{{.Author}}`    | Commit author name        |
 
 ---
 
@@ -280,99 +303,99 @@ All keybindings are rebindable in your config file. Press `?` in the app to see 
 
 ### Global
 
-| Key | Action |
-|---|---|
-| `q` | Quit |
-| `ctrl+c` | Force quit |
-| `?` | Toggle help |
-| `/` | Search |
-| `ctrl+p` | Command palette |
-| `:` | Custom commands |
-| `,` | Settings |
-| `1` `2` `3` | Focus panel |
+| Key                 | Action                |
+| ------------------- | --------------------- |
+| `q`                 | Quit                  |
+| `ctrl+c`            | Force quit            |
+| `?`                 | Toggle help           |
+| `/`                 | Search                |
+| `ctrl+p`            | Command palette       |
+| `:`                 | Custom commands       |
+| `,`                 | Settings              |
+| `1` `2` `3`         | Focus panel           |
 | `tab` / `shift+tab` | Next / previous panel |
 
 ### Navigation
 
-| Key | Action |
-|---|---|
-| `j` / `k` | Down / up |
-| `h` / `l` | Left / right |
+| Key                 | Action         |
+| ------------------- | -------------- |
+| `j` / `k`           | Down / up      |
+| `h` / `l`           | Left / right   |
 | `ctrl+d` / `ctrl+u` | Page down / up |
-| `g` / `G` | Top / bottom |
-| `enter` | Select |
+| `g` / `G`           | Top / bottom   |
+| `enter`             | Select         |
 
 ### WIP Panel (Staging & Committing)
 
-| Key | Action |
-|---|---|
-| `s` | Stage file |
-| `u` | Unstage file |
-| `a` | Stage all |
-| `S` | Stage hunk |
-| `d` | Discard changes |
-| `c` | Commit |
-| `A` | Amend commit |
+| Key      | Action            |
+| -------- | ----------------- |
+| `s`      | Stage file        |
+| `u`      | Unstage file      |
+| `a`      | Stage all         |
+| `S`      | Stage hunk        |
+| `d`      | Discard changes   |
+| `c`      | Commit            |
+| `A`      | Amend commit      |
 | `ctrl+g` | AI commit message |
-| `p` | Push |
-| `P` | Pull |
-| `f` | Fetch |
-| `W` | Stash save |
-| `X` | Stash pop |
-| `z` | Undo |
-| `r` | Refresh |
+| `p`      | Push              |
+| `P`      | Pull              |
+| `f`      | Fetch             |
+| `W`      | Stash save        |
+| `X`      | Stash pop         |
+| `z`      | Undo              |
+| `r`      | Refresh           |
 
 ### Branch Operations
 
-| Key | Action |
-|---|---|
-| `enter` / `o` | Checkout |
-| `n` | New branch |
-| `R` | Rename |
-| `D` | Delete |
-| `m` | Merge into current |
-| `b` | Rebase onto current |
+| Key           | Action              |
+| ------------- | ------------------- |
+| `enter` / `o` | Checkout            |
+| `n`           | New branch          |
+| `R`           | Rename              |
+| `D`           | Delete              |
+| `m`           | Merge into current  |
+| `b`           | Rebase onto current |
 
 ### Commit Operations
 
-| Key | Action |
-|---|---|
-| `R` | Revert |
-| `C` | Cherry-pick |
-| `y` | Copy hash |
-| `X` | Reset menu |
-| `s` | Squash |
-| `f` | Fixup |
-| `d` | Drop |
-| `B` | Bisect menu |
+| Key       | Action      |
+| --------- | ----------- |
+| `R`       | Revert      |
+| `C`       | Cherry-pick |
+| `y`       | Copy hash   |
+| `X`       | Reset menu  |
+| `s`       | Squash      |
+| `f`       | Fixup       |
+| `d`       | Drop        |
+| `B`       | Bisect menu |
 | `z` / `Z` | Undo / redo |
 
 ### Diff Viewer
 
-| Key | Action |
-|---|---|
-| `n` / `N` | Next / previous hunk |
-| `s` / `u` | Stage / unstage hunk |
-| `v` | Visual line selection |
-| `V` | Toggle inline / side-by-side |
-| `h` / `l` | Pan left / right |
+| Key       | Action                       |
+| --------- | ---------------------------- |
+| `n` / `N` | Next / previous hunk         |
+| `s` / `u` | Stage / unstage hunk         |
+| `v`       | Visual line selection        |
+| `V`       | Toggle inline / side-by-side |
+| `h` / `l` | Pan left / right             |
 
 ### Stash
 
 | Key | Action |
-|---|---|
-| `s` | Save |
-| `p` | Pop |
-| `a` | Apply |
-| `D` | Drop |
+| --- | ------ |
+| `s` | Save   |
+| `p` | Pop    |
+| `a` | Apply  |
+| `D` | Drop   |
 
 ### Pull Requests
 
-| Key | Action |
-|---|---|
-| `n` | Create PR |
-| `o` | Open in browser |
-| `ctrl+g` | AI description |
+| Key      | Action          |
+| -------- | --------------- |
+| `n`      | Create PR       |
+| `o`      | Open in browser |
+| `ctrl+g` | AI description  |
 
 ### Rebinding Keys
 
@@ -381,7 +404,7 @@ keybinds:
   custom:
     global.quit: "Q"
     status.stage: "space"
-    nav.up: "up k"          # multiple keys separated by space
+    nav.up: "up k" # multiple keys separated by space
     nav.down: "down j"
 ```
 
@@ -393,12 +416,13 @@ keybinds:
 ```yaml
 appearance:
   theme: catppuccin-mocha
-  diffMode: inline           # inline | side-by-side
-  showGraph: true            # commit graph in center panel
-  compactLog: false          # compact commit list
-  sidebarWidth: 0            # fixed width (0 = auto)
-  sidebarMaxPct: 15          # max sidebar width as % of terminal
-  centerPct: 70              # center panel width as % of remaining space
+  nerdFonts: false # enable Nerd Font icons (requires a patched font)
+  diffMode: inline # inline | side-by-side
+  showGraph: true # commit graph in center panel
+  compactLog: false # compact commit list
+  sidebarWidth: 0 # fixed width (0 = auto)
+  sidebarMaxPct: 15 # max sidebar width as % of terminal
+  centerPct: 70 # center panel width as % of remaining space
 ```
 
 </details>
